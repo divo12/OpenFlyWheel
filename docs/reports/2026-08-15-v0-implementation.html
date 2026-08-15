@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenFlyWheel v0 Implementation Report</title>
+  <style>
+    :root {
+      --bg: #f4f0e7; --paper: #fffdf8; --ink: #1d1a16; --muted: #655e52;
+      --line: #d6cdbc; --teal: #1f5c57; --teal-soft: #e1efeb;
+      --rust: #934531; --rust-soft: #f4e1da; --gold: #92721f; --gold-soft: #f3ebd0; --nav: #211e19;
+      --ok: #2d6a4f; --ok-soft: #d8f3dc;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font: 17px/1.55 Georgia, "Times New Roman", serif; }
+    .layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+    nav { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 28px 18px; background: var(--nav); color: #eee7d8; }
+    nav h2 { margin: 0 0 18px; padding: 0; border: 0; color: #c7b382; font: 700 13px/1.4 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    nav a { display: block; padding: 5px 7px; color: #d6cec0; border-radius: 4px; font: 500 13px/1.35 system-ui, sans-serif; text-decoration: none; }
+    nav a:hover { color: white; background: #3a342c; }
+    nav .sub { padding-left: 14px; font-size: 12px; }
+    main { width: min(1040px, 100%); padding: 44px 58px 80px; }
+    h1 { margin: 8px 0 12px; font-size: 2.2rem; line-height: 1.15; }
+    h2 { margin: 54px 0 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 1.55rem; }
+    h3 { margin: 28px 0 8px; font-size: 1.14rem; }
+    h4 { margin: 20px 0 6px; font-size: 1.02rem; }
+    p { margin: 0 0 13px; }
+    a { color: var(--teal); }
+    code { font: .86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #eee7d8; padding: 1px 4px; border-radius: 3px; }
+    pre { margin: 14px 0 18px; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--line); background: var(--paper); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    ul, ol { margin: 0 0 13px 22px; padding: 0; }
+    li { margin: 0 0 5px; }
+    .kicker { color: var(--rust); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+    .lede { color: var(--muted); font-size: 1.12rem; }
+    .meta { color: var(--muted); font: 500 13px/1.5 system-ui, sans-serif; margin-bottom: 18px; }
+    .meta span { display: inline-block; margin-right: 16px; }
+    .callout { margin: 18px 0; padding: 15px 17px; border: 1px solid var(--line); border-left: 4px solid var(--teal); background: var(--paper); }
+    .callout.warn { border-left-color: var(--rust); }
+    .callout.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+    .callout.gold { border-left-color: var(--gold); }
+    .callout strong:first-child { display: block; margin-bottom: 5px; color: var(--muted); font: 700 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+    .grid { display: grid; gap: 12px; }
+    .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { padding: 15px 16px; border: 1px solid var(--line); background: var(--paper); }
+    .card h3 { margin-top: 0; }
+    .pill { display: inline-block; font: 700 11px/1 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; padding: 3px 7px; border-radius: 3px; background: #d5e8e4; color: var(--teal); }
+    .pill.done { background: var(--ok-soft); color: var(--ok); }
+    footer { margin-top: 60px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--muted); font: 500 13px/1.45 system-ui, sans-serif; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: .95rem; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font: 700 12px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    .who { display: inline-block; font: 700 10px/1 system-ui, sans-serif; letter-spacing: .05em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; margin-right: 4px; }
+    .who.you { background: var(--rust-soft); color: var(--rust); }
+    .who.machine { background: var(--teal-soft); color: var(--teal); }
+    .who.agent { background: var(--gold-soft); color: var(--gold); }
+    .flow-title { margin: 0 0 10px; color: var(--muted); font: 700 12px/1.3 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    .lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 8px 0 6px; }
+    .lane { padding: 14px 14px 12px; border: 1px solid var(--line); background: var(--paper); min-height: 100%; }
+    .lane h4 { margin: 0 0 8px; font: 700 13px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .lane.ws { border-top: 4px solid var(--rust); }
+    .lane.src { border-top: 4px solid var(--teal); }
+    .lane.bnd { border-top: 4px solid var(--gold); }
+    .stack { display: grid; gap: 0; margin: 16px 0; border: 1px solid var(--line); }
+    .stack-row { display: grid; grid-template-columns: 140px minmax(0, 1fr); border-bottom: 1px solid var(--line); background: var(--paper); }
+    .stack-row:last-child { border-bottom: 0; }
+    .stack-label { padding: 12px 14px; background: #eee7d8; font: 700 12px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); border-right: 1px solid var(--line); }
+    .stack-body { padding: 12px 16px; font-size: .95rem; }
+    .pipe { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr) auto; align-items: stretch; margin: 8px 0 4px; }
+    .pipe-box { padding: 10px 8px; border: 1px solid var(--line); background: var(--paper); text-align: center; font: 600 12px/1.3 system-ui, sans-serif; }
+    .pipe-box small { display: block; margin-top: 4px; color: var(--muted); font: 500 11px/1.3 system-ui, sans-serif; }
+    .pipe-box.active { background: var(--teal-soft); border-color: #b7d4ce; }
+    .pipe-box.lock { background: var(--rust-soft); border-color: #e3c4ba; }
+    .pipe-box.book { background: var(--gold-soft); border-color: #e4d7a8; }
+    .pipe-arrow { display: flex; align-items: center; color: var(--muted); font: 700 16px/1 system-ui, sans-serif; padding: 0 4px; }
+    .step-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) 118px; gap: 12px; align-items: stretch; margin-bottom: 8px; }
+    .step-num { display: flex; align-items: flex-start; justify-content: center; padding-top: 16px; color: var(--teal); font: 700 22px/1 system-ui, sans-serif; }
+    .step-card { position: relative; padding: 14px 16px 14px 18px; border: 1px solid var(--line); background: var(--paper); }
+    .step-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--teal); }
+    .step-card.you::before { background: var(--rust); }
+    .step-card.agent::before { background: var(--gold); }
+    .step-card h4 { margin: 0 0 4px; }
+    .step-card p { margin: 0; color: var(--muted); font-size: .95rem; }
+    .actor { align-self: start; margin-top: 16px; text-align: center; font: 700 11px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .status-banner { margin: 20px 0; padding: 14px 18px; border: 2px solid var(--rust); background: var(--rust-soft); font: 600 14px/1.4 system-ui, sans-serif; }
+    @media (max-width: 850px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; height: auto; }
+      main { padding: 26px 18px 60px; }
+      .g2, .g3, .lanes { grid-template-columns: 1fr; }
+      .stack-row { grid-template-columns: 1fr; }
+      .stack-label { border-right: 0; border-bottom: 1px solid var(--line); }
+      .step-row { grid-template-columns: 1fr; }
+      .step-num, .actor { display: none; }
+      .pipe { grid-auto-flow: row; }
+      .pipe-arrow { justify-content: center; transform: rotate(90deg); }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <h2>v0 Implementation<br>Report</h2>
+    <a href="2026-08-15-v0-implementation.md">Markdown companion</a>
+    <a href="../specs/2026-08-15-system-book-design.html">Design spec</a>
+    <a href="../plans/2026-08-15-org-system-book.html">Implementation plan</a>
+    <a href="../../README.md">README</a>
+    <a href="../../AGENTS.md">AGENTS.md</a>
+    <a href="../../tests/e2e_real/README.md">e2e_real README</a>
+    <a href="#outcome">1. Executive outcome</a>
+    <a href="#waves">2. Waves A–H</a>
+    <a href="#architecture">3. Architecture</a>
+    <a href="#write-read">4. Write/read sequence</a>
+    <a href="#contracts">5. Typed contracts</a>
+    <a href="#sqlite">6. SQLite schema</a>
+    <a href="#onboarding">7. Onboarding &amp; ingest</a>
+    <a href="#book">8. Book core</a>
+    <a href="#agents">9. Agent surfaces</a>
+    <a href="#dashboard">10. Dashboard &amp; notes</a>
+    <a href="#agents-md">11. AGENTS.md rules</a>
+    <a href="#testing">12. Testing timeline</a>
+    <a href="#e2e">13. Real E2E evidence</a>
+    <a href="#quality">14. Quality gates</a>
+    <a href="#limits">15. Limitations</a>
+    <a href="#filemap">16. File map &amp; commands</a>
+    <a href="#next">17. Next steps</a>
+    <a href="#git">18. Git status</a>
+  </nav>
+  <main>
+    <p class="kicker">Implementation report · 15 Aug 2026</p>
+    <h1>OpenFlyWheel v0 — Waves A through H</h1>
+    <p class="lede">Evidence-based report for the first shippable System Book foundation: Pavo truth discipline, Hyper write path, GBrain org topology habits, SQLite as system of record.</p>
+    <p class="meta">
+      <span><strong>Version:</strong> 0.1.0</span>
+      <span><strong>Python:</strong> 3.11+</span>
+      <span><strong>Report date:</strong> 2026-08-16</span>
+      <span><strong>Author:</strong> Composer 2.5 (doc-updater)</span>
+    </p>
+
+    <div class="status-banner">
+      ⚠ Not committed · Not pushed — implementation exists on disk only. Last git commit: <code>08e987c</code> (design doc only). All <code>src/</code>, <code>tests/</code>, and this report are untracked or unstaged.
+    </div>
+
+    <!-- 1. Executive outcome -->
+    <h2 id="outcome">1. Executive outcome</h2>
+    <div class="callout ok">
+      <strong>Verdict</strong>
+      v0 delivers an offline-capable, typed Python application (<code>ofw</code>) that onboards a company workspace, locks production-system boundaries, ingests GitHub fixture evidence and agent sessions into immutable episodes, extracts SaO proposals (U3/U4), verifies claims under human authority, serves deterministic ACL-filtered retrieval packets, and exposes the same book verbs over CLI and MCP stdio — with an opt-in real-environment harness proving read-only safety on live Cursor config and Arceus checkout.
+    </div>
+
+    <div class="grid g3">
+      <div class="card">
+        <h3>Pavo truth</h3>
+        <p>Seven Essential Truths (U1–U7). <strong>What + How</strong> are gold; <strong>Why</strong> is a probe only. Locate → lock before extraction. Claims require evidence anchors, authority, and verification. Pins are immutable snapshots.</p>
+      </div>
+      <div class="card">
+        <h3>Hyper write path</h3>
+        <p>Source → admission → immutable Episode → SaO/background extractor → ClaimProposal → human verify → active Claim. History preserved via edges (<code>derived_from</code>, <code>in_tension_with</code>, <code>supersedes</code>). Agents are bidirectional surfaces, not claim writers.</p>
+      </div>
+      <div class="card">
+        <h3>GBrain habits</h3>
+        <p>Three axes: <strong>Workspace ⊥ Source ⊥ Boundary</strong>. Gap-on-every-packet. Compiled packet + episode timeline as views. Frozen verb protocol (8 book ops). Fail-closed ACL. SQLite SoR — not a markdown vault.</p>
+      </div>
+    </div>
+
+    <!-- 2. Waves -->
+    <h2 id="waves">2. Scope implemented by waves A–H</h2>
+    <table>
+      <thead><tr><th>Wave</th><th>Delivered</th><th>Gate (verified)</th></tr></thead>
+      <tbody>
+        <tr><td><span class="pill done">A</span> Skeleton</td><td><code>pyproject.toml</code>, typed contracts, SQLite migrate, <code>ofw workspace init</code>, repository layer</td><td>Temp DB create/read; contracts unit tests</td></tr>
+        <tr><td><span class="pill done">B</span> Onboard + lock</td><td>Staged <code>ofw onboard</code>, locate heuristics, multi-boundary lock, versioned manifests</td><td>FixtureCo two boundaries; extract refused before lock</td></tr>
+        <tr><td><span class="pill done">C</span> GitHub + episodes</td><td>Fixture GitHub adapter, admission, idempotent episodes, checkpoint-after-commit</td><td>Double ingest → same IDs; exclusions → audit only</td></tr>
+        <tr><td><span class="pill done">D</span> SaO proposals</td><td>Deterministic extractors over code/config; U3/U4 proposals with file:line anchors</td><td>≥1 anchored U3/U4; zero U5–U7 fabrications</td></tr>
+        <tr><td><span class="pill done">E</span> Verify + coverage</td><td><code>book verify</code>, claims, edges, coverage slots, org macro-average, pins</td><td>Pin immutable; coverage ignores raw proposal count</td></tr>
+        <tr><td><span class="pill done">F</span> Retrieval</td><td><code>book context</code>, ACL-before-FTS, packet with gaps/tensions/anchors</td><td>Two identities → different packets; no Why in gold</td></tr>
+        <tr><td><span class="pill done">G</span> Agents</td><td>Claude + Cursor installers, transcript projection, episode write-back, background worker + lease, MCP stdio 8 verbs</td><td>Install merge-safe; episode ≠ claim; MCP = CLI parity</td></tr>
+        <tr><td><span class="pill done">H</span> Dashboard + dogfood</td><td>Loopback FastAPI dashboard, expert notes connector, <code>e2e_real</code> harness</td><td>Identity gate; Arceus manifest example outside <code>src/</code></td></tr>
+      </tbody>
+    </table>
+
+    <!-- 3. Architecture -->
+    <h2 id="architecture">3. Architecture</h2>
+    <p class="flow-title">Three orthogonal axes (GBrain-adapted)</p>
+    <div class="lanes">
+      <div class="lane ws">
+        <h4>Workspace</h4>
+        <p>One company tenant → one SQLite file (<code>~/.openflywheel/&lt;id&gt;/book.sqlite</code>). Policy, admins, identities.</p>
+      </div>
+      <div class="lane src">
+        <h4>Source</h4>
+        <p>GitHub org/repo, Claude Code, Cursor, expert notes. Per-source slugs, checkpoints, capability reports.</p>
+      </div>
+      <div class="lane bnd">
+        <h4>Boundary</h4>
+        <p>One locked production system. Claims, coverage, pins scoped per boundary. Cross-boundary query is explicit.</p>
+      </div>
+    </div>
+
+    <p class="flow-title">Layer stack</p>
+    <div class="stack">
+      <div class="stack-row"><div class="stack-label">CLI + MCP + dashboard</div><div class="stack-body"><code>cli/</code>, <code>mcp/stdio_runner.py</code>, <code>dashboard/api.py</code> — thin surfaces calling application services</div></div>
+      <div class="stack-row"><div class="stack-label">application</div><div class="stack-body"><code>BookApplication</code>, <code>IngestApplication</code>, <code>WorkspaceService</code>, <code>BackgroundWorkerService</code>, identity/recursion gates</div></div>
+      <div class="stack-row"><div class="stack-label">domain</div><div class="stack-body"><code>book/</code>, <code>ingest/</code>, <code>retrieval/</code>, <code>onboarding/</code> — verify, SaO, ACL/FTS packet, staged onboard</div></div>
+      <div class="stack-row"><div class="stack-label">store</div><div class="stack-body"><code>store/db.py</code> (WAL+FK), migrations 001–005, repos, <code>IngestUnitOfWork</code>, pin snapshots</div></div>
+      <div class="stack-row"><div class="stack-label">contracts</div><div class="stack-body"><code>contracts/</code> — Pydantic v2, I/O-free, NewType IDs, <code>OperationResult[T]</code></div></div>
+      <div class="stack-row"><div class="stack-label">connectors</div><div class="stack-body"><code>connectors/github/fixture.py</code>, <code>connectors/agents/*</code>, <code>connectors/notes/</code> — envelope adapters only</div></div>
+    </div>
+
+    <div class="callout">
+      <strong>Boundary rule</strong>
+      Consumer repositories are never imported. Arceus/dream/chorus/horizon/lattice names appear only in workspace manifests under <code>workspaces/</code>, never in <code>src/openflywheel/</code> or generic tests.
+    </div>
+
+    <!-- 4. Write/read sequence -->
+    <h2 id="write-read">4. Write/read sequence — who writes proposals</h2>
+    <p class="flow-title">Write path (Hyper inside Pavo)</p>
+    <div class="pipe">
+      <div class="pipe-box"><strong>Evidence source</strong><small>GitHub item · agent transcript · expert note</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box active"><strong>Admission</strong><small>fail-closed; idempotent hash</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box active"><strong>Episode</strong><small>immutable; ACL + checksum</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box book"><strong>Proposal</strong><small>OFW SaO / background worker / expert</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box lock"><strong>Human verify</strong><small>promote · reject · tension</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box book"><strong>Claim</strong><small>active System Book gold</small></div>
+    </div>
+
+    <div class="flow" style="margin-top:24px">
+      <div class="step-row">
+        <div class="step-num">1</div>
+        <div class="step-card agent"><h4>Coding agent (Cursor / Claude Code)</h4><p>Produces session evidence only. Transcript is untrusted input. Hook calls <code>episode_record</code>; creates Episode + background job. <strong>Never</strong> writes Claim rows.</p></div>
+        <div class="actor"><span class="who agent">Agent</span><br>evidence</div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">2</div>
+        <div class="step-card"><h4>OFW SaO extractor</h4><p>Deterministic scan of admitted code/config (deps, schemas, guards, tests). Emits U3/U4 proposals with file:line anchors. Runs on <code>ofw ingest extract</code>.</p></div>
+        <div class="actor"><span class="who machine">OFW SaO</span></div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">3</div>
+        <div class="step-card"><h4>Background worker</h4><p>Leased job processes transcript assistant lines matching <code>should|recommend|propose|must</code>. Creates proposals with <code>transcript:{episode_id}:*</code> idempotency keys. Recursion guard prevents hook loops.</p></div>
+        <div class="actor"><span class="who machine">OFW worker</span></div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">4</div>
+        <div class="step-card"><h4>Expert notes connector</h4><p>High-authority markdown drop → episode → manual or guided proposal path. Identity + boundary gates enforced.</p></div>
+        <div class="actor"><span class="who you">Expert</span></div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">5</div>
+        <div class="step-card you"><h4>Human / designated owner</h4><p><code>book verify</code> promotes proposal → claim. Agents cannot verify even if listed as boundary owners. Session agent never activates gold.</p></div>
+        <div class="actor"><span class="who you">Human</span><br>activates</div>
+      </div>
+    </div>
+
+    <p class="flow-title">Read path (deterministic, no LLM)</p>
+    <div class="pipe">
+      <div class="pipe-box lock"><strong>ACL filter</strong><small>identity + visibility</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box active"><strong>Active claims</strong><small>pin snapshot optional</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box active"><strong>FTS5</strong><small>porter tokenizer</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box"><strong>Edge expand</strong><small>tension · supersession</small></div>
+      <div class="pipe-arrow">→</div>
+      <div class="pipe-box book"><strong>Packet</strong><small>claims + gaps + anchors</small></div>
+    </div>
+
+    <!-- 5. Contracts -->
+    <h2 id="contracts">5. Typed contracts and OperationResult</h2>
+    <p>All domain models live in <code>src/openflywheel/contracts/</code> as frozen Pydantic v2 models with NewType IDs (<code>WorkspaceId</code>, <code>ClaimId</code>, etc.). No <code>typing.Any</code> in service or repository APIs.</p>
+
+    <pre>class OperationResult(BaseModel, Generic[T]):
+    status: OperationStatus          # success | warning | error
+    summary: str
+    next_actions: tuple[str, ...]
+    artifacts: tuple[str, ...]
+    data: T | None
+    error: OperationError | None     # code, message, root_cause_hint,
+                                     # safe_retry, stop_condition</pre>
+
+    <p><code>render_json()</code> produces harness-compatible recovery output. CLI and MCP both emit this envelope. Errors are typed — e.g. <code>VERIFY_UNAUTHORIZED</code>, <code>GET_ACL_DENIED</code>, <code>PROPOSE_ANCHOR_NOT_FOUND</code>, <code>MCP_UNKNOWN_TOOL</code>.</p>
+
+    <p><code>dict</code> is quarantined to raw JSON/library boundaries (<code>pydantic_json.py</code>, MCP stdio argument parsing) and converted immediately via <code>TypeAdapter</code>. Third-party stubs live in <code>typings/</code> (mcp, typer, fastapi, uvicorn, sqlite3) — honest partial coverage, not full runtime types.</p>
+
+    <!-- 6. SQLite -->
+    <h2 id="sqlite">6. SQLite schema, migrations 001–005</h2>
+    <table>
+      <thead><tr><th>Migration</th><th>Contents</th></tr></thead>
+      <tbody>
+        <tr><td><code>001_foundation.sql</code></td><td>Core tables: workspaces, identities, boundaries, sources, episodes, evidence_anchors, proposals, claims, edges, coverage_requirements, checkpoints, agent_sessions, pins, audit_rejects, onboarding_runs</td></tr>
+        <tr><td><code>002_episode_idempotency.sql</code></td><td>Unique index <code>(source_id, external_id, checksum)</code> on episodes; dedupe index on audit_rejects</td></tr>
+        <tr><td><code>003_book_core.sql</code></td><td>Proposal status + idempotency key; claim provenance; FTS5 <code>claim_fts</code> virtual table</td></tr>
+        <tr><td><code>004_book_hardening.sql</code></td><td>Pin snapshot tables (claim/anchor/edge); immutability triggers; FTS sync triggers; proposals strict NOT NULL boundary</td></tr>
+        <tr><td><code>005_agent_surfaces.sql</code></td><td><code>background_jobs</code> queue with lease fields; unique agent_sessions per platform+ref</td></tr>
+      </tbody>
+    </table>
+
+    <div class="grid g2">
+      <div class="card">
+        <h3>Engine settings</h3>
+        <ul>
+          <li><code>PRAGMA foreign_keys = ON</code></li>
+          <li><code>PRAGMA journal_mode = WAL</code></li>
+          <li><code>PRAGMA busy_timeout</code> (default 5000 ms)</li>
+          <li>Parameterized SQL only in repos</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Unit of Work</h3>
+        <p><code>IngestUnitOfWork.commit_episode_bundle</code> writes episode + anchors + checkpoint in one transaction. <code>AbortCheckpointCommitHook</code> tests prove zero partial rows on failure. Verify uses separate <code>VerifyUnitOfWork</code>.</p>
+      </div>
+    </div>
+
+    <p><strong>Pin snapshots:</strong> <code>book_pin</code> copies claim text, anchors, and edges into immutable snapshot tables. Triggers abort UPDATE/DELETE. Pinned reads use snapshot rows, not live mutable claims.</p>
+    <p><strong>FTS:</strong> Triggers index only active claims (<code>state='active' AND valid_to IS NULL</code>). ACL JSON stored UNINDEXED; pre-filtered before LIMIT.</p>
+
+    <!-- 7. Onboarding -->
+    <h2 id="onboarding">7. Onboarding, GitHub, admission, idempotency</h2>
+    <ul>
+      <li><strong>Staged onboard:</strong> <code>onboarding_runs</code> tracks connect → locate → lock with monotonic stage advancement (<code>onboarding/stage.py</code>).</li>
+      <li><strong>Locate:</strong> deterministic scan (<code>pyproject.toml</code> + <code>src/</code> heuristics). LLM cannot lock.</li>
+      <li><strong>Lock:</strong> versioned <code>BoundaryManifest</code> with shape, owners, KPI, authorities, exclusions. Extraction refused until lock.</li>
+      <li><strong>GitHub:</strong> <code>FixtureGitHubClient</code> for offline ingest; <code>live.py</code> stub behind <code>OFW_GITHUB_TOKEN</code> (<code>@pytest.mark.live_github</code>).</li>
+      <li><strong>Admission:</strong> secrets, junk, excluded paths → <code>audit_rejects</code> without body. Locked manifest exclusions merged with CLI <code>--exclude</code> (<code>ingest/scope.py</code>).</li>
+      <li><strong>Idempotency:</strong> <code>(source_id, external_id, checksum)</code> unique on episodes; proposal idempotency keys for transcript extraction.</li>
+      <li><strong>Checkpoint:</strong> advances only inside successful episode transaction; unchanged on injected failure (<code>test_atomic_writes.py</code>).</li>
+    </ul>
+
+    <!-- 8. Book core -->
+    <h2 id="book">8. Book core — U1–U7, SaO, verification, pins, ACL-before-FTS</h2>
+    <table>
+      <thead><tr><th>Area</th><th>Implementation</th></tr></thead>
+      <tbody>
+        <tr><td>U1–U7 ontology</td><td><code>TruthSection</code> enum; coverage requirements seeded from generic shape ontology (<code>book/ontology.py</code>)</td></tr>
+        <tr><td>SaO U3/U4</td><td><code>ingest/sao/extractors.py</code> — deps, config constants, schemas, guards, test names</td></tr>
+        <tr><td>Verification</td><td><code>book/verify.py</code> — promote, reject, leave-in-tension (requires counterpart); agents blocked</td></tr>
+        <tr><td>Edges</td><td><code>derived_from</code>, <code>in_tension_with</code>, <code>supersedes</code>; ACL-filtered in retrieval</td></tr>
+        <tr><td>Coverage</td><td>Per-boundary slots; verified flag never reset by gap reads; org macro-average</td></tr>
+        <tr><td>Pins</td><td>Immutable claim/anchor/edge snapshots; pin read shows pre-supersession state</td></tr>
+        <tr><td>ACL-before-FTS</td><td><code>retrieval/acl.py</code> filters claim IDs before FTS query; private claims omitted from edges and markdown</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>8 frozen verbs</strong> (CLI + MCP): <code>book_context</code>, <code>book_get</code>, <code>coverage_gaps</code>, <code>episode_record</code>, <code>claim_propose</code>, <code>correction_record</code>, <code>book_verify</code>, <code>book_pin</code>.</p>
+
+    <!-- 9. Agent surfaces -->
+    <h2 id="agents">9. Agent surfaces</h2>
+    <div class="grid g2">
+      <div class="card">
+        <h3>Installers (Wave G)</h3>
+        <ul>
+          <li><code>ClaudeCodeInstaller</code> — merges hooks into <code>$target_home/.claude/settings.json</code></li>
+          <li><code>CursorInstaller</code> — project-local <code>.cursor/openflywheel-hooks.json</code>, skills, rules</li>
+          <li>Foreign skill/rule collision → <code>INSTALL_COLLISION</code> (fail closed)</li>
+          <li>Malformed JSON preserved byte-for-byte</li>
+          <li>Uninstall strips only <code>generated_marker</code> entries</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Transcript pipeline</h3>
+        <ul>
+          <li><code>path_guard.py</code> — trusted roots, traversal rejection, sensitive dirs blocked</li>
+          <li><code>cursor_transcript.py</code> / <code>claude_transcript.py</code> — role normalization</li>
+          <li><code>episode_record</code> atomic: episode + session + background job</li>
+          <li><code>correction_record</code> — new episode + proposal against claim</li>
+          <li>Recursion guard via <code>background_scope()</code></li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>MCP stdio (actual subprocess)</h3>
+    <pre>ofw serve --surface verbs --home /path/to/workspace-home</pre>
+    <p><code>stdio_runner.py</code> uses <code>mcp_types</code> SDK. <code>test_mcp_stdio.py</code> spawns real subprocess, lists exactly 8 tools, calls <code>book_context</code>, verifies parity with direct <code>McpBookServer</code>. Unknown tool <code>hidden_op</code> returns <code>is_error=True</code>.</p>
+
+    <h3>Background worker</h3>
+    <p><code>BackgroundWorkerService</code> acquires 30-second lease, processes <code>TRANSCRIPT_EXTRACT</code> jobs, retry with max attempts. Proposal detector mirrors regex in e2e helpers.</p>
+
+    <!-- 10. Dashboard -->
+    <h2 id="dashboard">10. Dashboard and expert notes safety</h2>
+    <ul>
+      <li><code>ofw book view --host 127.0.0.1</code> — non-loopback rejected (<code>DASHBOARD_BIND_FORBIDDEN</code>)</li>
+      <li><code>/docs</code> and <code>/openapi.json</code> disabled (404)</li>
+      <li><code>X-OFW-Identity</code> header required; unknown identity → 401</li>
+      <li>Pin API filters claim IDs by identity visibility</li>
+      <li>Expert notes: identity gate + source slug + boundary authorization before ingest (<code>connectors/notes/ingest.py</code>, <code>application/identity_gate.py</code>)</li>
+    </ul>
+
+    <!-- 11. AGENTS.md -->
+    <h2 id="agents-md">11. AGENTS.md hierarchy and strict typing</h2>
+    <pre>contracts/     I/O-free Pydantic, no Any
+store/         SQLite, migrations, repos, UoW
+onboarding/    staged workspace flow
+connectors/    envelope adapters only
+ingest/        admission, episodes, SaO
+book/          verify, coverage, pins
+retrieval/     ACL, FTS5, packet
+application/   BookApplication orchestration
+cli/           Typer entry point ofw</pre>
+    <p>Hard rules enforced in CI: no <code>typing.Any</code> or untyped <code>object</code> in domain APIs; <code>dict</code> quarantined; UUIDs in service layer; UTC datetimes; modules under 500 lines; no dogfood names in <code>src/</code>.</p>
+    <p>Third-party boundaries use stub <code>.pyi</code> files under <code>typings/</code> — sufficient for strict mypy on 137 source files, not a claim of complete upstream typing.</p>
+
+    <!-- 12. Testing timeline -->
+    <h2 id="testing">12. Testing timeline and Grok review gates</h2>
+    <table>
+      <thead><tr><th>Phase</th><th>Approx. tests</th><th>Focus</th></tr></thead>
+      <tbody>
+        <tr><td>Foundation (A–C)</td><td>~48</td><td>Contracts, workspace, onboarding, ingest idempotency</td></tr>
+        <tr><td>Waves D–F</td><td>~88 cumulative</td><td>SaO, verify/edges/coverage/pins, retrieval ACL</td></tr>
+        <tr><td>Waves G–H</td><td><strong>165 default</strong> (+ 4 e2e_real opt-in)</td><td>Agents, MCP stdio, dashboard, notes, hardening</td></tr>
+      </tbody>
+    </table>
+
+    <p><code>tests/integration/test_book_hardening.py</code> header: <em>"Regression tests for Grok D–F hardening findings."</em> Key bugs caught and fixed:</p>
+    <table>
+      <thead><tr><th>Finding</th><th>Fix + test</th></tr></thead>
+      <tbody>
+        <tr><td>Locked exclusions ignored</td><td><code>merge_exclusions</code> + <code>test_locked_exclusions_apply_without_cli_exclude</code></td></tr>
+        <tr><td>Partial commits on episode failure</td><td><code>IngestUnitOfWork</code> atomic bundle; <code>test_episode_record_aborts_without_partial_writes</code></td></tr>
+        <tr><td>Coverage verified flag reset</td><td>Gap reads no longer overwrite; <code>test_coverage_seed_never_overwrites_verified</code></td></tr>
+        <tr><td>Pin rows mutable</td><td>SQLite triggers; <code>test_pin_immutability_triggers</code>, snapshot table tests</td></tr>
+        <tr><td>ACL edge leaks to markdown</td><td><code>edge_filter.py</code>; <code>test_acl_omits_edges_and_markdown_without_private_leak</code></td></tr>
+        <tr><td>Fake MCP (non-stdio stub)</td><td>Real subprocess in <code>test_mcp_stdio.py</code>; unknown tool protocol error</td></tr>
+        <tr><td>Installer collisions</td><td><code>INSTALL_COLLISION</code>; foreign hooks preserved on uninstall</td></tr>
+        <tr><td>Dashboard identity bypass</td><td>401 without <code>X-OFW-Identity</code>; ACL on overview counts</td></tr>
+        <tr><td>Schema-invalid agent settings</td><td><code>SCHEMA_INVALID_CASES</code> in <code>test_installer_safety.py</code>; bytes preserved</td></tr>
+      </tbody>
+    </table>
+
+    <!-- 13. E2E -->
+    <h2 id="e2e">13. Real E2E evidence</h2>
+    <div class="callout ok">
+      <strong>Opt-in suite result (2026-08-16, this machine)</strong>
+      <code>4 passed, 165 deselected in 48.79s</code> with <code>OFW_RUN_E2E_REAL=1</code> and <code>OFW_ARCEUS_ROOT=/Users/divyansh/Arceus</code>.
+    </div>
+
+    <h3>Arceus root ingest (read-only)</h3>
+    <table>
+      <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Root</td><td><code>/Users/divyansh/Arceus</code></td></tr>
+        <tr><td>Bounded copy</td><td>50 files into temp fixture</td></tr>
+        <tr><td>Hash inventory</td><td>500 files SHA-256 before/after — <strong>identical</strong></td></tr>
+        <tr><td>Episodes after ingest+extract</td><td><strong>12</strong></td></tr>
+        <tr><td>Proposals</td><td><strong>6</strong> (U3=4, U4=2)</td></tr>
+        <tr><td>Claims before verify</td><td>0</td></tr>
+        <tr><td>Claims after one promote + context</td><td>≥1 (test asserts packet non-empty)</td></tr>
+        <tr><td>MCP parity</td><td>stdio <code>book_context</code> JSON == direct server == CLI app result</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Cursor transcript (read-only)</h3>
+    <table>
+      <thead><tr><th>Observation</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td>Selected transcript path</td><td><code>~/.cursor/projects/Users-divyansh-Arceus/agent-transcripts/.../dc240bc3-….jsonl</code> (path only; content not reproduced)</td></tr>
+        <tr><td>Canonical message count</td><td>885 parsed messages (informational; test asserts ≥1 and roles ⊆ {user, assistant})</td></tr>
+        <tr><td>Episode delta</td><td><strong>+1</strong></td></tr>
+        <tr><td>Proposal delta (record phase)</td><td>0</td></tr>
+        <tr><td>Proposal delta (worker, signal present)</td><td><strong>+2</strong> (linked via <code>transcript:{episode_id}:*</code>)</td></tr>
+        <tr><td>Claim delta</td><td><strong>0</strong></td></tr>
+        <tr><td>Source transcript hash</td><td>unchanged before/after</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Real ~/.cursor/hooks.json</h3>
+    <p>Global Cursor hooks file is <strong>hash-guarded only</strong> — incompatible with OFW project hooks schema, <strong>NOT consumed</strong> by <code>CursorInstaller</code>. Temp install test seeds <code>project_root/.cursor/openflywheel-hooks.json</code> from compatible project copy or typed fixture <code>fixtures/agent-transcripts/cursor-openflywheel-hooks-foreign.json</code>. Guard hash unchanged after install → diagnostics → uninstall cycle.</p>
+
+    <!-- 14. Quality gates -->
+    <h2 id="quality">14. Quality gates (2026-08-16)</h2>
+    <table>
+      <thead><tr><th>Gate</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><code>ruff format --check</code></td><td>188 files already formatted</td></tr>
+        <tr><td><code>ruff check</code></td><td>All checks passed</td></tr>
+        <tr><td><code>mypy src</code></td><td>Success — 137 source files</td></tr>
+        <tr><td><code>pytest</code> (default)</td><td><strong>165 passed, 4 deselected</strong> in 7.94s</td></tr>
+        <tr><td><code>pytest -m e2e_real</code></td><td>4 passed, 165 deselected</td></tr>
+        <tr><td>Git commit</td><td>None — working tree uncommitted</td></tr>
+      </tbody>
+    </table>
+
+    <!-- 15. Limitations -->
+    <h2 id="limits">15. Limitations (honest)</h2>
+    <ul>
+      <li>GitHub ingest uses local <code>FixtureGitHubClient</code>, not live API in default tests</li>
+      <li>Arceus e2e bounded to 50-file copy; 500-file hash inventory (not full tree)</li>
+      <li>Transcript selection deterministic (sorted paths, OpenFlyWheel/Arceus preference) but content varies by machine</li>
+      <li>No kernel-level write guard — safety is hash inventory + temp paths only</li>
+      <li>SaO breadth limited to deterministic code/config patterns; no autonomous LLM extraction in v0</li>
+      <li>Dashboard is local loopback read-only; not a deployed service</li>
+      <li>Real global Cursor <code>~/.cursor/hooks.json</code> schema not yet adapter-supported — project-local hooks only</li>
+      <li>Grounded LLM extraction job stubbed; expert U2/U5/U6/U7 gaps remain questions, not fabricated claims</li>
+      <li>Codex and OpenClaw connect stubs only — Claude Code + Cursor fully wired in Wave G</li>
+    </ul>
+
+    <!-- 16. File map -->
+    <h2 id="filemap">16. File map and safe commands</h2>
+    <pre>OpenFlyWheel/
+  pyproject.toml              # 0.1.0, pytest markers, ruff, mypy strict
+  AGENTS.md                   # architecture + hard rules
+  README.md                   # quick start
+  src/openflywheel/
+    contracts/                # 20+ typed models
+    store/migrations/         # 001–005 SQL
+    store/repos/              # 15 repository modules
+    onboarding/               # stage.py, service.py, locate.py
+    ingest/                   # admission, episode, sao/
+    book/                     # verify, pin, coverage, propose
+    retrieval/                # acl, fts, packet, expand
+    connectors/github/        # fixture.py (+ live stub)
+    connectors/agents/        # claude, cursor, platform, transcript
+    connectors/notes/         # expert markdown
+    application/              # book_app, ingest_app, agent_worker
+    cli/                        # typer commands
+    mcp/                        # server.py, stdio_runner.py
+    dashboard/                  # FastAPI read-only
+  tests/                      # 165 default + 4 e2e_real
+  fixtures/tiny-system/       # FixtureCo (generic, no Arceus names)
+  fixtures/agent-transcripts/ # typed transcript + hooks fixtures
+  workspaces/arceus-inc/      # manifest.example.yaml only
+  docs/specs/                 # approved design
+  docs/plans/                 # wave plan
+  docs/reports/               # this report
+  typings/                    # third-party stubs</pre>
+
+    <h3>Safe commands (fixture only)</h3>
+    <pre># Setup
+pip install -e ".[dev]"
+
+# Init workspace on temp home
+ofw workspace init --name fixture-co --home /tmp/ofw-fixture-home
+
+# Full offline pipeline (from repo root, fixture at fixtures/tiny-system)
+ofw onboard --home /tmp/ofw-fixture-home
+ofw ingest run --home /tmp/ofw-fixture-home
+ofw book extract --home /tmp/ofw-fixture-home
+ofw book context "architecture" --home /tmp/ofw-fixture-home --identity &lt;owner-id&gt;
+
+# MCP (separate terminal)
+ofw serve --surface verbs --home /tmp/ofw-fixture-home
+
+# Quality
+ruff format src tests && ruff check src tests && mypy src && pytest
+
+# Opt-in real E2E (operator approval; uses temp writes only)
+export OFW_RUN_E2E_REAL=1
+export OFW_ARCEUS_ROOT=/Users/divyansh/Arceus   # optional
+pytest -m e2e_real</pre>
+
+    <!-- 17. Next steps -->
+    <h2 id="next">17. Next steps (not implemented)</h2>
+    <ol>
+      <li><strong>Live GitHub adapter</strong> — wire <code>connectors/github/live.py</code> with token auth, rate limits, incremental sync</li>
+      <li><strong>Current Cursor global hooks schema</strong> — adapter for real <code>~/.cursor/hooks.json</code> without breaking foreign config</li>
+      <li><strong>Expand SaO extractors</strong> — broader U3/U4 patterns; optional grounded LLM job behind explicit flag</li>
+      <li><strong>Dogfood full org</strong> — Arceus-Inc manifest with all boundaries, expert question loop for U2/U5/U6/U7</li>
+      <li><strong>Shared deployment mode</strong> — remote SQLite home, multi-user identity provisioning</li>
+    </ol>
+
+    <!-- 18. Git status -->
+    <h2 id="git">18. Repository status</h2>
+    <div class="callout warn">
+      <strong>Not committed · Not pushed</strong>
+      Implementation code (<code>src/</code>, <code>tests/</code>, <code>fixtures/</code>, <code>typings/</code>, <code>pyproject.toml</code>, <code>AGENTS.md</code>, <code>README.md</code>) and this report are untracked or modified but unstaged. Only prior commit <code>08e987c docs(design): clarify agent integration provenance</code> exists on branch. No release tag. No CI workflow committed.
+    </div>
+
+    <footer>
+      Generated from repository evidence · Composer 2.5 doc-updater ·
+      Spec: <a href="../specs/2026-08-15-system-book-design.md">2026-08-15-system-book-design.md</a> ·
+      Plan: <a href="../plans/2026-08-15-org-system-book.md">2026-08-15-org-system-book.md</a>
+    </footer>
+  </main>
+</div>
+</body>
+</html>

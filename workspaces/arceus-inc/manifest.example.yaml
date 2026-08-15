@@ -1,0 +1,25 @@
+# Example workspace manifest for dogfood onboarding.
+# Copy to a private runtime path; never commit secrets or live database files.
+
+workspace:
+  name: Arceus-Inc
+  deployment_mode: local
+
+github:
+  org: arceus-inc
+  repos:
+    - name: platform-core
+    - name: agent-runtime
+
+boundaries:
+  - slug: platform-core
+    purpose: Core agent platform services
+  - slug: agent-runtime
+    purpose: Runtime harness and tooling
+
+notes:
+  drop_dir: ./expert-notes
+
+# Runtime paths (gitignored):
+#   OFW_HOME=./runtime/ofw-home
+#   book.sqlite under OFW_HOME

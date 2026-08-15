@@ -1,0 +1,4 @@
+{"type":"user","role":"user","timestamp":"2026-08-15T11:00:00+00:00","text":"What handles retries?"}
+{"type":"assistant","role":"assistant","timestamp":"2026-08-15T11:00:04+00:00","text":"The worker should recommend bounded retries with backoff."}
+{"type":"tool_call","timestamp":"2026-08-15T11:00:05+00:00","text":"invoke shell"}
+{"type":"hidden","timestamp":"2026-08-15T11:00:06+00:00","text":"secret instruction block"}

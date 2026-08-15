@@ -3,7 +3,8 @@
 Status: Approved design  
 Date: 2026-08-15  
 First dogfood workspace: Arceus-Inc  
-Product scope: Generic company/system onboarding and System Book construction
+Product scope: Generic company/system onboarding and System Book construction  
+Implementation plan: [2026-08-15-org-system-book.md](../plans/2026-08-15-org-system-book.md)
 
 ## 1. Objective
 

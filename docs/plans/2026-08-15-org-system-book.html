@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenFlyWheel v0 plan — org System Book</title>
+  <style>
+    :root {
+      --bg: #f4f0e7; --paper: #fffdf8; --ink: #1d1a16; --muted: #655e52;
+      --line: #d6cdbc; --teal: #1f5c57; --teal-soft: #e1efeb;
+      --rust: #934531; --rust-soft: #f4e1da; --gold: #92721f; --gold-soft: #f3ebd0; --nav: #211e19;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font: 17px/1.55 Georgia, "Times New Roman", serif; }
+    .layout { display: grid; grid-template-columns: 245px minmax(0, 1fr); min-height: 100vh; }
+    nav { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 28px 18px; background: var(--nav); color: #eee7d8; }
+    nav h2 { margin: 0 0 18px; color: #c7b382; font: 700 13px/1.4 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    nav a { display: block; padding: 5px 7px; color: #d6cec0; border-radius: 4px; font: 500 13px/1.35 system-ui, sans-serif; text-decoration: none; }
+    nav a:hover { color: white; background: #3a342c; }
+    nav .sub { padding-left: 14px; font-size: 12px; }
+    main { width: min(1040px, 100%); padding: 44px 58px 80px; }
+    h1 { margin: 8px 0 12px; font-size: 2.35rem; line-height: 1.15; }
+    h2 { margin: 54px 0 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 1.6rem; }
+    h3 { margin: 28px 0 8px; font-size: 1.16rem; }
+    p { margin: 0 0 13px; }
+    a { color: var(--teal); }
+    code { font: .86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #eee7d8; padding: 1px 4px; border-radius: 3px; }
+    pre { margin: 14px 0 18px; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--line); background: var(--paper); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    ul, ol { margin: 0 0 13px 22px; }
+    li { margin: 0 0 5px; }
+    .kicker { color: var(--rust); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+    .lede { color: var(--muted); font-size: 1.14rem; }
+    .meta { color: var(--muted); font: 500 13px/1.5 system-ui, sans-serif; margin-bottom: 18px; }
+    .meta span { margin-right: 16px; }
+    .callout { margin: 18px 0; padding: 15px 17px; border: 1px solid var(--line); border-left: 4px solid var(--teal); background: var(--paper); }
+    .callout.warn { border-left-color: var(--rust); }
+    .callout.gold { border-left-color: var(--gold); }
+    .callout strong:first-child { display: block; margin-bottom: 5px; color: var(--muted); font: 700 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+    .grid { display: grid; gap: 12px; }
+    .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card { padding: 15px 16px; border: 1px solid var(--line); background: var(--paper); }
+    .card h3 { margin-top: 0; }
+    table { width: 100%; margin: 12px 0 18px; border-collapse: collapse; background: var(--paper); font-size: 14.5px; }
+    th, td { padding: 8px 9px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #ebe4d5; font: 700 12px/1.3 system-ui, sans-serif; letter-spacing: .03em; }
+    .pill { display: inline-block; padding: 3px 7px; border-radius: 3px; font: 700 11px/1 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; background: var(--teal-soft); color: var(--teal); }
+    .pill.pavo { background: var(--teal-soft); color: var(--teal); }
+    .pill.hyper { background: var(--gold-soft); color: var(--gold); }
+    .pill.gbrain { background: var(--rust-soft); color: var(--rust); }
+    .chain { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; margin: 14px 0; }
+    .chain-step { position: relative; padding: 14px 12px; border: 1px solid var(--line); background: var(--paper); text-align: center; }
+    .chain-step + .chain-step { border-left: 0; }
+    .chain-step strong { display: block; font: 700 15px/1.2 Georgia, serif; }
+    .chain-step em { display: block; margin-top: 6px; color: var(--muted); font: 500 12px/1.35 system-ui, sans-serif; font-style: normal; }
+    .wave { margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--line); background: var(--paper); }
+    .wave h3 { margin-top: 0; }
+    footer { margin-top: 60px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--muted); font: 500 13px/1.45 system-ui, sans-serif; }
+    @media (max-width: 850px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; height: auto; }
+      main { padding: 26px 18px 60px; }
+      .g2, .g3, .chain { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <h2>Org System Book<br>v0 plan</h2>
+    <a href="../specs/2026-08-15-system-book-design.html">Approved spec</a>
+    <a href="2026-08-15-org-system-book.md">Markdown</a>
+    <a href="#combo">Combo</a>
+    <a href="#axes">Three axes</a>
+    <a href="#store">SQLite SoR</a>
+    <a href="#verbs">Book verbs</a>
+    <a href="#flow">Write / read</a>
+    <a href="#waves">Waves A–H</a>
+    <a href="#steal">Steal / leave</a>
+    <a href="#build">First commit</a>
+  </nav>
+  <main>
+    <p class="kicker">Implementation plan · ready to build</p>
+    <h1>Pavo + Hyper + GBrain, on SQLite</h1>
+    <p class="meta">
+      <span><strong>Repo:</strong> OpenFlyWheel</span>
+      <span><strong>Store:</strong> SQLite + FTS5</span>
+      <span><strong>Dogfood:</strong> Arceus-Inc org</span>
+    </p>
+    <p class="lede">One company workspace. Many locked systems. GitHub and agents write evidence in. Extractors propose. You verify. Agents read a packet with gaps. No wiki, no dream cycle, no tournament.</p>
+
+    <section id="combo">
+      <h2>The combo</h2>
+      <div class="chain">
+        <div class="chain-step">
+          <span class="pill pavo">Pavo</span>
+          <strong>Truth</strong>
+          <em>Lock systems. U1–U7. What+How gold. SaO. Artifact-correct can still be system-wrong.</em>
+        </div>
+        <div class="chain-step">
+          <span class="pill hyper">Hyper</span>
+          <strong>Write path</strong>
+          <em>Admit, don’t mirror. Immutable episodes. Typed edges. Agents in and out.</em>
+        </div>
+        <div class="chain-step">
+          <span class="pill gbrain">GBrain</span>
+          <strong>Org shape</strong>
+          <em>Workspace ⊥ source ⊥ boundary. Gaps on every packet. Frozen verbs. Fail-closed remote.</em>
+        </div>
+      </div>
+      <div class="callout warn">
+        <strong>Not a GBrain fork</strong>
+        SQLite is the system of record — not a markdown git vault. The coding agent does not write gold. There is no LLM on the v0 read path. Person/company/deal types stay out.
+      </div>
+    </section>
+
+    <section id="axes">
+      <h2>Three axes</h2>
+      <pre>--workspace   which company SQLite file
+--source      which connector / repo inside it
+--boundary    which locked production system</pre>
+      <p>Arceus-Inc is one workspace. Onboarding may lock several systems in the <em>manifest only</em>. Those names never appear in reusable code or generic tests.</p>
+      <p>Org coverage = macro-average of each boundary’s U1–U7 coverage. A fat U3 on one repo cannot hide empty U7 on another.</p>
+    </section>
+
+    <section id="store">
+      <h2>SQLite is the book</h2>
+      <p>One file per workspace: <code>~/.openflywheel/&lt;id&gt;/book.sqlite</code>. WAL, foreign keys, migrations. FTS5 over claims + episodes with ACL stored for prefilter.</p>
+      <p>Tables: workspaces, identities, boundaries, sources, episodes, evidence_anchors, proposals, claims, edges, why_probes, coverage_requirements, checkpoints, agent_sessions, pins, audit_rejects.</p>
+      <p>Export can write compiled markdown for humans. Re-import is not disaster recovery. Recovery is the DB + pins.</p>
+    </section>
+
+    <section id="verbs">
+      <h2>Frozen book verbs</h2>
+      <p>CLI and MCP are the same ops. Additive-forever, like GBrain MEMORY_VERBS — but no <code>synthesize</code>.</p>
+      <table>
+        <thead><tr><th>Verb</th><th>Does</th></tr></thead>
+        <tbody>
+          <tr><td><code>book_context</code></td><td>ACL → FTS → edges → packet + gaps</td></tr>
+          <tr><td><code>book_get</code></td><td>One claim + anchors + history</td></tr>
+          <tr><td><code>coverage_gaps</code></td><td>Empty required slots</td></tr>
+          <tr><td><code>episode_record</code></td><td>Admit a session or note</td></tr>
+          <tr><td><code>claim_propose</code></td><td>Hint only. Never activates</td></tr>
+          <tr><td><code>book_verify</code></td><td>You promote, reject, or leave in tension</td></tr>
+          <tr><td><code>correction_record</code></td><td>New episode against a claim</td></tr>
+          <tr><td><code>book_pin</code></td><td>Immutable snapshot</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="flow">
+      <h2>Write and read</h2>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Write — Hyper inside Pavo</h3>
+          <p>Source → admit → episode → <strong>OFW extractor</strong> (SaO, then grounded job, then expert) → proposal → you verify → claim. History never deleted.</p>
+        </div>
+        <div class="card">
+          <h3>Read — deterministic</h3>
+          <p>Identity + ACL first. Active claims at pin. FTS5. Direct edges only. Packet = compiled claims + episode timeline + gaps. No LLM.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="waves">
+      <h2>Waves — stop at each gate</h2>
+      <div class="wave">
+        <h3>A · Skeleton</h3>
+        <p>Package, contracts, SQLite, <code>ofw workspace init</code>.</p>
+        <p><strong>Gate:</strong> pytest creates a temp DB and reads a workspace. No network.</p>
+      </div>
+      <div class="wave">
+        <h3>B · Onboard and lock</h3>
+        <p>Staged onboard. Locate on a fixture repo. Human locks many boundaries.</p>
+        <p><strong>Gate:</strong> two locked boundaries. Extract without lock is refused.</p>
+      </div>
+      <div class="wave">
+        <h3>C · GitHub + episodes</h3>
+        <p>Admit, hash idempotency, checkpoint after episode txn only.</p>
+        <p><strong>Gate:</strong> ingest twice → same ids. Failure leaves checkpoint still.</p>
+      </div>
+      <div class="wave">
+        <h3>D · SaO proposals</h3>
+        <p>U3/U4 from config, deps, schemas, tests. Anchored. No U5–U7 fiction.</p>
+        <p><strong>Gate:</strong> proposals exist; claim table still empty.</p>
+      </div>
+      <div class="wave">
+        <h3>E · Verify, edges, coverage, pins</h3>
+        <p>Promote. Tension. Org macro-average. Pin immutability.</p>
+        <p><strong>Gate:</strong> later ingest cannot change a pin. Coverage ignores raw count.</p>
+      </div>
+      <div class="wave">
+        <h3>F · Packet</h3>
+        <p><code>book_context</code>. Two identities, two packets.</p>
+        <p><strong>Gate:</strong> no unverified Why. Gaps match coverage.</p>
+      </div>
+      <div class="wave">
+        <h3>G · Agents</h3>
+        <p>Claude Code + Cursor installers. Background worker proposes only. MCP verbs.</p>
+        <p><strong>Gate:</strong> session → episode, not claim. MCP equals CLI.</p>
+      </div>
+      <div class="wave">
+        <h3>H · Dashboard + Arceus-Inc dogfood</h3>
+        <p>Read-only U1–U7 UI. Expert notes. Manifest names the stack; core code does not.</p>
+        <p><strong>Gate:</strong> cross-repo question answered from a packet; U5–U7 holes visible.</p>
+      </div>
+    </section>
+
+    <section id="steal">
+      <h2>Steal / leave</h2>
+      <div class="grid g2">
+        <div class="card">
+          <h3>In</h3>
+          <ul>
+            <li>Locate/lock, U1–U7, SaO</li>
+            <li>Admit → episode → proposal → verify</li>
+            <li>Workspace ⊥ source ⊥ boundary</li>
+            <li>Gaps on every packet</li>
+            <li>Frozen verbs, fail-closed remote</li>
+            <li>Greplica-shaped installers</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Out</h3>
+          <ul>
+            <li>Markdown vault as SoR</li>
+            <li>Dream auto-apply</li>
+            <li>LLM synthesize on read</li>
+            <li>Agent-written proposal files</li>
+            <li>Slack / Gmail / Notion in v0</li>
+            <li>pgvector, tournament, people CRM</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="build">
+      <h2>First commit, when you say build</h2>
+      <ol>
+        <li><code>pyproject.toml</code> + package</li>
+        <li>Contracts</li>
+        <li>SQLite migrations for workspaces / identities</li>
+        <li><code>ofw workspace init</code></li>
+        <li>One pytest</li>
+      </ol>
+      <div class="callout gold">
+        <strong>Do not skip ahead</strong>
+        No GitHub connector in the same commit as the skeleton. Wave A gate first.
+      </div>
+    </section>
+
+    <footer>
+      Canonical markdown: <a href="2026-08-15-org-system-book.md">2026-08-15-org-system-book.md</a> · Spec: <a href="../specs/2026-08-15-system-book-design.html">system-book-design</a>
+    </footer>
+  </main>
+</div>
+</body>
+</html>

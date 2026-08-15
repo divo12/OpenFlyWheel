@@ -1,0 +1,3 @@
+from contextlib import AbstractAsyncContextManager
+
+def stdio_server() -> AbstractAsyncContextManager[tuple[object, object]]: ...

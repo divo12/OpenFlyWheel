@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo foreign-pre-tool"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "CUSTOM_FLAG": "keep-me"
+  }
+}

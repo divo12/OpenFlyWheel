@@ -1,0 +1,4 @@
+{"type":"user","timestamp":"2026-08-15T10:00:00+00:00","message":{"role":"user","content":[{"type":"text","text":"How is memory gated in the config module?"}]}}
+{"type":"assistant","timestamp":"2026-08-15T10:00:05+00:00","message":{"role":"assistant","content":[{"type":"text","text":"We should gate memory via the config guard before any write path."}]}}
+{"type":"tool_use","timestamp":"2026-08-15T10:00:06+00:00","message":{"role":"assistant","content":[{"type":"tool_use","name":"grep","input":{"pattern":"guard"}}]}}
+{"type":"system","timestamp":"2026-08-15T10:00:07+00:00","message":{"role":"system","content":[{"type":"text","text":"hidden system prompt"}]}}

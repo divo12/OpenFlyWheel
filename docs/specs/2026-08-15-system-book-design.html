@@ -1,0 +1,658 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenFlyWheel System Book Design</title>
+  <style>
+    :root {
+      --bg: #f4f0e7; --paper: #fffdf8; --ink: #1d1a16; --muted: #655e52;
+      --line: #d6cdbc; --teal: #1f5c57; --teal-soft: #e1efeb;
+      --rust: #934531; --rust-soft: #f4e1da; --gold: #92721f; --gold-soft: #f3ebd0; --nav: #211e19;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font: 17px/1.55 Georgia, "Times New Roman", serif; }
+    .layout { display: grid; grid-template-columns: 245px minmax(0, 1fr); min-height: 100vh; }
+    nav { position: sticky; top: 0; height: 100vh; overflow: auto; padding: 28px 18px; background: var(--nav); color: #eee7d8; }
+    nav h2 { margin: 0 0 18px; padding: 0; border: 0; color: #c7b382; font: 700 13px/1.4 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    nav a { display: block; padding: 5px 7px; color: #d6cec0; border-radius: 4px; font: 500 13px/1.35 system-ui, sans-serif; text-decoration: none; }
+    nav a:hover { color: white; background: #3a342c; }
+    nav .sub { padding-left: 14px; font-size: 12px; }
+    main { width: min(1040px, 100%); padding: 44px 58px 80px; }
+    h1 { margin: 8px 0 12px; font-size: 2.35rem; line-height: 1.15; }
+    h2 { margin: 54px 0 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 1.6rem; }
+    h3 { margin: 28px 0 8px; font-size: 1.16rem; }
+    h4 { margin: 20px 0 6px; font-size: 1.02rem; }
+    p { margin: 0 0 13px; }
+    a { color: var(--teal); }
+    code { font: .86em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #eee7d8; padding: 1px 4px; border-radius: 3px; }
+    pre { margin: 14px 0 18px; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--line); background: var(--paper); font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    ul, ol { margin: 0 0 13px 22px; padding: 0; }
+    li { margin: 0 0 5px; }
+    .kicker { color: var(--rust); font: 700 12px/1 system-ui, sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+    .lede { color: var(--muted); font-size: 1.14rem; }
+    .meta { color: var(--muted); font: 500 13px/1.5 system-ui, sans-serif; margin-bottom: 18px; }
+    .meta span { display: inline-block; margin-right: 16px; }
+    .callout { margin: 18px 0; padding: 15px 17px; border: 1px solid var(--line); border-left: 4px solid var(--teal); background: var(--paper); }
+    .callout.warn { border-left-color: var(--rust); }
+    .callout.gold { border-left-color: var(--gold); }
+    .callout strong:first-child { display: block; margin-bottom: 5px; color: var(--muted); font: 700 12px/1.2 system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+    .grid { display: grid; gap: 12px; }
+    .g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .card { padding: 15px 16px; border: 1px solid var(--line); background: var(--paper); }
+    .card h3 { margin-top: 0; }
+    .pill { display: inline-block; font: 700 11px/1 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; padding: 3px 7px; border-radius: 3px; background: #d5e8e4; color: var(--teal); }
+    footer { margin-top: 60px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--muted); font: 500 13px/1.45 system-ui, sans-serif; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: .95rem; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font: 700 12px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+    .who { display: inline-block; font: 700 10px/1 system-ui, sans-serif; letter-spacing: .05em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; margin-right: 4px; }
+    .who.you { background: var(--rust-soft); color: var(--rust); }
+    .who.machine { background: var(--teal-soft); color: var(--teal); }
+    .who.agent { background: var(--gold-soft); color: var(--gold); }
+    .flow { margin: 22px 0 28px; }
+    .flow-title { margin: 0 0 10px; color: var(--muted); font: 700 12px/1.3 system-ui, sans-serif; letter-spacing: .08em; text-transform: uppercase; }
+    .swim { display: grid; gap: 0; }
+    .step-row { display: grid; grid-template-columns: 72px minmax(0, 1fr) 118px; gap: 12px; align-items: stretch; }
+    .step-num { display: flex; align-items: flex-start; justify-content: center; padding-top: 16px; color: var(--teal); font: 700 22px/1 system-ui, sans-serif; }
+    .step-card { position: relative; margin: 0 0 8px; padding: 14px 16px 14px 18px; border: 1px solid var(--line); background: var(--paper); }
+    .step-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--teal); }
+    .step-card.you::before { background: var(--rust); }
+    .step-card.agent::before { background: var(--gold); }
+    .step-card h4 { margin: 0 0 4px; }
+    .step-card p { margin: 0; color: var(--muted); font-size: .95rem; }
+    .step-rail { position: relative; }
+    .step-rail::after { content: ""; position: absolute; left: 35px; top: 42px; bottom: -8px; width: 2px; background: var(--line); }
+    .step-row:last-child .step-rail::after { display: none; }
+    .actor { align-self: start; margin-top: 16px; text-align: center; font: 700 11px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .lanes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 8px 0 6px; }
+    .lane { padding: 14px 14px 12px; border: 1px solid var(--line); background: var(--paper); min-height: 100%; }
+    .lane h4 { margin: 0 0 8px; font: 700 13px/1.3 system-ui, sans-serif; letter-spacing: .04em; text-transform: uppercase; }
+    .lane.you { border-top: 4px solid var(--rust); }
+    .lane.machine { border-top: 4px solid var(--teal); }
+    .lane.agent { border-top: 4px solid var(--gold); }
+    .lane ol { margin: 0 0 0 18px; font-size: .92rem; }
+    .pipe { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr) auto; align-items: stretch; margin: 8px 0 4px; }
+    .pipe-box { padding: 10px 8px; border: 1px solid var(--line); background: var(--paper); text-align: center; font: 600 12px/1.3 system-ui, sans-serif; }
+    .pipe-box small { display: block; margin-top: 4px; color: var(--muted); font: 500 11px/1.3 system-ui, sans-serif; }
+    .pipe-box.active { background: var(--teal-soft); border-color: #b7d4ce; }
+    .pipe-box.lock { background: var(--rust-soft); border-color: #e3c4ba; }
+    .pipe-box.book { background: var(--gold-soft); border-color: #e4d7a8; }
+    .pipe-arrow { display: flex; align-items: center; color: var(--muted); font: 700 16px/1 system-ui, sans-serif; padding: 0 4px; }
+    .chain { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; margin: 14px 0 4px; }
+    .chain-step { position: relative; padding: 12px 10px 14px; border: 1px solid var(--line); background: var(--paper); text-align: center; }
+    .chain-step + .chain-step { border-left: 0; }
+    .chain-step::after { content: "→"; position: absolute; right: -9px; top: 22px; z-index: 1; color: var(--muted); font: 700 14px/1 system-ui, sans-serif; background: var(--paper); padding: 0 1px; }
+    .chain-step:last-child::after { display: none; }
+    .chain-step .n { display: block; margin-bottom: 4px; color: var(--muted); font: 700 10px/1 system-ui, sans-serif; letter-spacing: .08em; }
+    .chain-step strong { display: block; font: 700 14px/1.2 Georgia, serif; }
+    .chain-step em { display: block; margin-top: 5px; color: var(--muted); font: 500 11px/1.3 system-ui, sans-serif; font-style: normal; }
+    .chain-step.lock { background: var(--rust-soft); }
+    .chain-step.book { background: var(--gold-soft); }
+    .chain-step.active { background: var(--teal-soft); }
+    .loop { display: grid; gap: 14px; margin: 10px 0 18px; }
+    .loop-card { padding: 16px 18px 18px; border: 1px solid var(--line); background: var(--paper); }
+    .loop-card h4 { margin: 0 0 8px; }
+    .loop-mid { display: none; }
+    .scene { margin: 16px 0; padding: 16px 18px; border: 1px solid var(--line); background: var(--paper); }
+    .scene h4 { margin: 0 0 8px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 0 0 16px; font: 500 13px/1.3 system-ui, sans-serif; color: var(--muted); }
+    @media (max-width: 850px) {
+      .layout { grid-template-columns: 1fr; }
+      nav { position: static; height: auto; }
+      main { padding: 26px 18px 60px; }
+      .g2 { grid-template-columns: 1fr; }
+      .lanes, .step-row { grid-template-columns: 1fr; }
+      .chain { grid-template-columns: 1fr 1fr !important; }
+      .chain-step::after { display: none; }
+      .step-num, .actor, .step-rail::after, .loop-mid { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <nav>
+    <h2>System Book<br>design spec</h2>
+    <a href="2026-08-15-system-book-design.md">Markdown source</a>
+    <a href="../plans/2026-08-15-org-system-book.html">v0 implementation plan</a>
+    <a href="#user-flow">0. User flow</a>
+    <a class="sub" href="#first-run">First run</a>
+    <a class="sub" href="#daily-loop">Daily loop</a>
+    <a class="sub" href="#walkthrough">Walkthrough</a>
+    <a href="#objective">1. Objective</a>
+    <a href="#research">2. Research basis</a>
+    <a href="#nongoals">3. Non-goals</a>
+    <a href="#boundary">4. Product boundary</a>
+    <a href="#onboard">5. Onboarding</a>
+    <a class="sub" href="#workspace">Workspace</a>
+    <a class="sub" href="#connect">Connect</a>
+    <a class="sub" href="#locate">Locate</a>
+    <a class="sub" href="#lock">Lock</a>
+    <a class="sub" href="#bootstrap">Bootstrap</a>
+    <a href="#pipeline">6. Pipeline</a>
+    <a href="#contracts">7. Contracts</a>
+    <a href="#coverage">8. Coverage KPI</a>
+    <a href="#agents">9. Agents</a>
+    <a href="#retrieval">10. Retrieval</a>
+    <a href="#storage">11. Storage</a>
+    <a href="#repo">12. Repo shape</a>
+    <a href="#safety">13. Safety</a>
+    <a href="#acceptance">14. Acceptance</a>
+    <a href="#dogfood">15. Dogfood</a>
+    <a href="#later">16. Later surfaces</a>
+  </nav>
+  <main>
+    <p class="kicker">Approved design · 15 Aug 2026</p>
+    <h1>OpenFlyWheel System Book Design</h1>
+    <p class="meta">
+      <span><strong>Status:</strong> Approved</span>
+      <span><strong>Dogfood:</strong> Arceus-Inc</span>
+      <span><strong>Scope:</strong> Generic onboarding + System Book</span>
+    </p>
+    <p class="lede">OpenFlyWheel onboards a company or bounded production system, turns heterogeneous evidence into an auditable System Book, and supplies permission-filtered context to the agents the company already uses. No consumer topology is hardcoded in the product.</p>
+
+    <section id="user-flow">
+      <h2>0. How you use it</h2>
+      <p>You do not write a wiki. You connect the places work already happens, lock one system boundary, then let agents read from — and write evidence back into — a verified System Book.</p>
+      <p class="legend">
+        <span><span class="who you">You</span> decide, lock, verify</span>
+        <span><span class="who machine">OpenFlyWheel</span> scan, admit, extract, retrieve</span>
+        <span><span class="who agent">Agent</span> Claude Code, Cursor, Codex, …</span>
+      </p>
+
+      <div class="flow">
+        <p class="flow-title">The product in one line</p>
+        <div class="pipe">
+          <div class="pipe-box">Workspace<small>name the company</small></div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-box">Connect<small>GitHub + agents</small></div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-box">Locate<small>machine proposes</small></div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-box lock">Lock<small>you confirm one system</small></div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-box active">Bootstrap<small>ingest + coverage map</small></div>
+          <div class="pipe-arrow">→</div>
+          <div class="pipe-box book">System Book<small>verified claims</small></div>
+        </div>
+        <p style="margin-top:10px;color:var(--muted);font-size:.95rem;">After lock, two loops stay open: GitHub and agent sessions keep writing evidence in; agents keep pulling a permission-filtered packet out.</p>
+      </div>
+
+      <h3 id="first-run">First run — you sit at the CLI once</h3>
+      <p><code>ofw onboard</code> is staged and resumable. Extraction does not start until you lock.</p>
+      <div class="swim">
+        <div class="step-row">
+          <div class="step-rail"><div class="step-num">1</div></div>
+          <div class="step-card you">
+            <h4>Create a workspace</h4>
+            <p>You name the company, pick local vs shared, add admins, and set default visibility. Nothing is scraped yet.</p>
+          </div>
+          <div class="actor"><span class="who you">You</span></div>
+        </div>
+        <div class="step-row">
+          <div class="step-rail"><div class="step-num">2</div></div>
+          <div class="step-card you">
+            <h4>Connect GitHub and install agents</h4>
+            <p>Authorize an org. Install Claude Code / Cursor plugins (skills, hooks, rules) without overwriting your existing config. Expert notes are optional, not required.</p>
+          </div>
+          <div class="actor"><span class="who you">You</span></div>
+        </div>
+        <div class="step-row">
+          <div class="step-rail"><div class="step-num">3</div></div>
+          <div class="step-card">
+            <h4>Locate — machine proposes boundaries</h4>
+            <p>A deterministic scan lists candidate systems, repos, owners, shapes, and already-visible KPIs. An LLM may rank the list. It cannot lock anything.</p>
+          </div>
+          <div class="actor"><span class="who machine">Machine</span></div>
+        </div>
+        <div class="step-row">
+          <div class="step-rail"><div class="step-num">4</div></div>
+          <div class="step-card you">
+            <h4>Lock one system</h4>
+            <p>You confirm boundary, purpose, shape, owners, first KPI, source authority, and exclusions. Result: a versioned <code>WorkspaceManifest</code>. This is the only gate that starts the Book.</p>
+          </div>
+          <div class="actor"><span class="who you">You</span></div>
+        </div>
+        <div class="step-row">
+          <div class="step-rail"><div class="step-num">5</div></div>
+          <div class="step-card">
+            <h4>Bootstrap the Book</h4>
+            <p>Approved ranges are ingested. SaO extracts machine-checkable facts first. Weak U2/U5/U6/U7 slots become targeted questions, not invented coverage.</p>
+          </div>
+          <div class="actor"><span class="who machine">Machine</span></div>
+        </div>
+        <div class="step-row">
+          <div class="step-rail"><div class="step-num">6</div></div>
+          <div class="step-card you">
+            <h4>Verify proposals and answer gaps</h4>
+            <p>You (or a designated owner) promote proposals to active claims, leave contradictions inspectable, and answer expert questions. Coverage is the score: verified slots / required slots, averaged across U1–U7.</p>
+          </div>
+          <div class="actor"><span class="who you">You</span></div>
+        </div>
+      </div>
+
+      <h3 id="daily-loop">After lock — two loops, not a wiki</h3>
+      <div class="loop">
+        <div class="loop-card">
+          <h4><span class="who machine">Write</span> Evidence in</h4>
+          <p>One sequence, left to right. GitHub PRs, issues, commits, and agent transcripts hit admission. Survivors become immutable episodes. SaO / grounded LLM emit <em>proposals only</em>. You verify. History is never deleted.</p>
+          <div class="chain">
+            <div class="chain-step">
+              <span class="n">1 · source</span>
+              <strong>Source</strong>
+              <em>PR, issue, commit, transcript</em>
+            </div>
+            <div class="chain-step">
+              <span class="n">2 · machine</span>
+              <strong>Admit</strong>
+              <em>fail-closed filter</em>
+            </div>
+            <div class="chain-step">
+              <span class="n">3 · machine</span>
+              <strong>Episode</strong>
+              <em>immutable evidence</em>
+            </div>
+            <div class="chain-step">
+              <span class="n">4 · extractor</span>
+              <strong>Proposal</strong>
+              <em>OFW writes this, not Cursor</em>
+            </div>
+            <div class="chain-step lock">
+              <span class="n">5 · you</span>
+              <strong>Verify</strong>
+              <em>promote or leave open</em>
+            </div>
+            <div class="chain-step book">
+              <span class="n">6 · book</span>
+              <strong>Claim</strong>
+              <em>active What + How</em>
+            </div>
+          </div>
+          <div class="callout gold" style="margin-top:16px">
+            <strong>Who writes the proposal? Not your coding agent.</strong>
+            Greplica re-invokes Claude/Cursor after a session and that agent writes <code>working-memory.proposal.json</code>. OpenFlyWheel does not copy that. Your Claude Code or Cursor session is a <em>source</em>: it produces a transcript, which becomes an episode. A separate OpenFlyWheel extractor then writes the <code>ClaimProposal</code>.
+            <div class="grid g2" style="margin-top:12px">
+              <div class="card">
+                <h3>Three proposers</h3>
+                <ol>
+                  <li><strong>SaO</strong> — deterministic OFW code. Reads config, schemas, deps, tests. Preferred for U3/U4. No LLM.</li>
+                  <li><strong>Grounded LLM job</strong> — OFW's leased background worker, not the session you were just in. Cites episode spans. Abstains if thin. Proposals only.</li>
+                  <li><strong>You / an expert</strong> — answer a targeted question or run <code>ofw claim propose</code>. Still a proposal, never a direct claim row.</li>
+                </ol>
+              </div>
+              <div class="card">
+                <h3>What the agent is allowed to do</h3>
+                <ul>
+                  <li>Write a session transcript (episode).</li>
+                  <li>Call <code>claim_propose</code> only as a hint; OFW still owns the row.</li>
+                  <li>Never apply or activate its own claims.</li>
+                  <li>Never get re-invoked by a hook to “update the Book” the Greplica way. Hook recursion is off during extraction.</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="loop-card">
+          <h4><span class="who agent">Read</span> Context out</h4>
+          <p>An agent (or you) asks a question. Identity + ACL filter first. Active claims at the current pin come back as a compact Markdown packet: verified What/How, evidence, conflicts, and known gaps. No LLM on the read path in v0.</p>
+          <div class="chain" style="grid-template-columns: repeat(5, minmax(0, 1fr));">
+            <div class="chain-step">
+              <span class="n">1 · agent</span>
+              <strong>Query</strong>
+              <em>book_context</em>
+            </div>
+            <div class="chain-step">
+              <span class="n">2 · machine</span>
+              <strong>ACL</strong>
+              <em>identity first</em>
+            </div>
+            <div class="chain-step book">
+              <span class="n">3 · book</span>
+              <strong>Book</strong>
+              <em>active claims at pin</em>
+            </div>
+            <div class="chain-step active">
+              <span class="n">4 · machine</span>
+              <strong>Packet</strong>
+              <em>Markdown + gaps</em>
+            </div>
+            <div class="chain-step">
+              <span class="n">5 · agent</span>
+              <strong>Prompt</strong>
+              <em>injected context</em>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lanes">
+        <div class="lane you">
+          <h4>You keep doing</h4>
+          <ol>
+            <li>Lock / update the manifest</li>
+            <li>Review claim proposals</li>
+            <li>Answer U5–U7 expert questions</li>
+            <li>Inspect tensions, never delete history</li>
+            <li>Watch U1–U7 coverage</li>
+          </ol>
+        </div>
+        <div class="lane machine">
+          <h4>OpenFlyWheel keeps doing</h4>
+          <ol>
+            <li>Incremental GitHub ingest</li>
+            <li>Fail-closed admission</li>
+            <li>SaO then grounded extraction</li>
+            <li>Neighborhood edges + pins</li>
+            <li>Deterministic retrieval</li>
+          </ol>
+        </div>
+        <div class="lane agent">
+          <h4>Agents keep doing</h4>
+          <ol>
+            <li>Pull <code>book_context</code> on start</li>
+            <li>Work in Claude Code / Cursor as usual</li>
+            <li>Hooks record the session</li>
+            <li>Background worker proposes claims</li>
+            <li>Never promote their own claims</li>
+          </ol>
+        </div>
+      </div>
+
+      <h3 id="walkthrough">Concrete walkthrough — first dogfood week</h3>
+      <div class="scene">
+        <h4>Monday — stand up Arceus-Inc</h4>
+        <p>You run <code>ofw onboard</code>, connect the GitHub org, install Claude Code and Cursor plugins. The scan proposes several boundaries (the OS, the harness, the org ledger, …). You lock one: the production-reachable Arceus stack, with U1–U7 coverage as the first KPI, and exclude secrets / personal forks.</p>
+      </div>
+      <div class="scene">
+        <h4>Monday night — bootstrap</h4>
+        <p>Repos, config, issues, and PRs become episodes. SaO fills a lot of U3/U4 (architecture, data flow). The coverage map shows U5–U7 mostly empty. You get a short list of expert questions: what was tried, what is failing, who owns on-call.</p>
+      </div>
+      <div class="scene">
+        <h4>Tuesday — you work in Cursor as usual</h4>
+        <p>You ask Cursor how Hippocampus memory is gated. The project rule calls <code>book_context</code>. You get verified claims plus file:line anchors — or an explicit gap if that How is not locked yet. When the session ends, a hook records it. A background worker may emit proposals. Nothing becomes gold until you or an owner verifies.</p>
+      </div>
+      <div class="scene">
+        <h4>Later that week — the Book is the scoreboard</h4>
+        <p>A teammate with a narrower identity asks the same question and gets a smaller packet. You pin Friday’s Book. Saturday’s ingest cannot change that pin. Coverage rises only when a required slot has verified evidence — not when the extractor dumps more U3 triples.</p>
+      </div>
+
+      <div class="callout">
+        <strong>What “done” feels like</strong>
+        An agent answers a cross-repo question from an evidence-backed packet, and the experiential holes (U5–U7) are visible as questions for you — not as fake completeness.
+      </div>
+    </section>
+
+    <section id="objective">
+      <h2>1. Objective</h2>
+      <p>The System Book is not a search index, a wiki, or a dump of extracted triples. It is a versioned set of load-bearing claims about how a running system currently works. Every active claim has evidence, authority, freshness, and verification state.</p>
+      <div class="callout warn">
+        <strong>Pavo's law</strong>
+        A claim can be artifact-correct and still system-wrong. The unit of truth is the deployed system, not the isolated artifact.
+      </div>
+    </section>
+
+    <section id="research">
+      <h2>2. Research basis</h2>
+      <div class="grid g2">
+        <div class="card">
+          <h3>Pavo: Book schema</h3>
+          <ul>
+            <li>Locate and lock one system boundary before broad extraction.</li>
+            <li>Seven Essential Truths (U1–U7).</li>
+            <li><code>What</code> + <code>How</code> are gold; <code>Why</code> is a probe.</li>
+            <li>Production-reachable behavior only.</li>
+            <li>SaO + grounded LLM extractors.</li>
+            <li>Machines own U3/U4; experts own U5–U7.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Hyper: write path</h3>
+          <ul>
+            <li>Connect to work already happening.</li>
+            <li>Admit, don't mirror everything.</li>
+            <li>Immutable episodes; structured facts.</li>
+            <li><code>derived_from</code>, <code>in_tension_with</code>, <code>supersedes</code>.</li>
+            <li>Never auto-delete history.</li>
+            <li>Agents are bidirectional surfaces.</li>
+            <li>Hooks + MCP delivery.</li>
+          </ul>
+        </div>
+      </div>
+      <p>OpenFlyWheel uses Hyper's write path inside Pavo's evidence and verification schema.</p>
+    </section>
+
+    <section id="nongoals">
+      <h2>3. Non-goals for v0</h2>
+      <ul>
+        <li>No harness-improvement tournament.</li>
+        <li>No autonomous KPI optimization.</li>
+        <li>No Glean-style enterprise search.</li>
+        <li>No Graphiti or Neo4j dependency.</li>
+        <li>No Slack, Gmail, or company-wide firehose.</li>
+        <li>No LLM claim becomes active without proposal + verification.</li>
+        <li>No claim-count KPI inflated by U3/U4 extraction.</li>
+        <li>No agent-specific memory database.</li>
+      </ul>
+    </section>
+
+    <section id="boundary">
+      <h2>4. Product boundary</h2>
+      <p>Independent Python 3.11+ application. Repositories, agents, and SaaS tools are sources accessed through adapters. Core contracts are I/O-free. CLI, MCP, hooks, dashboard, connectors, and storage call the same application services.</p>
+      <p>The first workspace is Arceus-Inc. Its local manifest may name Arceus, dream, chorus, horizon, and lattice. Those names must never appear in reusable core code or generic tests.</p>
+    </section>
+
+    <section id="onboard">
+      <h2>5. Onboarding</h2>
+      <p><code>ofw onboard</code> is staged and resumable.</p>
+
+      <h3 id="workspace">5.1 Workspace</h3>
+      <ul>
+        <li>Company / workspace name</li>
+        <li>Local or shared deployment</li>
+        <li>Administrators and identities</li>
+        <li>Default visibility and retention policy</li>
+      </ul>
+
+      <h3 id="connect">5.2 Connect — Wave 0</h3>
+      <div class="grid g2">
+        <div class="card">
+          <h3>GitHub</h3>
+          <p>Organizations, repos, config, issues, PRs, commits, discussions. Collection inventory, timestamps, identities, permission metadata.</p>
+        </div>
+        <div class="card">
+          <h3>Agents</h3>
+          <p>Claude / Claude Code, Cursor, Codex, OpenClaw, MCP for any other agent. Bidirectional: context in, session episodes out.</p>
+        </div>
+      </div>
+      <p>Expert notes are a first-class episode type from day one. Each connector reports collections, bootstrap/incremental capability, timestamps, identity fidelity, stable IDs, and freshness semantics.</p>
+
+      <h3 id="locate">5.3 Locate</h3>
+      <p>Deterministic scans propose system boundaries, components, dependencies, shapes, owners, and visible KPIs. An LLM may summarize or rank; it cannot lock.</p>
+
+      <h3 id="lock">5.4 Lock</h3>
+      <p>Human confirms boundary, purpose, shape, owners, first KPI, source authority, exclusions. Result: versioned <code>WorkspaceManifest</code>. No extraction before lock.</p>
+
+      <h3 id="bootstrap">5.5 Bootstrap</h3>
+      <ul>
+        <li>Ingest approved source ranges.</li>
+        <li>Initial U1–U7 coverage map.</li>
+        <li>SaO before LLM extraction.</li>
+        <li>Targeted expert questions for weak U2/U5/U6/U7.</li>
+        <li>Explicit gaps, not fabricated coverage.</li>
+      </ul>
+    </section>
+
+    <section id="pipeline">
+      <h2>6. Processing pipeline</h2>
+      <pre>source item
+  -> connector envelope
+  -> admission policy
+  -> immutable Episode
+  -> SaO and/or grounded LLM extraction
+  -> ClaimProposal + EvidenceAnchor
+  -> dedupe + contradiction analysis
+  -> authority / human verification
+  -> active System Book Claim</pre>
+
+      <h3>6.1 Admission</h3>
+      <p>Fail-closed. Reject junk, secrets, excluded paths. Audit-only record for rejects. Idempotent via source ID + content hash. Source content is evidence, not instructions.</p>
+
+      <h3>6.2 Episodes</h3>
+      <p>Immutable. Corrections = new episodes. Summaries never replace source text. ACL, event time, ingest time, checksum, source ref. Checkpoints advance only after successful episode transaction.</p>
+
+      <h3>6.3 Extractors</h3>
+      <p><strong>SaO:</strong> constants, config, dependencies, schemas, guards, tests, metric defs.</p>
+      <p><strong>Grounded LLM:</strong> atomic claims, exact spans, shape as prior not evidence, abstain, proposals only.</p>
+      <p><strong>Expert:</strong> high-authority episode → proposal. No direct claim mutation.</p>
+
+      <h3>6.4 Reconciliation</h3>
+      <p>Neighborhood update with typed edges. Recency alone never determines truth. Authority, verification, production reachability, event time, and evidence agreement determine promotion.</p>
+    </section>
+
+    <section id="contracts">
+      <h2>7. Core contracts</h2>
+      <table>
+        <thead><tr><th>Type</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>Workspace</code></td><td>Tenant identity, policy, deployment, admins</td></tr>
+          <tr><td><code>SystemBoundary</code></td><td>Locked system: purpose, shape, owners, KPI, scope, exclusions</td></tr>
+          <tr><td><code>Source</code></td><td>GitHub, agent, file, or future SaaS + permission metadata</td></tr>
+          <tr><td><code>Episode</code></td><td>Immutable admitted source item</td></tr>
+          <tr><td><code>EvidenceAnchor</code></td><td>file:line, issue, transcript span, SQL, dashboard field</td></tr>
+          <tr><td><code>ClaimProposal</code></td><td>Untrusted candidate with evidence and proposer</td></tr>
+          <tr><td><code>Claim</code></td><td>Verified What + How under U1–U7; Why never gold</td></tr>
+          <tr><td><code>CoverageRequirement</code></td><td>Shape-specific required slot</td></tr>
+          <tr><td><code>Pin</code></td><td>Immutable as-of snapshot</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="coverage">
+      <h2>8. Coverage KPI</h2>
+      <pre>section coverage = verified evidence-backed required slots / total required slots
+overall coverage = macro-average(U1 .. U7 section coverage)</pre>
+      <p>Raw claim count does not affect coverage. Requirements live in the manifest + shape ontology, not in product code.</p>
+    </section>
+
+    <section id="agents">
+      <h2>9. Agent integration</h2>
+      <pre>System Book -> context packet -> agent prompt
+agent session -> admission -> Episode -> ClaimProposal</pre>
+
+      <h3>9.1 Shared contract</h3>
+      <p>Every platform plugin: safe install merge, session refs, hook normalization, transcript load/project, context delivery, write-back scheduling, diagnostics. Canonical events = metadata + human/agent text only.</p>
+
+      <h3>9.2 Per-agent plugins</h3>
+      <div class="callout gold">
+        <strong>Greplica vs Hyper additions</strong>
+        Greplica at <code>8ca8d2b</code>: CLI + skills + hooks/rules for Claude, Cursor, Codex, Copilot, OpenCode, OpenHands, Factory Droid, Antigravity. No MCP, no OpenClaw. OpenFlyWheel adds MCP and OpenClaw inspired by Hyper.
+      </div>
+      <ul>
+        <li><strong>Claude Code:</strong> skills + merged lifecycle hooks; Claude JSONL → canonical events.</li>
+        <li><strong>Cursor:</strong> skills + always-applied project rule + hooks (rule drives context; hook records lifecycle).</li>
+        <li><strong>Codex:</strong> skills + hooks.json; Codex-specific transcript adapter.</li>
+        <li><strong>OpenClaw:</strong> new adapter after validating runtime API.</li>
+        <li><strong>MCP:</strong> same Book services for desktop/web and hookless platforms.</li>
+      </ul>
+      <p>CLI is canonical. Skills, rules, hooks, and MCP call the same application services.</p>
+
+      <h3>9.3 Foreground / background</h3>
+      <p>Foreground hooks: fast, best-effort, never block on background failure. Background worker: transcript → episode → proposals only. Hook recursion disabled during background extraction.</p>
+
+      <h3>9.4 Operations</h3>
+      <ul>
+        <li><code>book_context(query, workspace, boundary, pin?)</code></li>
+        <li><code>book_get(claim_id, pin?)</code></li>
+        <li><code>coverage_gaps(section?)</code></li>
+        <li><code>episode_record(session_envelope)</code></li>
+        <li><code>claim_propose(what, evidence)</code></li>
+        <li><code>correction_record(claim_id, correction, evidence)</code></li>
+      </ul>
+    </section>
+
+    <section id="retrieval">
+      <h2>10. Retrieval</h2>
+      <p>Deterministic v0 — no LLM on read path.</p>
+      <ol>
+        <li>Resolve identity and workspace</li>
+        <li>ACL filter before ranking</li>
+        <li>Active claims at pin/time</li>
+        <li>SQLite FTS5 (+ optional embeddings)</li>
+        <li>Direct evidence / conflict / supersession edges</li>
+        <li>Compact Markdown packet</li>
+      </ol>
+    </section>
+
+    <section id="storage">
+      <h2>11. Storage and technology</h2>
+      <p>Python 3.11+, Pydantic, SQLite/FTS5, Typer, FastAPI, MCP SDK, pytest, Ruff, strict mypy. Embeddings optional. All v0 tests pass offline without credentials.</p>
+    </section>
+
+    <section id="repo">
+      <h2>12. Repository shape</h2>
+      <pre>OpenFlyWheel/
+  src/openflywheel/
+    contracts/
+    onboarding/
+    connectors/github/  connectors/agents/
+    ingest/  book/  retrieval/  store/
+    cli/  mcp/  dashboard/
+  tests/  fixtures/  docs/specs/  docs/plans/</pre>
+    </section>
+
+    <section id="safety">
+      <h2>13. Safety and error handling</h2>
+      <ul>
+        <li>Fail closed on missing ACL/identity</li>
+        <li>Never persist connector credentials in episodes or logs</li>
+        <li>Permission scope cannot widen</li>
+        <li>Prompt injection in sources = evidence text</li>
+        <li>Machine extraction cannot bypass proposal state</li>
+        <li>Idempotent connectors; checkpoint unchanged on failure</li>
+        <li>Background failure does not block foreground agent</li>
+        <li>Pins immutable; installers merge idempotently</li>
+      </ul>
+    </section>
+
+    <section id="acceptance">
+      <h2>14. v0 acceptance criteria</h2>
+      <ol>
+        <li>No Arceus names in core code or generic tests</li>
+        <li><code>ofw onboard</code> discovers GitHub org and proposes boundaries</li>
+        <li>Human can lock boundary, shape, owners, KPI, authorities, exclusions</li>
+        <li>GitHub bootstrap + incremental ingest idempotent</li>
+        <li>Claude Code + Cursor install without overwriting user config</li>
+        <li>Both agents receive context and write session episodes</li>
+        <li>Every active claim resolves to accessible evidence</li>
+        <li>Contradictions inspectable; history never deleted</li>
+        <li>Two identities → different packets for same query</li>
+        <li>Historical pin unchanged after later ingestion</li>
+        <li>Coverage per U1–U7 + macro-average</li>
+        <li>Arceus dogfood: auditable Book with U5–U7 gaps explicit</li>
+      </ol>
+    </section>
+
+    <section id="dogfood">
+      <h2>15. First dogfood workspace</h2>
+      <p><span class="pill">Arceus-Inc</span> connects GitHub org + repos, Claude Code, Cursor, optional expert-note files. KPI: U1–U7 verified coverage. Success = cross-repo questions answered from evidence-backed packets; experiential gaps visible as expert targets.</p>
+    </section>
+
+    <section id="later">
+      <h2>16. Later surfaces</h2>
+      <ol>
+        <li>Notion and Linear</li>
+        <li>Slack after same-query / two-identity ACL test</li>
+        <li>Drive, Gmail, Calendar, Granola</li>
+        <li>LinkedIn only if people/outbound knowledge matters</li>
+      </ol>
+      <p>Each new source is a connector and ontology extension, not a new Book implementation.</p>
+    </section>
+
+    <footer>
+      Source: <a href="2026-08-15-system-book-design.md">2026-08-15-system-book-design.md</a> · Commits <code>797792f</code>, <code>08e987c</code> · Repo: <code>/Users/divyansh/OpenFlyWheel</code>
+    </footer>
+  </main>
+</div>
+</body>
+</html>

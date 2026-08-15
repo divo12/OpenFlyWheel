@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "hooks": [
+    {
+      "event": "custom",
+      "command": "echo foreign-hook"
+    }
+  ]
+}
