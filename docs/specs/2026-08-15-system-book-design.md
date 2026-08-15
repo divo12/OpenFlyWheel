@@ -285,15 +285,17 @@ The canonical agent event model contains only session metadata and human/agent t
 
 ### 9.2 Per-agent plugins
 
-OpenFlyWheel follows the useful shape in Greplica's platform installers rather than pretending every agent exposes the same lifecycle.
+OpenFlyWheel follows the useful shape in Greplica's platform installers rather than pretending every agent exposes the same lifecycle. At the reviewed Greplica commit (`8ca8d2b`), that system supports Claude Code, Cursor, Codex, GitHub Copilot CLI, OpenCode, OpenHands, Factory Droid, and Antigravity through CLI, skills, hooks, and project rules. It does not configure MCP and does not support OpenClaw.
 
 - **Claude Code:** install skills and merge lifecycle hooks into user settings without replacing existing handlers. Parse Claude JSONL into canonical session events.
 - **Cursor:** install user skills, a generated always-applied project rule, and supported hooks. Cursor's pre-submit hook cannot inject arbitrary prompt context, so the rule instructs context retrieval while hooks record lifecycle events.
 - **Codex:** install skills and merge its hook configuration. Parse Codex session metadata and message events through a Codex-specific adapter.
-- **OpenClaw:** implement its native plugin/hook contract as a separate adapter after validating the installed runtime's current API.
-- **MCP:** expose the same Book application services to Claude desktop/web and any platform without sufficient hooks.
+- **OpenClaw:** new OpenFlyWheel work inspired by Hyper's published surface, not copied from Greplica. Implement its native plugin/hook contract only after validating the installed runtime's current API.
+- **MCP:** a new Hyper-inspired delivery path, not a Greplica feature. Wrap the same Book application services for Claude desktop/web and platforms without sufficient hooks or shell access.
 
 Platform code owns configuration paths and transcript formats. It does not own Book logic.
+
+The CLI remains the canonical local interface. Skills, rules, hooks, and MCP call the CLI's underlying application services rather than introducing platform-specific retrieval behavior.
 
 ### 9.3 Foreground and background behavior
 
