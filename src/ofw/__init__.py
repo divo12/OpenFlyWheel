@@ -1,5 +1,6 @@
 """Public OpenFlyWheel harness API."""
 
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 
@@ -104,6 +105,36 @@ from ofw.observability.langfuse import (
 )
 from ofw.observability.langfuse.domain import CollectionResult
 from ofw.observability.langfuse.service import collect
+from ofw.promotion import (
+    ApprovalDecision,
+    ApprovalRecord,
+    ApproverId,
+    DeploymentAdapter,
+    DeploymentReference,
+    DeploymentRequest,
+    GitHubCliPublisher,
+    GitRemote,
+    PromotionBranch,
+    PromotionError,
+    PromotionErrorCode,
+    PromotionEvent,
+    PromotionEventKind,
+    PromotionJobHandler,
+    PromotionMarker,
+    PromotionMode,
+    PromotionPolicy,
+    PromotionRequest,
+    PromotionRequestResolver,
+    PromotionResult,
+    PullRequestDraft,
+    PullRequestId,
+    PullRequestPublisher,
+    PullRequestReference,
+    RollbackPlan,
+)
+from ofw.promotion import (
+    PromotionService as GitPromotionService,
+)
 from ofw.runtime import (
     CanaryCase,
     CaseId,
@@ -171,6 +202,7 @@ from ofw.scheduler import (
 
 AutomationPolicy = SchedulerAutomationPolicy
 LocalScheduler = SQLiteScheduler
+PromotionService = GitPromotionService
 
 
 class _OfwNamespace:
@@ -205,6 +237,8 @@ class _OfwNamespace:
     Money = Money
     QuietHours = QuietHours
     StageBudgets = StageBudgets
+    PromotionPolicy = PromotionPolicy
+    PromotionService = GitPromotionService
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -240,11 +274,24 @@ class _OfwNamespace:
         finally:
             scheduler.close()
 
+    def promote(
+        self,
+        request: PromotionRequest,
+        *,
+        now: datetime,
+        pull_requests: PullRequestPublisher | None = None,
+        deployments: DeploymentAdapter | None = None,
+    ) -> PromotionResult:
+        return GitPromotionService(pull_requests, deployments).run(request, now)
+
 
 ofw = _OfwNamespace()
 
 __all__ = [
     "AssetAccess",
+    "ApprovalDecision",
+    "ApprovalRecord",
+    "ApproverId",
     "AutomationPolicy",
     "Baseline",
     "BenchmarkError",
@@ -286,6 +333,9 @@ __all__ = [
     "DiagnosisErrorCode",
     "Dependency",
     "DependencyMode",
+    "DeploymentAdapter",
+    "DeploymentReference",
+    "DeploymentRequest",
     "EditableFile",
     "EvidenceAnchor",
     "EvidenceAnchorKind",
@@ -303,6 +353,8 @@ __all__ = [
     "FitPolicy",
     "FitResult",
     "GitCommit",
+    "GitHubCliPublisher",
+    "GitRemote",
     "Harness",
     "HarnessAsset",
     "HarnessComponent",
@@ -339,6 +391,23 @@ __all__ = [
     "ProcessCommand",
     "ProcessLimits",
     "PrivacyTransform",
+    "PromotionBranch",
+    "PromotionError",
+    "PromotionErrorCode",
+    "PromotionEvent",
+    "PromotionEventKind",
+    "PromotionJobHandler",
+    "PromotionMarker",
+    "PromotionMode",
+    "PromotionPolicy",
+    "PromotionRequest",
+    "PromotionRequestResolver",
+    "PromotionResult",
+    "PromotionService",
+    "PullRequestDraft",
+    "PullRequestId",
+    "PullRequestPublisher",
+    "PullRequestReference",
     "PythonEntrypoint",
     "PythonLoop",
     "PythonDiagnoser",
@@ -346,6 +415,7 @@ __all__ = [
     "QuietHours",
     "ReconcileReport",
     "ResultId",
+    "RollbackPlan",
     "RunErrorCode",
     "RunResult",
     "RunStatus",

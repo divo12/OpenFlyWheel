@@ -77,6 +77,7 @@ class BlockerCode(StrEnum):
     COOLDOWN = "cooldown"
     CIRCUIT_OPEN = "circuit_open"
     QUIET_HOURS = "quiet_hours"
+    NO_WINNER = "no_winner"
 
 
 class SchedulerErrorCode(StrEnum):
@@ -191,6 +192,7 @@ class StageBudgets:
     benchmark_export: Money
     memory: Money
     fit: Money
+    promotion: Money
 
     def for_kind(self, kind: JobKind) -> Money:
         match kind:
@@ -207,7 +209,7 @@ class StageBudgets:
             case JobKind.FIT:
                 return self.fit
             case JobKind.PROMOTE | JobKind.POST_PROMOTION_MONITOR:
-                raise SchedulerError(SchedulerErrorCode.POLICY_MISMATCH, kind.value)
+                return self.promotion
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,9 +266,13 @@ class AutomationPolicy:
                 str(self.stage_budgets.benchmark_export.micros),
                 str(self.stage_budgets.memory.micros),
                 str(self.stage_budgets.fit.micros),
+                str(self.stage_budgets.promotion.micros),
             )
         )
         return _digest(payload.encode())
+
+    def to_json(self) -> str:
+        return _POLICY_ADAPTER.dump_json(self).decode()
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +322,9 @@ class ScheduledJob:
     reserved_cost: Money
     created_at: datetime
     updated_at: datetime
+
+    def to_json(self) -> str:
+        return _JOB_ADAPTER.dump_json(self).decode()
 
 
 @dataclass(frozen=True, slots=True)
@@ -367,6 +376,7 @@ class ReconcileReport:
     recovered: tuple[JobId, ...]
     readied: tuple[JobId, ...]
     failed: tuple[JobId, ...]
+    skipped: tuple[JobId, ...]
     blockers: tuple[JobBlocker, ...]
 
 
@@ -400,6 +410,7 @@ class JobExecution:
 class JobContext:
     scheduler: LocalScheduler
     lease: JobLease
+    now: datetime
 
     def renew(self, now: datetime) -> JobLease:
         return self.scheduler.renew(self.lease, now)
@@ -440,9 +451,11 @@ class _Readiness:
     ready: bool
     blocker: BlockerCode | None = None
     failed: bool = False
+    skipped: bool = False
 
 
 _JOB_ADAPTER: TypeAdapter[ScheduledJob] = TypeAdapter(ScheduledJob)
+_POLICY_ADAPTER: TypeAdapter[AutomationPolicy] = TypeAdapter(AutomationPolicy)
 _ATTEMPT_ADAPTER: TypeAdapter[JobAttempt] = TypeAdapter(JobAttempt)
 _REVISION_ADAPTER: TypeAdapter[RevisionAutomationState] = TypeAdapter(RevisionAutomationState)
 _IDENTITY_ADAPTER: TypeAdapter[_JobIdentity] = TypeAdapter(_JobIdentity)
@@ -652,11 +665,21 @@ class LocalScheduler:
         except (sqlite3.Error, ValidationError) as error:
             raise SchedulerError(SchedulerErrorCode.DATABASE_ERROR, job_id.value) from error
 
+    def predecessors(self, job_id: JobId) -> tuple[ScheduledJob, ...]:
+        try:
+            with self._lock:
+                return tuple(
+                    self._load_job(dependency.job_id) for dependency in self._dependencies(job_id)
+                )
+        except sqlite3.Error as error:
+            raise SchedulerError(SchedulerErrorCode.DATABASE_ERROR, job_id.value) from error
+
     def reconcile(self, now: datetime) -> ReconcileReport:
         instant = _utc(now)
         recovered: tuple[JobId, ...] = ()
         readied: tuple[JobId, ...] = ()
         failed: tuple[JobId, ...] = ()
+        skipped: tuple[JobId, ...] = ()
         blockers: tuple[JobBlocker, ...] = ()
         with self._transaction():
             expired_ids = self._job_ids(
@@ -689,6 +712,11 @@ class LocalScheduler:
                     self._save_job(updated)
                     failed = (*failed, job.id)
                     continue
+                if readiness.skipped:
+                    updated = replace(job, state=JobState.SKIPPED, updated_at=instant)
+                    self._save_job(updated)
+                    skipped = (*skipped, job.id)
+                    continue
                 if readiness.ready:
                     updated = replace(job, state=JobState.READY, updated_at=instant)
                     self._save_job(updated)
@@ -696,7 +724,7 @@ class LocalScheduler:
                     continue
                 if readiness.blocker is not None:
                     blockers = (*blockers, JobBlocker(job.id, readiness.blocker))
-        return ReconcileReport(recovered, readied, failed, blockers)
+        return ReconcileReport(recovered, readied, failed, skipped, blockers)
 
     def claim(self, worker_id: WorkerId, now: datetime) -> JobLease | None:
         instant = _utc(now)
@@ -1029,9 +1057,34 @@ class LocalScheduler:
                 return _Readiness(False, BlockerCode.DEPENDENCY_WAITING)
         if job.spec.kind is JobKind.MINE and self._active_kind(job.spec, job.id):
             return _Readiness(False, BlockerCode.ACTIVE_MINE)
+        if job.spec.kind is JobKind.PROMOTE:
+            return self._promotion_readiness(job, predecessors)
         if job.spec.kind is not JobKind.FIT:
             return _Readiness(True)
         return self._fit_readiness(job, predecessors, now)
+
+    def _promotion_readiness(
+        self,
+        job: ScheduledJob,
+        predecessors: tuple[tuple[Dependency, ScheduledJob], ...],
+    ) -> _Readiness:
+        fit_jobs = tuple(
+            predecessor
+            for dependency, predecessor in predecessors
+            if dependency.mode is DependencyMode.REQUIRED and predecessor.spec.kind is JobKind.FIT
+        )
+        if len(fit_jobs) != 1:
+            return _Readiness(False, BlockerCode.DEPENDENCY_INVALID)
+        result = fit_jobs[0].result
+        if (
+            result is None
+            or result.kind is not JobKind.FIT
+            or result.revision_id != job.spec.revision_id
+        ):
+            return _Readiness(False, BlockerCode.DEPENDENCY_INVALID)
+        if not result.progress:
+            return _Readiness(False, BlockerCode.NO_WINNER, skipped=True)
+        return _Readiness(True)
 
     def _fit_readiness(
         self,
@@ -1522,6 +1575,18 @@ class Heartbeat:
                 )
                 if fit.created:
                     created = (*created, fit.job.id)
+                promotion = self.scheduler._enqueue(
+                    JobSpec(
+                        JobKind.PROMOTE,
+                        revision_id,
+                        evidence.source,
+                        self.scheduler.policy.stage_budgets.for_kind(JobKind.PROMOTE),
+                    ),
+                    (Dependency(fit.job.id, DependencyMode.REQUIRED),),
+                    instant,
+                )
+                if promotion.created:
+                    created = (*created, promotion.job.id)
         reconciliation = self.scheduler.reconcile(instant)
         return HeartbeatReport(
             created,
@@ -1587,7 +1652,7 @@ class Worker:
         try:
             execution = handler.execute(
                 lease.job.spec,
-                JobContext(self.scheduler, lease),
+                JobContext(self.scheduler, lease, _utc(now)),
             )
         except JobExecutionError as error:
             return self._fail_lease(
@@ -1681,3 +1746,10 @@ def _backoff(base: timedelta, attempt: int) -> timedelta:
     if attempt < 1:
         raise ValueError("attempt must be positive")
     return base * (1 << (attempt - 1))
+
+
+def read_automation_policy(path: Path) -> AutomationPolicy:
+    try:
+        return _POLICY_ADAPTER.validate_json(path.read_bytes())
+    except (OSError, ValidationError) as error:
+        raise SchedulerError(SchedulerErrorCode.POLICY_MISMATCH, str(path)) from error
