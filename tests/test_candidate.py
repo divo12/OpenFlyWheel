@@ -267,3 +267,55 @@ def test_equivalent_edit_order_produces_one_candidate_identity(tmp_path: Path) -
         assert reversed_build.candidate.id == first_id
     finally:
         reversed_build.workspace.close()
+
+
+def test_unrequested_editable_drift_rejects_entire_revision(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    second = harness.root / "second_tool.py"
+    second.write_text("def second() -> int:\n    return 1\n", encoding="utf-8")
+    harness.connect_tools(Tool("second", ofw.editable(Path("second_tool.py"))))
+    revision = harness.process()
+    second.write_text("def second() -> int:\n    return 99\n", encoding="utf-8")
+    tool = revision.root / "tool.py"
+
+    with pytest.raises(CandidateError) as raised:
+        CandidateBuilder(revision, _evidence(revision.id), _policy()).create(
+            (
+                FileEdit(
+                    Path("tool.py"),
+                    _digest(tool),
+                    "def run(value: str) -> str:\n    return value.strip()\n",
+                ),
+            ),
+            _prediction(),
+        )
+
+    assert raised.value.code is CandidateErrorCode.REVISION_STALE
+
+
+def test_processed_dirty_state_is_baseline_not_candidate_diff(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    second = harness.root / "second_tool.py"
+    second.write_text("def second() -> int:\n    return 1\n", encoding="utf-8")
+    _run_git(harness.root, "add", "second_tool.py")
+    _run_git(harness.root, "commit", "-qm", "add second tool")
+    harness.connect_tools(Tool("second", ofw.editable(Path("second_tool.py"))))
+    second.write_text("def second() -> int:\n    return 2\n", encoding="utf-8")
+    revision = harness.process()
+    tool = revision.root / "tool.py"
+    edit = FileEdit(
+        Path("tool.py"),
+        _digest(tool),
+        "def run(value: str) -> str:\n    return value.strip()\n",
+    )
+
+    build = CandidateBuilder(revision, _evidence(revision.id), _policy()).create(
+        (edit,),
+        _prediction(),
+    )
+    try:
+        patch = build.candidate.diff_path.read_text(encoding="utf-8")
+        assert "tool.py" in patch
+        assert "second_tool.py" not in patch
+    finally:
+        build.workspace.close()

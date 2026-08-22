@@ -39,6 +39,7 @@ class CandidateErrorCode(StrEnum):
     WORKTREE_FAILED = "worktree_failed"
     FROZEN_ASSET_CHANGED = "frozen_asset_changed"
     NO_CHANGES = "no_changes"
+    REVISION_STALE = "revision_stale"
 
 
 class CandidateError(Exception):
@@ -235,6 +236,7 @@ class CandidateBuilder:
         edits: tuple[FileEdit, ...],
         prediction: ChangePrediction,
     ) -> CandidateBuild:
+        self._validate_revision_assets()
         self._validate_request(edits, prediction)
         ordered_edits = tuple(sorted(edits, key=_edit_sort_key))
         intents = tuple(
@@ -409,6 +411,14 @@ class CandidateBuilder:
                 if dirty:
                     _git_with_input(root, dirty, "apply", "--binary", "-")
                 _copy_revision_assets(self.revision, root)
+                _git(root, "add", "-A")
+                _git(
+                    root,
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    f"OFW private baseline {self.revision.id}",
+                )
             except Exception:
                 workspace.close()
                 raise
@@ -427,6 +437,15 @@ class CandidateBuilder:
                             CandidateErrorCode.FROZEN_ASSET_CHANGED,
                             asset.source.relative_path.as_posix(),
                         )
+
+    def _validate_revision_assets(self) -> None:
+        for asset in self.revision.assets:
+            actual = _digest_file(self.revision.root / asset.source.relative_path)
+            if actual != asset.digest:
+                raise CandidateError(
+                    CandidateErrorCode.REVISION_STALE,
+                    asset.source.relative_path.as_posix(),
+                )
 
 
 def _apply_edit(root: Path, edit: FileEdit) -> None:
