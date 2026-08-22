@@ -23,7 +23,7 @@ This asymmetry is intentional. Developer evidence teaches the next proposer; hol
 
 ## Integrity
 
-`FitResult.experience_digest` binds the exact index bytes. `read_fit_experience(result)` validates campaign, export bundle, input digest, harness revision, candidate ordering, statuses, gate reasons, prediction attribution, developer-result linkage, and every referenced developer artifact digest. Cached `FitCampaign.run()` performs the same validation before returning a prior result.
+`FitResult.experience_digest` binds the exact index bytes. `read_fit_experience(result)` validates campaign, export bundle, input digest, harness revision, candidate ordering, statuses, gate reasons, prediction attribution, developer-result linkage, and every referenced developer artifact digest. Cached `FitCampaign.run()` additionally rebuilds the developer case index from the raw champion/candidate benchmark artifacts and export cases before returning a prior result.
 
 Tampering with the index, candidate diff, or raw developer benchmark result therefore fails with `FitErrorCode.RESULT_INVALID`. Existing candidate/revision validation remains authoritative for the harness, export snapshots, and candidate manifest.
 

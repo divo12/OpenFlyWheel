@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
@@ -22,6 +23,7 @@ from ofw import (
     ClusterId,
     ComponentKind,
     FileEdit,
+    FitArtifactReference,
     FitCampaign,
     FitError,
     FitErrorCode,
@@ -65,6 +67,7 @@ from ofw.fit import (
     paired_evidence_passes,
     read_admission_record,
 )
+from ofw.mine import digest_bytes
 from ofw.observability.langfuse.domain import TraceId
 
 
@@ -448,6 +451,39 @@ def test_paired_gates_reject_regression_and_admit_one_winner(tmp_path: Path) -> 
     experience_payload = result.experience_path.read_bytes()
     assert b"selection-case" not in experience_payload
     assert b"admission-case" not in experience_payload
+    copied_diff = result.experience_path.with_name("copied-candidate.patch")
+    copied_diff.write_bytes(good_experience.candidate_diff.path.read_bytes())
+    copied_baseline = result.experience_path.with_name("copied-baseline.json")
+    copied_baseline.write_bytes(good_experience.developer_baseline.path.read_bytes())
+    rewired_candidates = (
+        replace(
+            good_experience,
+            candidate_diff=FitArtifactReference(
+                copied_diff,
+                digest_bytes(copied_diff.read_bytes()),
+            ),
+        ),
+        replace(
+            good_experience,
+            developer_baseline=FitArtifactReference(
+                copied_baseline,
+                digest_bytes(copied_baseline.read_bytes()),
+            ),
+        ),
+    )
+    for rewired_candidate in rewired_candidates:
+        rewired = replace(
+            experience,
+            candidates=(rewired_candidate, *experience.candidates[1:]),
+        )
+        rewired_payload = f"{rewired.to_json()}\n".encode()
+        result.experience_path.write_bytes(rewired_payload)
+        with pytest.raises(FitError) as raised:
+            read_fit_experience(
+                replace(result, experience_digest=digest_bytes(rewired_payload))
+            )
+        assert raised.value.code is FitErrorCode.RESULT_INVALID
+    result.experience_path.write_bytes(experience_payload)
     assert any(
         delta.case_id == "frontier-case" and delta.pass_delta == 1 for delta in good_outcome.deltas
     )
@@ -495,6 +531,59 @@ def test_admission_failure_returns_no_winner_and_discards_finalist(tmp_path: Pat
     with pytest.raises(FitError) as raised:
         campaign.run()
     assert raised.value.code is FitErrorCode.RESULT_INVALID
+
+
+def test_cached_experience_must_match_raw_developer_artifacts(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    candidate = _candidate(
+        revision,
+        "def run(value: str) -> str:\n"
+        "    return value + (' FIXED' if 'regression' not in value else '')\n",
+        "Fix frontier only.",
+    )
+    campaign = FitCampaign(
+        harness,
+        _bundle(revision),
+        BenchmarkPolicy(1, 10, 0, 0.25),
+        _fit_policy(),
+        (candidate,),
+    )
+    result = campaign.run()
+    experience = read_fit_experience(result)
+    candidate_experience = experience.candidates[0]
+    case_experience = candidate_experience.developer_cases[0]
+    attempt = case_experience.attempts[0]
+    tampered_attempt = replace(
+        attempt,
+        candidate_verifiers=(
+            replace(attempt.candidate_verifiers[0], feedback="feedback:tampered"),
+        ),
+    )
+    tampered_case = replace(case_experience, attempts=(tampered_attempt,))
+    tampered_candidate = replace(
+        candidate_experience,
+        developer_cases=(tampered_case, *candidate_experience.developer_cases[1:]),
+    )
+    tampered_experience = replace(
+        experience,
+        candidates=(tampered_candidate, *experience.candidates[1:]),
+    )
+    experience_payload = f"{tampered_experience.to_json()}\n".encode()
+    result.experience_path.write_bytes(experience_payload)
+    updated_result = replace(result, experience_digest=digest_bytes(experience_payload))
+    result_payload = f"{updated_result.to_json()}\n".encode()
+    result.manifest_path.write_bytes(result_payload)
+    result.digest_path.write_bytes(
+        TypeAdapter(Sha256Digest).dump_json(digest_bytes(result_payload)) + b"\n"
+    )
+
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+
+    assert raised.value.code is FitErrorCode.RESULT_INVALID
+    candidate.workspace.close()
 
 
 def test_no_winner_cache_rejects_candidate_artifact_drift(tmp_path: Path) -> None:

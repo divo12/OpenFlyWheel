@@ -373,6 +373,7 @@ class FitInputFingerprint:
 
 _FIT_ADAPTER: TypeAdapter[FitResult] = TypeAdapter(FitResult)
 _EXPERIENCE_ADAPTER: TypeAdapter[FitExperience] = TypeAdapter(FitExperience)
+_BENCHMARK_ADAPTER: TypeAdapter[BenchmarkResult] = TypeAdapter(BenchmarkResult)
 _ADMISSION_ADAPTER: TypeAdapter[AdmissionRecord] = TypeAdapter(AdmissionRecord)
 _DIGEST_ADAPTER: TypeAdapter[Sha256Digest] = TypeAdapter(Sha256Digest)
 _INPUT_ADAPTER: TypeAdapter[FitInputFingerprint] = TypeAdapter(FitInputFingerprint)
@@ -590,7 +591,15 @@ class FitCampaign:
             )
             if not winner.workspace.root.exists():
                 raise FitError(FitErrorCode.CANDIDATE_DRIFT, winner.candidate.id.value)
-        read_fit_experience(result)
+        experience = read_fit_experience(result)
+        _validate_fit_experience_sources(
+            experience,
+            self.bundle.developer_evals.cases,
+            self.candidates,
+            result.outcomes,
+            self.fit_policy,
+            result.baseline,
+        )
         return result
 
     def _validate_inputs(self, champion_revision: HarnessRevision) -> Sha256Digest:
@@ -662,7 +671,7 @@ def read_fit_experience(result: FitResult) -> FitExperience:
             or candidate.developer_candidate.path != outcome.developer_result.manifest_path
         ):
             raise FitError(FitErrorCode.RESULT_INVALID, candidate.candidate_id.value)
-        _validate_experience_artifacts(result.root, candidate)
+        _validate_experience_artifacts(result, candidate)
     return experience
 
 
@@ -718,6 +727,51 @@ def _candidate_experience(
         ),
         _holdout_decisions(outcome, policy),
     )
+
+
+def _validate_fit_experience_sources(
+    experience: FitExperience,
+    cases: tuple[EvalCase, ...],
+    builds: tuple[CandidateBuild, ...],
+    outcomes: tuple[CandidateOutcome, ...],
+    policy: FitPolicy,
+    baseline: Baseline,
+) -> None:
+    for indexed, build, outcome in zip(experience.candidates, builds, outcomes, strict=True):
+        if (
+            indexed.manifest != read_candidate_manifest(build.candidate.manifest_path)
+            or indexed.candidate_diff.path != build.candidate.diff_path
+            or indexed.candidate_diff.digest != build.candidate.diff_digest
+        ):
+            raise FitError(FitErrorCode.RESULT_INVALID, indexed.candidate_id.value)
+        baseline_result = _read_benchmark_reference(indexed.developer_baseline)
+        candidate_result = _read_benchmark_reference(indexed.developer_candidate)
+        if (
+            baseline_result.benchmark_id != baseline.benchmark_id
+            or baseline_result.revision_id != baseline.revision_id
+            or baseline_result.policy_digest != baseline.policy_digest
+            or baseline_result.semantic_digest != baseline.semantic_digest
+            or baseline_result.candidate_id is not None
+            or candidate_result != outcome.developer_result
+            or indexed.developer_cases
+            != tuple(
+                _developer_case_experience(case, baseline_result, candidate_result)
+                for case in cases
+            )
+            or indexed.holdouts != _holdout_decisions(outcome, policy)
+        ):
+            raise FitError(FitErrorCode.RESULT_INVALID, indexed.candidate_id.value)
+
+
+def _read_benchmark_reference(reference: FitArtifactReference) -> BenchmarkResult:
+    try:
+        payload = reference.path.read_bytes()
+        result = _BENCHMARK_ADAPTER.validate_json(payload)
+    except (OSError, ValidationError) as error:
+        raise FitError(FitErrorCode.RESULT_INVALID, str(reference.path)) from error
+    if digest_bytes(payload) != reference.digest:
+        raise FitError(FitErrorCode.RESULT_INVALID, str(reference.path))
+    return result
 
 
 def _developer_case_experience(
@@ -797,20 +851,41 @@ def _artifact_reference(path: Path) -> FitArtifactReference:
         raise FitError(FitErrorCode.RESULT_INVALID, str(path)) from error
 
 
-def _validate_experience_artifacts(root: Path, candidate: CandidateExperience) -> None:
+def _validate_experience_artifacts(
+    result: FitResult,
+    candidate: CandidateExperience,
+) -> None:
     references = (
         candidate.candidate_diff,
         candidate.developer_baseline,
         candidate.developer_candidate,
     )
     try:
-        allowed = (root / ".ofw").resolve(strict=True)
+        allowed = (result.root / ".ofw").resolve(strict=True)
         for reference in references:
             path = reference.path.resolve(strict=True)
             path.relative_to(allowed)
             if digest_bytes(path.read_bytes()) != reference.digest:
                 raise FitError(FitErrorCode.RESULT_INVALID, str(path))
-    except (OSError, ValueError) as error:
+        expected_diff = (
+            allowed / "candidates" / candidate.candidate_id.value / "candidate.patch"
+        ).resolve(strict=True)
+        if candidate.candidate_diff.path.resolve(strict=True) != expected_diff:
+            raise FitError(FitErrorCode.RESULT_INVALID, str(candidate.candidate_diff.path))
+        baseline = _BENCHMARK_ADAPTER.validate_json(
+            candidate.developer_baseline.path.read_bytes()
+        )
+        if (
+            candidate.developer_baseline.path.resolve(strict=True)
+            != baseline.manifest_path.resolve(strict=True)
+            or baseline.candidate_id is not None
+            or baseline.benchmark_id != result.benchmark_id
+            or baseline.revision_id != result.baseline.revision_id
+            or baseline.policy_digest != result.baseline.policy_digest
+            or baseline.semantic_digest != result.baseline.semantic_digest
+        ):
+            raise FitError(FitErrorCode.RESULT_INVALID, str(candidate.developer_baseline.path))
+    except (OSError, ValidationError, ValueError) as error:
         raise FitError(FitErrorCode.RESULT_INVALID, candidate.candidate_id.value) from error
 
 
