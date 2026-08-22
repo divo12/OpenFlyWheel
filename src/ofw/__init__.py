@@ -35,10 +35,48 @@ from ofw.observability.langfuse import (
 )
 from ofw.observability.langfuse.domain import CollectionResult
 from ofw.observability.langfuse.service import collect
+from ofw.runtime import (
+    CanaryCase,
+    CaseId,
+    CommandLoop,
+    CommandVerifier,
+    DockerCompose,
+    FunctionName,
+    LocalProcess,
+    ModelFingerprint,
+    ModuleName,
+    ProcessCommand,
+    ProcessLimits,
+    PythonEntrypoint,
+    PythonLoop,
+    PythonVerifier,
+    RunErrorCode,
+    RunResult,
+    RunStatus,
+    ServiceName,
+    VerifierResult,
+    VerifierVerdict,
+)
 
 
 class _OfwNamespace:
     __slots__ = ()
+
+    LocalProcess = LocalProcess
+    DockerCompose = DockerCompose
+    ProcessLimits = ProcessLimits
+    ProcessCommand = ProcessCommand
+    CommandLoop = CommandLoop
+    PythonLoop = PythonLoop
+    PythonEntrypoint = PythonEntrypoint
+    ModuleName = ModuleName
+    FunctionName = FunctionName
+    ModelFingerprint = ModelFingerprint
+    CommandVerifier = CommandVerifier
+    PythonVerifier = PythonVerifier
+    CanaryCase = CanaryCase
+    CaseId = CaseId
+    ServiceName = ServiceName
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -57,10 +95,15 @@ ofw = _OfwNamespace()
 
 __all__ = [
     "AssetAccess",
+    "CanaryCase",
+    "CaseId",
     "ComponentKind",
     "CollectionError",
     "CollectionErrorCode",
     "CollectionResult",
+    "CommandLoop",
+    "CommandVerifier",
+    "DockerCompose",
     "EditableFile",
     "GitCommit",
     "Harness",
@@ -70,15 +113,30 @@ __all__ = [
     "HarnessRevision",
     "HarnessRevisionId",
     "HarnessValidationError",
+    "FunctionName",
     "Langfuse",
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
     "LangfuseSpan",
+    "LocalProcess",
+    "ModelFingerprint",
+    "ModuleName",
     "RepositorySnapshot",
+    "ProcessCommand",
+    "ProcessLimits",
+    "PythonEntrypoint",
+    "PythonLoop",
+    "PythonVerifier",
+    "RunErrorCode",
+    "RunResult",
+    "RunStatus",
     "Sha256Digest",
+    "ServiceName",
     "Subagent",
     "Tool",
     "TraceWindow",
+    "VerifierResult",
+    "VerifierVerdict",
     "WorkspaceFile",
     "collect",
     "editable",

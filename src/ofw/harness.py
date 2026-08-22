@@ -24,10 +24,20 @@ from ofw.contracts import (
     HarnessSchemaVersion,
     HarnessValidationError,
     RepositorySnapshot,
+    RuntimeConfiguration,
     Sha256Digest,
     WorkspaceFile,
 )
 from ofw.observability.langfuse.contracts import LangfuseProject
+from ofw.runtime import (
+    CanaryCase,
+    CanaryReport,
+    ExecutionEnvironment,
+    LifecycleAdapter,
+    VerifierAdapter,
+    run_canary,
+    runtime_configuration,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +97,9 @@ class Harness:
     root: Path
     _files: list[_FileRegistration] = field(default_factory=list, init=False, repr=False)
     _observability: LangfuseProject | None = field(default=None, init=False, repr=False)
+    _execution: ExecutionEnvironment | None = field(default=None, init=False, repr=False)
+    _lifecycle: LifecycleAdapter | None = field(default=None, init=False, repr=False)
+    _verifiers: list[VerifierAdapter] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if _NAME_PATTERN.fullmatch(self.name) is None:
@@ -136,6 +149,21 @@ class Harness:
         self._observability = project
         return self
 
+    def connect_execute(self, environment: ExecutionEnvironment) -> Harness:
+        self._execution = environment
+        return self
+
+    def connect_lifecycle(self, lifecycle: LifecycleAdapter) -> Harness:
+        self._lifecycle = lifecycle
+        return self
+
+    def connect_verifiers(self, *verifiers: VerifierAdapter) -> Harness:
+        for verifier in verifiers:
+            if any(existing.name == verifier.name for existing in self._verifiers):
+                raise HarnessValidationError(HarnessErrorCode.DUPLICATE_VERIFIER, verifier.name)
+            self._verifiers.append(verifier)
+        return self
+
     def _register_files(
         self,
         component: ComponentKind,
@@ -144,7 +172,7 @@ class Harness:
         for source in sources:
             self._files.append(_registration(component, source, None))
 
-    def process(self) -> HarnessRevision:
+    def process(self, *, canary: CanaryCase | None = None) -> HarnessRevision:
         logger.debug("Compiling harness revision: %s", self.name)
         root = _resolve_root(self.root)
         if not _has_component(self._files, ComponentKind.PROMPT):
@@ -152,30 +180,82 @@ class Harness:
 
         components = _compile_components(root, self._files)
         repository = _snapshot_repository(root)
+        runtime = self._runtime(root)
         content = HarnessRevisionContent(
             schema_version=HarnessSchemaVersion.V1,
             harness_name=self.name,
             repository=repository,
             components=components,
             observability=(None if self._observability is None else self._observability.manifest()),
+            runtime=runtime,
+            canary_digest=None,
         )
-        content_digest = _digest_text(content.canonical_json())
-        revision = HarnessRevision(
-            schema_version=content.schema_version,
-            id=HarnessRevisionId(f"ofw_{content_digest.value[7:]}"),
-            harness_name=content.harness_name,
-            root=root,
-            repository=content.repository,
-            components=content.components,
-            observability=content.observability,
-        )
+        revision = _revision_from_content(content, root)
+        report: CanaryReport | None = None
+        if canary is not None:
+            if self._execution is None or self._lifecycle is None or not self._verifiers:
+                raise HarnessValidationError(HarnessErrorCode.RUNTIME_INCOMPLETE, self.name)
+            report = run_canary(
+                revision,
+                canary,
+                self._execution,
+                self._lifecycle,
+                tuple(self._verifiers),
+            )
+            if not report.passed:
+                _write_canary(revision, report)
+                raise HarnessValidationError(HarnessErrorCode.CANARY_FAILED, canary.id.value)
+            content = HarnessRevisionContent(
+                schema_version=content.schema_version,
+                harness_name=content.harness_name,
+                repository=content.repository,
+                components=content.components,
+                observability=content.observability,
+                runtime=content.runtime,
+                canary_digest=report.digest,
+            )
+            revision = _revision_from_content(content, root)
         _write_manifest(revision)
+        if report is not None:
+            _write_canary(revision, report)
         logger.debug("Compiled harness revision %s", revision.id)
         return revision
+
+    def _runtime(self, root: Path) -> RuntimeConfiguration | None:
+        connections = (
+            self._execution is not None,
+            self._lifecycle is not None,
+            bool(self._verifiers),
+        )
+        if not any(connections):
+            return None
+        if not all(connections) or self._execution is None or self._lifecycle is None:
+            raise HarnessValidationError(HarnessErrorCode.RUNTIME_INCOMPLETE, self.name)
+        return runtime_configuration(
+            root,
+            self._execution,
+            self._lifecycle,
+            tuple(self._verifiers),
+        )
 
 
 def _has_component(registrations: list[_FileRegistration], kind: ComponentKind) -> bool:
     return any(registration.component is kind for registration in registrations)
+
+
+def _revision_from_content(content: HarnessRevisionContent, root: Path) -> HarnessRevision:
+    content_digest = _digest_text(content.canonical_json())
+    return HarnessRevision(
+        schema_version=content.schema_version,
+        id=HarnessRevisionId(f"ofw_{content_digest.value[7:]}"),
+        harness_name=content.harness_name,
+        root=root,
+        repository=content.repository,
+        components=content.components,
+        observability=content.observability,
+        runtime=content.runtime,
+        canary_digest=content.canary_digest,
+    )
 
 
 def _resolve_root(root: Path) -> Path:
@@ -389,13 +469,19 @@ def _digest_bytes(value: bytes) -> Sha256Digest:
 
 
 def _write_manifest(revision: HarnessRevision) -> None:
-    manifest_path = revision.manifest_path
-    payload = f"{revision.to_json()}\n"
+    _write_revision_file(revision.manifest_path, f"{revision.to_json()}\n")
+
+
+def _write_canary(revision: HarnessRevision, report: CanaryReport) -> None:
+    _write_revision_file(revision.canary_path, f"{report.to_json()}\n")
+
+
+def _write_revision_file(path: Path, payload: str) -> None:
     try:
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
-            dir=manifest_path.parent,
-            prefix=".manifest-",
+            dir=path.parent,
+            prefix=f".{path.stem}-",
             suffix=".json",
             text=True,
         )
@@ -405,11 +491,11 @@ def _write_manifest(revision: HarnessRevision) -> None:
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary_path.replace(manifest_path)
+            temporary_path.replace(path)
         finally:
             temporary_path.unlink(missing_ok=True)
     except OSError as error:
         raise HarnessValidationError(
             HarnessErrorCode.MANIFEST_WRITE_FAILED,
-            str(manifest_path),
+            str(path),
         ) from error
