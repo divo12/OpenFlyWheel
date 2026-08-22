@@ -9,6 +9,7 @@ description = "A governed self-improving agent harness"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27,<1",
+    "langfuse>=4.7,<5",
     "pydantic>=2.10,<3",
 ]
 

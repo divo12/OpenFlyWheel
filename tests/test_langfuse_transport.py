@@ -225,8 +225,6 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert observation.type is ObservationType.AGENT
     assert observation.trace_id is not None
     assert observation.trace_id.value == "trace-1"
-    assert observation.input is not None
-    assert observation.input.raw == '{"task":"ship"}'
     assert observation.metadata is not None
     assert observation.metadata.canonical == '{"ofw.harness.revision":"ofw-revision-1"}'
     assert observations.cursor is not None
@@ -238,7 +236,7 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert score.subject.id == "trace-1"
     assert ("fromStartTime", "2026-08-22T00:00:00Z") in observation_query
     assert ("toStartTime", "2026-08-22T01:00:00Z") in observation_query
-    assert ("fields", "core,basic,time,io,metadata,usage,trace_context") in observation_query
+    assert ("fields", "core,basic,time,metadata,usage,trace_context") in observation_query
     assert ("expandMetadata", "ofw.harness.revision") in observation_query
     assert ("fromTimestamp", "2026-08-22T00:00:00Z") in score_query
     assert ("fields", "details,subject") in score_query
@@ -297,6 +295,29 @@ def test_unknown_upstream_fields_are_ignored() -> None:
     records = ObservationResponseWire.model_validate_json(augmented).normalize().records
 
     assert records[0].name == "backend-engineer"
+
+
+def test_catalog_keeps_only_revision_metadata() -> None:
+    augmented = OBSERVATIONS_RESPONSE.replace(
+        '"ofw.harness.revision": "ofw-revision-1"',
+        '"ofw.harness.revision": "ofw-revision-1", "secret": "discard-me"',
+    )
+    observation = ObservationResponseWire.model_validate_json(augmented).normalize().records[0]
+
+    assert observation.metadata is not None
+    assert observation.metadata.canonical == '{"ofw.harness.revision":"ofw-revision-1"}'
+
+
+def test_public_ipv6_literal_is_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    project = LangfuseProject.from_env(
+        environment="production",
+        base_url="https://[2001:4860:4860::8888]",
+    )
+
+    client = LangfuseHttpClient(project)
+    client.close()
 
 
 def test_missing_credential_fails_before_request(

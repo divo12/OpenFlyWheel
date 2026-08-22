@@ -25,7 +25,6 @@ from ofw.observability.langfuse.domain import (
     ScoreSubjectKind,
     SyncStream,
     TraceId,
-    TracePayload,
 )
 from ofw.observability.langfuse.store import CollectionStore
 
@@ -48,8 +47,6 @@ def _observation(observation_id: str, digest_suffix: str = "one") -> Observation
         session_id="session-1",
         created_at=datetime(2026, 8, 22, 0, 1, tzinfo=UTC),
         updated_at=datetime(2026, 8, 22, 0, 2, tzinfo=UTC),
-        input=TracePayload("input"),
-        output=TracePayload("output"),
         metadata=JsonDocument('{"source":"fixture"}'),
         usage=JsonDocument('{"input":1}'),
         costs=JsonDocument('{"total":0.1}'),

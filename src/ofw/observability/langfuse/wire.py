@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from ofw.contracts import Sha256Digest
 from ofw.observability.langfuse.contracts import CollectionError, CollectionErrorCode
@@ -28,7 +28,6 @@ from ofw.observability.langfuse.domain import (
     ScoreSubject,
     ScoreSubjectKind,
     TraceId,
-    TracePayload,
 )
 
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
@@ -74,8 +73,6 @@ class ObservationWire(BaseModel):
     completion_start_time: datetime | None = Field(default=None, alias="completionStartTime")
     created_at: datetime | None = Field(default=None, alias="createdAt")
     updated_at: datetime | None = Field(default=None, alias="updatedAt")
-    input: str | None = None
-    output: str | None = None
     metadata: JsonValue | None = None
     usage_details: JsonValue | None = Field(default=None, alias="usageDetails")
     cost_details: JsonValue | None = Field(default=None, alias="costDetails")
@@ -107,6 +104,12 @@ class ObservationResponseWire(BaseModel):
             records=tuple(_normalize_observation(record) for record in self.data),
             cursor=None if self.meta.cursor is None else PageCursor(self.meta.cursor),
         )
+
+
+class RevisionMetadata(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+
+    revision_id: str | None = Field(default=None, alias="ofw.harness.revision")
 
 
 class ScoreSubjectWire(BaseModel):
@@ -159,7 +162,7 @@ class ScoreResponseWire(BaseModel):
 
 
 def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
-    metadata = _json_document(wire.metadata)
+    metadata = _revision_document(wire.metadata)
     usage = _json_document(wire.usage_details)
     costs = _json_document(wire.cost_details)
     digest_source = json.dumps(
@@ -188,8 +191,6 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
             ),
             None if wire.created_at is None else wire.created_at.isoformat(),
             None if wire.updated_at is None else wire.updated_at.isoformat(),
-            wire.input,
-            wire.output,
             None if metadata is None else metadata.canonical,
             None if usage is None else usage.canonical,
             None if costs is None else costs.canonical,
@@ -227,8 +228,6 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
         session_id=wire.session_id,
         created_at=wire.created_at,
         updated_at=wire.updated_at,
-        input=None if wire.input is None else TracePayload(wire.input),
-        output=None if wire.output is None else TracePayload(wire.output),
         metadata=metadata,
         usage=usage,
         costs=costs,
@@ -308,6 +307,20 @@ def _json_document(value: JsonValue | None) -> JsonDocument | None:
     return JsonDocument(
         json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     )
+
+
+def _revision_document(value: JsonValue | None) -> JsonDocument | None:
+    if value is None:
+        return None
+    canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    try:
+        metadata = RevisionMetadata.model_validate_json(canonical)
+    except ValidationError:
+        return None
+    if metadata.revision_id is None:
+        return None
+    revision = json.dumps(metadata.revision_id, ensure_ascii=False, separators=(",", ":"))
+    return JsonDocument(f'{{"ofw.harness.revision":{revision}}}')
 
 
 def _validate_score_value(wire: ScoreWire) -> None:

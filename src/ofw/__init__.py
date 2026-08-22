@@ -2,6 +2,16 @@
 
 from pathlib import Path
 
+from langfuse import (
+    Langfuse,
+    LangfuseOtelSpanAttributes,
+    LangfuseSpan,
+    get_client,
+    is_default_export_span,
+    observe,
+    propagate_attributes,
+)
+
 from ofw.contracts import (
     AssetAccess,
     ComponentKind,
@@ -60,7 +70,10 @@ __all__ = [
     "HarnessRevision",
     "HarnessRevisionId",
     "HarnessValidationError",
+    "Langfuse",
+    "LangfuseOtelSpanAttributes",
     "LangfuseProject",
+    "LangfuseSpan",
     "RepositorySnapshot",
     "Sha256Digest",
     "Subagent",
@@ -69,5 +82,9 @@ __all__ = [
     "WorkspaceFile",
     "collect",
     "editable",
+    "get_client",
+    "is_default_export_span",
+    "observe",
     "ofw",
+    "propagate_attributes",
 ]

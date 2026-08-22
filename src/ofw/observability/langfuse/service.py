@@ -7,7 +7,7 @@ from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import ValidationError
 
 from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.observability.langfuse.contracts import (
@@ -33,12 +33,7 @@ from ofw.observability.langfuse.domain import (
 )
 from ofw.observability.langfuse.store import CollectionStore
 from ofw.observability.langfuse.transport import LangfuseHttpClient
-
-
-class RevisionMetadata(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
-
-    revision_id: str | None = Field(default=None, alias="ofw.harness.revision")
+from ofw.observability.langfuse.wire import RevisionMetadata
 
 
 def collect(

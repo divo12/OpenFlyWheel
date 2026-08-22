@@ -142,11 +142,6 @@ class CollectionSyncId:
 
 
 @dataclass(frozen=True, slots=True)
-class TracePayload:
-    raw: str
-
-
-@dataclass(frozen=True, slots=True)
 class JsonDocument:
     canonical: str
 
@@ -169,8 +164,6 @@ class ObservationRecord:
     session_id: str | None
     created_at: datetime | None
     updated_at: datetime | None
-    input: TracePayload | None
-    output: TracePayload | None
     metadata: JsonDocument | None
     usage: JsonDocument | None
     costs: JsonDocument | None

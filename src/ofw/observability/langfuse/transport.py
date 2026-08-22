@@ -73,7 +73,7 @@ class LangfuseHttpClient:
         cursor: PageCursor | None = None,
     ) -> ObservationPage:
         parameters = (
-            ("fields", "core,basic,time,io,metadata,usage,trace_context"),
+            ("fields", "core,basic,time,metadata,usage,trace_context"),
             ("expandMetadata", "ofw.harness.revision"),
             ("limit", "1000"),
             ("environment", self._environment),
@@ -143,17 +143,21 @@ def _validate_dns(base_url: str, allow_private_network: bool) -> None:
     if host is None:
         raise CollectionError(CollectionErrorCode.UNSAFE_HOST, base_url)
     try:
-        _, _, addresses = socket.gethostbyname_ex(host)
+        port = urlsplit(base_url).port or (443 if base_url.startswith("https:") else 80)
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as error:
         raise CollectionError(CollectionErrorCode.DNS_RESOLUTION_FAILED, host) from error
     if not addresses:
         raise CollectionError(CollectionErrorCode.DNS_RESOLUTION_FAILED, host)
-    for raw_address in addresses:
-        address = ipaddress.ip_address(raw_address)
+    for address in addresses:
+        raw_address = address[4][0]
+        resolved_address = ipaddress.ip_address(raw_address)
         if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
+            resolved_address.is_private
+            or resolved_address.is_loopback
+            or resolved_address.is_link_local
+            or resolved_address.is_reserved
+            or resolved_address.is_unspecified
+            or resolved_address.is_multicast
         ):
             raise CollectionError(CollectionErrorCode.PRIVATE_RESOLUTION, host)
