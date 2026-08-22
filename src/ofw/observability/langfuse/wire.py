@@ -35,7 +35,7 @@ _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 
 
 class HealthWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     version: str
     status: str
@@ -52,7 +52,7 @@ class HealthWire(BaseModel):
 
 
 class ObservationWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     id: str
     trace_id: str | None = Field(alias="traceId")
@@ -81,23 +81,23 @@ class ObservationWire(BaseModel):
     cost_details: JsonValue | None = Field(default=None, alias="costDetails")
     total_cost: float | None = Field(default=None, alias="totalCost")
     usage_pricing_tier_name: str | None = Field(default=None, alias="usagePricingTierName")
-    model_id: str | None = Field(alias="modelId")
-    input_price: str | None = Field(alias="inputPrice")
-    output_price: str | None = Field(alias="outputPrice")
-    total_price: str | None = Field(alias="totalPrice")
+    model_id: str | None = Field(default=None, alias="modelId")
+    input_price: str | None = Field(default=None, alias="inputPrice")
+    output_price: str | None = Field(default=None, alias="outputPrice")
+    total_price: str | None = Field(default=None, alias="totalPrice")
     tags: tuple[str, ...] | None = None
     release: str | None = None
     trace_name: str | None = Field(default=None, alias="traceName")
 
 
 class ObservationMetaWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     cursor: str | None = None
 
 
 class ObservationResponseWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     data: tuple[ObservationWire, ...]
     meta: ObservationMetaWire
@@ -110,7 +110,7 @@ class ObservationResponseWire(BaseModel):
 
 
 class ScoreSubjectWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     kind: ScoreSubjectKind
     id: str
@@ -118,7 +118,7 @@ class ScoreSubjectWire(BaseModel):
 
 
 class ScoreWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     id: str
     project_id: str = Field(alias="projectId")
@@ -139,14 +139,14 @@ class ScoreWire(BaseModel):
 
 
 class ScoreMetaWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
-    limit: int
+    limit: int | None = None
     cursor: str | None = None
 
 
 class ScoreResponseWire(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
 
     data: tuple[ScoreWire, ...]
     meta: ScoreMetaWire
@@ -195,6 +195,10 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
             None if costs is None else costs.canonical,
             wire.total_cost,
             wire.usage_pricing_tier_name,
+            wire.model_id,
+            wire.input_price,
+            wire.output_price,
+            wire.total_price,
             wire.tags,
             wire.release,
             wire.trace_name,
@@ -238,6 +242,10 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
         public=wire.public,
         completion_start_time=wire.completion_start_time,
         usage_pricing_tier_name=wire.usage_pricing_tier_name,
+        model_id=wire.model_id,
+        input_price=wire.input_price,
+        output_price=wire.output_price,
+        total_price=wire.total_price,
     )
 
 

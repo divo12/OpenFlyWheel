@@ -184,6 +184,10 @@ class ObservationRecord:
     public: bool | None = None
     completion_start_time: datetime | None = None
     usage_pricing_tier_name: str | None = None
+    model_id: str | None = None
+    input_price: str | None = None
+    output_price: str | None = None
+    total_price: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

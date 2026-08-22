@@ -169,6 +169,22 @@ def test_source_update_replaces_record_without_duplicate_membership(tmp_path: Pa
         store.close()
 
 
+def test_wal_sidecars_are_owner_only(tmp_path: Path) -> None:
+    path = tmp_path / "collection.sqlite"
+    store = CollectionStore(path)
+    try:
+        store.commit_observation_page(
+            "connection-1",
+            CollectionSyncId("sync-sidecars"),
+            ObservationPage((_observation("obs-1"),), None),
+        )
+        for suffix in ("-wal", "-shm"):
+            sidecar = path.with_name(f"{path.name}{suffix}")
+            assert stat.S_IMODE(sidecar.stat().st_mode) == 0o600
+    finally:
+        store.close()
+
+
 def test_source_update_does_not_mutate_prior_sync_snapshot(tmp_path: Path) -> None:
     store = CollectionStore(tmp_path / "collection.sqlite")
     old_sync = CollectionSyncId("sync-old")

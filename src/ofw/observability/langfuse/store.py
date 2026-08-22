@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from collections.abc import Iterable
 from importlib.resources import files
@@ -54,6 +55,7 @@ class CollectionStore:
     def __init__(self, path: Path) -> None:
         connection: sqlite3.Connection | None = None
         try:
+            self._path = path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch(mode=0o600, exist_ok=True)
             path.chmod(0o600)
@@ -63,12 +65,15 @@ class CollectionStore:
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA busy_timeout = 5000")
             self._migrate()
+            self._restrict_sidecar_permissions()
         except (OSError, sqlite3.Error) as error:
             if connection is not None:
                 connection.close()
             raise CollectionError(CollectionErrorCode.DATABASE_ERROR, str(path)) from error
 
     def close(self) -> None:
+        with contextlib.suppress(OSError):
+            self._restrict_sidecar_permissions()
         self._connection.close()
 
     def schema_version(self) -> int:
@@ -225,6 +230,14 @@ class CollectionStore:
                 int(cursor is None),
             ),
         )
+
+    def _restrict_sidecar_permissions(self) -> None:
+        for suffix in ("-wal", "-shm"):
+            sidecar = self._path.with_name(f"{self._path.name}{suffix}")
+            try:
+                sidecar.chmod(0o600)
+            except FileNotFoundError:
+                continue
 
     def _migrate(self) -> None:
         version = self.schema_version()

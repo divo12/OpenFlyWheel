@@ -127,15 +127,15 @@ def _sync_observations(
     window: TraceWindow,
     cursor: PageCursor | None,
 ) -> None:
-    seen: set[str] = set()
+    seen = set() if cursor is None else {cursor.value}
     current = cursor
     while True:
-        _reject_cursor_loop(current, seen)
         page = client.get_observations(window, current)
         store.commit_observation_page(connection_id, sync_id, page)
         if page.cursor is None:
             return
         current = page.cursor
+        _reject_cursor_loop(current, seen)
 
 
 def _sync_scores(
@@ -146,15 +146,15 @@ def _sync_scores(
     window: TraceWindow,
     cursor: PageCursor | None,
 ) -> None:
-    seen: set[str] = set()
+    seen = set() if cursor is None else {cursor.value}
     current = cursor
     while True:
-        _reject_cursor_loop(current, seen)
         page = client.get_scores(window, current)
         store.commit_score_page(connection_id, sync_id, page)
         if page.cursor is None:
             return
         current = page.cursor
+        _reject_cursor_loop(current, seen)
 
 
 def _reject_cursor_loop(cursor: PageCursor | None, seen: set[str]) -> None:

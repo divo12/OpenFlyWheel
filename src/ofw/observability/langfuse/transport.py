@@ -46,6 +46,8 @@ class LangfuseHttpClient:
         manifest = project.manifest()
         credentials = project.credentials()
         _validate_dns(manifest.base_url.value, manifest.allow_private_network)
+        self._base_url = manifest.base_url.value
+        self._allow_private_network = manifest.allow_private_network
         self._client = httpx.Client(
             base_url=manifest.base_url.value,
             auth=httpx.BasicAuth(credentials.public_key, credentials.secret_key),
@@ -110,6 +112,7 @@ class LangfuseHttpClient:
         parameters: tuple[tuple[str, str], ...],
         adapter: TypeAdapter[ResponseModel],
     ) -> ResponseModel:
+        _validate_dns(self._base_url, self._allow_private_network)
         try:
             response = self._client.get(endpoint.value, params=parameters)
         except httpx.TimeoutException as error:

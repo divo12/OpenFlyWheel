@@ -96,7 +96,6 @@ def test_trace_window_requires_aware_utc_ordering() -> None:
         end=datetime(2026, 8, 22, 1, tzinfo=ZoneInfo("UTC")),
     )
     assert zoneinfo_utc.start.utcoffset() == timedelta(0)
-
     with pytest.raises(CollectionError) as naive:
         TraceWindow(start=datetime(2026, 8, 22), end=datetime(2026, 8, 23))
     with pytest.raises(CollectionError) as reversed_window:

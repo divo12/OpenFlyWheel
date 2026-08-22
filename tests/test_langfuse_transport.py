@@ -273,6 +273,32 @@ def test_persisted_observation_and_score_changes_produce_new_digests() -> None:
     assert first_score.digest != changed_score.digest
 
 
+def test_enrichment_field_changes_produce_new_observation_digests() -> None:
+    first_observation = (
+        ObservationResponseWire.model_validate_json(OBSERVATIONS_RESPONSE).normalize().records[0]
+    )
+    enriched_observation = (
+        ObservationResponseWire.model_validate_json(
+            OBSERVATIONS_RESPONSE.replace('"modelId": null', '"modelId": "gpt-5"')
+        )
+        .normalize()
+        .records[0]
+    )
+
+    assert enriched_observation.model_id == "gpt-5"
+    assert first_observation.digest != enriched_observation.digest
+
+
+def test_unknown_upstream_fields_are_ignored() -> None:
+    augmented = OBSERVATIONS_RESPONSE.replace(
+        '"traceName": "employee-run"',
+        '"traceName": "employee-run",\n      "brandNewField": {"nested": true}',
+    )
+    records = ObservationResponseWire.model_validate_json(augmented).normalize().records
+
+    assert records[0].name == "backend-engineer"
+
+
 def test_missing_credential_fails_before_request(
     langfuse_server: FixtureServer,
     monkeypatch: pytest.MonkeyPatch,
