@@ -73,6 +73,7 @@ from ofw import (
     Worker,
     WorkerId,
     ofw,
+    read_fit_experience,
 )
 from ofw.contracts import AssetAccess
 from ofw.diagnosis import ClusterId, DiagnosisResult, DiagnosisRun
@@ -200,7 +201,9 @@ def _harness(tmp_path: Path, base_url: str, monkeypatch: pytest.MonkeyPatch) -> 
         "    target = any(name in output for name in ('frontier', 'selection', 'admission'))\n"
         "    passed = ('FIXED' in output) if target else ('BROKEN' not in output)\n"
         "    verdict = VerifierVerdict.PASS if passed else VerifierVerdict.FAIL\n"
-        "    return VerifierResult(verdict, 1.0 if passed else 0.0, 'offline')\n",
+        "    return VerifierResult(\n"
+        "        verdict, 1.0 if passed else 0.0, 'offline:' + output\n"
+        "    )\n",
         encoding="utf-8",
     )
     (root / "diagnoser.py").write_text(
@@ -424,17 +427,39 @@ def test_offline_trace_to_review_release(
             0.0,
             1.0,
             1.0,
-            PairedEvidencePolicy(StatisticalGateMode.EFFECT_SIZE_ONLY, 0, 1.0),
+            PairedEvidencePolicy(StatisticalGateMode.EXACT_SIGN_TEST, 5, 0.05),
         )
         campaign = ofw.fit(
             harness,
             bundle,
             (candidate,),
-            benchmark_policy=BenchmarkPolicy(1, 10, 0, 0.25),
+            benchmark_policy=BenchmarkPolicy(5, 12, 0, 0.25),
             policy=fit_policy,
         )
         fit_result = campaign.wait()
         assert fit_result.winner_id == candidate.candidate.id
+        outcome = fit_result.outcomes[0]
+        frontier_evidence = next(
+            evidence
+            for evidence in outcome.paired_evidence
+            if evidence.partition is ExportPartition.FRONTIER
+        )
+        assert frontier_evidence.wins == 5
+        assert frontier_evidence.losses == 0
+        assert frontier_evidence.exact_one_sided_probability == pytest.approx(0.03125)
+        experience = read_fit_experience(fit_result)
+        assert tuple(
+            case.trace_id for case in experience.candidates[0].developer_cases
+        ) == (TraceId("frontier"), TraceId("regression"))
+        assert all(
+            verifier.feedback.startswith("offline:")
+            for case in experience.candidates[0].developer_cases
+            for attempt in case.attempts
+            for verifier in attempt.candidate_verifiers
+        )
+        experience_payload = fit_result.experience_path.read_bytes()
+        assert b'"trace_id":{"value":"selection"}' not in experience_payload
+        assert b'"trace_id":{"value":"admission"}' not in experience_payload
 
         remote = tmp_path / "review.git"
         subprocess.run(("git", "init", "--bare", "-q", str(remote)), check=True)
