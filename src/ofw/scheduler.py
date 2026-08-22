@@ -755,7 +755,7 @@ class LocalScheduler:
     def start(self, lease: JobLease, now: datetime) -> ScheduledJob:
         instant = _utc(now)
         with self._transaction():
-            job = self._leased_job(lease, (JobState.LEASED,))
+            job = self._leased_job(lease, (JobState.LEASED,), instant)
             running = replace(job, state=JobState.RUNNING, updated_at=instant)
             self._save_job(running)
             attempt = self._load_attempt(job.id, lease.attempt)
@@ -765,9 +765,7 @@ class LocalScheduler:
     def renew(self, lease: JobLease, now: datetime) -> JobLease:
         instant = _utc(now)
         with self._transaction():
-            job = self._leased_job(lease, (JobState.LEASED, JobState.RUNNING))
-            if job.lease_expires_at is None or instant >= job.lease_expires_at:
-                raise SchedulerError(SchedulerErrorCode.LEASE_EXPIRED, job.id.value)
+            job = self._leased_job(lease, (JobState.LEASED, JobState.RUNNING), instant)
             expires_at = instant + self.policy.job_lease
             renewed = replace(job, lease_expires_at=expires_at, updated_at=instant)
             self._save_job(renewed)
@@ -782,7 +780,7 @@ class LocalScheduler:
     ) -> ScheduledJob:
         instant = _utc(now)
         with self._transaction():
-            job = self._leased_job(lease, (JobState.LEASED, JobState.RUNNING))
+            job = self._leased_job(lease, (JobState.LEASED, JobState.RUNNING), instant)
             self._validate_result(job, result)
             self._validate_spend(job, spent)
             self._settle_budget(job, spent)
@@ -822,7 +820,7 @@ class LocalScheduler:
     ) -> ScheduledJob:
         instant = _utc(now)
         with self._transaction():
-            job = self._leased_job(lease, (JobState.LEASED, JobState.RUNNING))
+            job = self._leased_job(lease, (JobState.LEASED, JobState.RUNNING), instant)
             self._validate_spend(job, spent)
             self._settle_budget(job, spent)
             state = JobState.FAILED
@@ -1131,7 +1129,7 @@ class LocalScheduler:
     def _expire(self, job: ScheduledJob, now: datetime) -> ScheduledJob:
         if job.lease_token is None:
             raise SchedulerError(SchedulerErrorCode.INVALID_TRANSITION, job.id.value)
-        self._settle_budget(job, job.reserved_cost)
+        self._settle_budget(job, Money(0))
         state = JobState.READY if job.attempt_count < job.maximum_attempts else JobState.FAILED
         available_at = now + _backoff(self.policy.retry_backoff, job.attempt_count)
         expired = replace(
@@ -1153,7 +1151,7 @@ class LocalScheduler:
                 attempt,
                 state=JobState.FAILED,
                 finished_at=now,
-                spent=job.reserved_cost,
+                spent=Money(0),
                 error_code=SchedulerErrorCode.LEASE_EXPIRED,
             )
         )
@@ -1195,6 +1193,7 @@ class LocalScheduler:
         self,
         lease: JobLease,
         allowed_states: tuple[JobState, ...],
+        now: datetime,
     ) -> ScheduledJob:
         job = self._load_job(lease.job.id)
         if (
@@ -1203,6 +1202,8 @@ class LocalScheduler:
             or job.attempt_count != lease.attempt
         ):
             raise SchedulerError(SchedulerErrorCode.LATE_COMPLETION, lease.job.id.value)
+        if job.lease_expires_at is None or now >= job.lease_expires_at:
+            raise SchedulerError(SchedulerErrorCode.LEASE_EXPIRED, job.id.value)
         return job
 
     def _reserve(self, amount: Money, day: date) -> bool:

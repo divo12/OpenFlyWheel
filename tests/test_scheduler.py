@@ -395,6 +395,41 @@ def test_expired_lease_retries_and_rejects_late_completion(tmp_path: Path) -> No
     scheduler.close()
 
 
+def test_expired_lease_cannot_commit_before_reconcile_and_releases_budget(
+    tmp_path: Path,
+) -> None:
+    scheduler = _scheduler(tmp_path, policy=_policy(daily_budget=Money(100_000)))
+    job = scheduler.enqueue(
+        _spec(JobKind.TRACE_SYNC, "expired-budget", cost=Money(60_000)),
+        (),
+        _NOW,
+    )
+    lease = scheduler.claim(WorkerId("worker-1"), _NOW)
+    assert lease is not None
+    scheduler.start(lease, _NOW)
+
+    expired = _NOW + timedelta(minutes=2)
+    with pytest.raises(SchedulerError) as raised:
+        scheduler.succeed(
+            lease,
+            _result(JobKind.TRACE_SYNC, "too-late"),
+            Money(1_000),
+            expired,
+        )
+
+    assert raised.value.code is SchedulerErrorCode.LEASE_EXPIRED
+    assert scheduler.job(job.id).state is JobState.RUNNING
+    assert scheduler.budget(_NOW.date()).reserved == Money(60_000)
+
+    scheduler.reconcile(expired)
+
+    assert scheduler.job(job.id).state is JobState.READY
+    assert scheduler.budget(_NOW.date()).reserved == Money(0)
+    assert scheduler.budget(_NOW.date()).spent == Money(0)
+    assert scheduler.claim(WorkerId("worker-2"), expired + timedelta(seconds=5)) is not None
+    scheduler.close()
+
+
 def test_cancel_resume_and_restart_are_durable(tmp_path: Path) -> None:
     path = tmp_path / "scheduler.sqlite3"
     scheduler = LocalScheduler(path, _policy())
