@@ -72,6 +72,7 @@ from ofw.diagnosis import (
     PythonDiagnoser,
     Severity,
     TraceDiagnosis,
+    hermes_python_command,
 )
 from ofw.exports import (
     ClusterFamilyId,
@@ -355,6 +356,7 @@ __all__ = [
     "HeartbeatReport",
     "HermesAgentVersion",
     "HermesDiagnoser",
+    "hermes_python_command",
     "FunctionName",
     "GateReason",
     "PairedEvidence",

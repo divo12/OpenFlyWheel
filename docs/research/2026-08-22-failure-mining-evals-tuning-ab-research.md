@@ -110,7 +110,7 @@ The installed Chorus environment exposes `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_B
 The safe integration is a narrow diagnoser adapter:
 
 1. OFW validates registered asset content against the immutable harness revision, then builds an in-memory evidence packet with the trace snapshot and those assets.
-2. OFW embeds the snapshot and registered component contents into one bounded evidence prompt; Hermes runs one-shot with safe mode and no model-visible filesystem, terminal, browser, web, memory, skill, plugin, or subagent tools.
+2. OFW embeds the snapshot and registered component contents into one bounded evidence prompt and sends it over stdin to an audited Hermes 0.20.0 Python bridge. A disposable `HERMES_HOME`, safe mode, the built-in compressor, and the restricted context-engine toolset leave the model with no filesystem, terminal, browser, web, memory, skill, plugin, or subagent tools.
 3. Provider, model, reasoning level, Hermes version, prompt version, timeout, and prompt budget are fingerprinted.
 4. Hermes returns one `TraceDiagnosis` JSON proposal. Invalid output, timeout, nonexistent evidence anchors, or component mismatch becomes an abstention.
 5. Hermes never confirms a cluster, creates an eval, sees holdout payloads, edits the production repository, or promotes a candidate.
@@ -175,7 +175,7 @@ LangSmith’s comparative evaluation API can randomize answer order to mitigate 
 
 - Add a typed `HermesDiagnoser` that invokes a pinned one-shot command through the existing execution boundary.
 - Validate and read only connected harness assets, then serialize them with the immutable trace snapshot into an in-memory evidence packet.
-- Force safe mode with an empty effective tool surface; pass only a bounded prompt containing the snapshot and registered assets, validate the final response as `TraceDiagnosis`, and fail closed to abstention.
+- Force an isolated Hermes home and safe mode with an empty effective tool surface; pass the bounded prompt over stdin rather than CLI arguments, validate the final response as `TraceDiagnosis`, and fail closed to abstention.
 - Keep credentials inherited and out of manifests/logs; fingerprint command, provider, model, reasoning, Hermes version, timeout, prompt protocol, and prompt budget.
 - TDD: component-only visibility, no source mutation, typed proposal, invalid output/timeout abstention, fingerprint drift.
 

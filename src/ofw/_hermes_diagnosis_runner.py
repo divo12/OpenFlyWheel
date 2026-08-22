@@ -21,9 +21,6 @@ _COMMAND_ADAPTER: TypeAdapter[ProcessCommand] = TypeAdapter(ProcessCommand)
 _HARNESS_ASSETS_ADAPTER: TypeAdapter[tuple[HarnessAsset, ...]] = TypeAdapter(
     tuple[HarnessAsset, ...]
 )
-_SAFE_TOOLSET = "context_engine"
-
-
 @dataclass(frozen=True, slots=True)
 class ConnectedAssetEvidence:
     relative_path: Path
@@ -36,7 +33,7 @@ _ASSETS_ADAPTER: TypeAdapter[tuple[ConnectedAssetEvidence, ...]] = TypeAdapter(
 
 
 def main() -> int:
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 9:
         return 2
     try:
         command = _COMMAND_ADAPTER.validate_json(sys.argv[1])
@@ -45,7 +42,8 @@ def main() -> int:
         reasoning = _required(sys.argv[4])
         timeout = float(sys.argv[5])
         maximum_prompt_bytes = int(sys.argv[6])
-        harness_assets = _HARNESS_ASSETS_ADAPTER.validate_json(sys.argv[7])
+        agent_version = _required(sys.argv[7])
+        harness_assets = _HARNESS_ASSETS_ADAPTER.validate_json(sys.argv[8])
         snapshot_payload: str = sys.stdin.read()
         snapshot: TraceSnapshot = _SNAPSHOT_ADAPTER.validate_json(snapshot_payload)
         prompt = _prompt(snapshot, _read_assets(Path.cwd(), harness_assets))
@@ -58,19 +56,13 @@ def main() -> int:
             completed = subprocess.run(  # nosec B603
                 (
                     *command.arguments,
-                    "-z",
-                    prompt,
-                    "--provider",
                     provider,
-                    "--model",
                     model,
-                    "--reasoning",
                     reasoning,
-                    "--toolsets",
-                    _SAFE_TOOLSET,
-                    "--safe-mode",
+                    agent_version,
                 ),
                 cwd=temporary,
+                input=prompt,
                 check=False,
                 capture_output=True,
                 text=True,

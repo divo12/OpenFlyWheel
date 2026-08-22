@@ -164,13 +164,15 @@ class TraceDiagnosis:
         return cls(trace_id, DiagnosisStatus.ABSTAINED, None, "", "", (), (), None, None)
 
 
-@dataclass(frozen=True, slots=True)
-class HermesAgentVersion:
-    value: str
+class HermesAgentVersion(StrEnum):
+    V0_20_0 = "0.20.0"
 
-    def __post_init__(self) -> None:
-        if not self.value.strip() or "\0" in self.value:
-            raise ValueError("invalid Hermes agent version")
+
+def hermes_python_command(interpreter: Path) -> ProcessCommand:
+    if not interpreter.is_absolute():
+        raise ValueError("Hermes Python interpreter path must be absolute")
+    bridge = Path(__file__).with_name("_hermes_oneshot_bridge.py").resolve(strict=True)
+    return ProcessCommand((str(interpreter), str(bridge)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +227,8 @@ class HermesDiagnoser:
     maximum_prompt_bytes: int
 
     def __post_init__(self) -> None:
+        if not isinstance(self.agent_version, HermesAgentVersion):
+            raise ValueError("unsupported Hermes agent version")
         if not 1024 <= self.maximum_prompt_bytes <= 131_072:
             raise ValueError("Hermes prompt budget must be between 1024 and 131072 bytes")
 
@@ -233,7 +237,7 @@ class HermesDiagnoser:
         return _digest_text(
             "\0".join(
                 (
-                    "hermes-diagnoser-v2",
+                    "hermes-diagnoser-v3",
                     *self.command.arguments,
                     self.model.provider,
                     self.model.model,
@@ -262,6 +266,7 @@ class HermesDiagnoser:
                 self.model.reasoning,
                 str(self.limits.timeout.total_seconds()),
                 str(self.maximum_prompt_bytes),
+                self.agent_version.value,
                 _HARNESS_ASSETS_ADAPTER.dump_json(revision.assets).decode(),
             )
         )

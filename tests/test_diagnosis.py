@@ -35,6 +35,7 @@ from ofw import (
     PythonDiagnoser,
     PythonEntrypoint,
     Tool,
+    hermes_python_command,
 )
 from ofw.contracts import HarnessRevisionId, Sha256Digest
 from ofw.mine import (
@@ -133,13 +134,15 @@ def _repository(tmp_path: Path) -> tuple[Path, HarnessRevisionId]:
         "assert not Path('prompt.md').exists()\n"
         "assert not Path('trace_snapshot.json').exists()\n"
         "assert not Path('fake_hermes.py').exists()\n"
-        "assert '--safe-mode' in sys.argv\n"
-        "assert sys.argv[sys.argv.index('--toolsets') + 1] == 'context_engine'\n"
-        "assert sys.argv[sys.argv.index('--provider') + 1] == 'azure-foundry'\n"
-        "if 'invalid-output' in sys.argv:\n"
+        "assert len(sys.argv) == 5\n"
+        "assert sys.argv[1] == 'azure-foundry'\n"
+        "assert sys.argv[3] == 'high'\n"
+        "assert sys.argv[4] == '0.20.0'\n"
+        "assert all('TRACE_SNAPSHOT_JSON' not in argument for argument in sys.argv)\n"
+        "if sys.argv[2] == 'invalid-output':\n"
         "    print('not-json')\n"
         "    raise SystemExit(0)\n"
-        "prompt = sys.argv[sys.argv.index('-z') + 1]\n"
+        "prompt = sys.stdin.read()\n"
         "assert '\"relative_path\":\"prompt.md\"' in prompt\n"
         "assert 'fake_hermes.py' not in prompt\n"
         "snapshot_text = prompt.partition('TRACE_SNAPSHOT_JSON\\n')[2].partition("
@@ -281,7 +284,7 @@ def _hermes_diagnoser(root: Path, model: str = "fixture-deployment") -> HermesDi
     return HermesDiagnoser(
         ProcessCommand((sys.executable, str(root / "fake_hermes.py"))),
         ModelFingerprint("azure-foundry", model, "high"),
-        HermesAgentVersion("fixture-hermes-v1"),
+        HermesAgentVersion.V0_20_0,
         ProcessLimits(timedelta(seconds=2)),
         128_000,
     )
@@ -358,22 +361,23 @@ def test_hermes_rejects_asset_content_that_no_longer_matches_revision(tmp_path: 
     assert result.abstained_count == 4
 
 
-def test_hermes_fingerprint_binds_model_and_agent_version(tmp_path: Path) -> None:
+def test_hermes_fingerprint_binds_model_and_prompt_budget(tmp_path: Path) -> None:
     mine, harness = _mine_result(tmp_path)
     revision = harness.current_revision
     assert revision is not None
     first = _hermes_diagnoser(harness.root)
     changed_model = _hermes_diagnoser(harness.root, "other-deployment")
-    changed_version = HermesDiagnoser(
-        first.command,
-        first.model,
-        HermesAgentVersion("fixture-hermes-v2"),
-        first.limits,
-        first.maximum_prompt_bytes,
-    )
+    changed_budget = replace(first, maximum_prompt_bytes=64_000)
 
     assert first.fingerprint(revision.root) != changed_model.fingerprint(revision.root)
-    assert first.fingerprint(revision.root) != changed_version.fingerprint(revision.root)
+    assert first.fingerprint(revision.root) != changed_budget.fingerprint(revision.root)
+
+
+def test_official_hermes_command_uses_the_stdin_bridge() -> None:
+    command = hermes_python_command(Path(sys.executable))
+
+    assert command.arguments[0] == sys.executable
+    assert Path(command.arguments[1]).name == "_hermes_oneshot_bridge.py"
 
 
 def test_cluster_review_is_content_bound_and_deterministic(tmp_path: Path) -> None:
