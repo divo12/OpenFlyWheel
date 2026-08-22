@@ -12,7 +12,13 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from ofw.contracts import ComponentKind, HarnessRevision, HarnessRevisionId, Sha256Digest
+from ofw.contracts import (
+    ComponentKind,
+    HarnessAsset,
+    HarnessRevision,
+    HarnessRevisionId,
+    Sha256Digest,
+)
 from ofw.harness import Harness
 from ofw.mine import (
     MineResult,
@@ -159,6 +165,15 @@ class TraceDiagnosis:
 
 
 @dataclass(frozen=True, slots=True)
+class HermesAgentVersion:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value.strip() or "\0" in self.value:
+            raise ValueError("invalid Hermes agent version")
+
+
+@dataclass(frozen=True, slots=True)
 class PythonDiagnoser:
     entrypoint: PythonEntrypoint
     limits: ProcessLimits
@@ -180,7 +195,9 @@ class PythonDiagnoser:
         self,
         snapshot: TraceSnapshot,
         prepared: PreparedEnvironment,
+        revision: HarnessRevision,
     ) -> TraceDiagnosis:
+        del revision
         command = ProcessCommand(
             (
                 sys.executable,
@@ -197,6 +214,67 @@ class PythonDiagnoser:
             return _DIAGNOSIS_ADAPTER.validate_json(process.stdout)
         except ValidationError:
             return TraceDiagnosis.abstained(snapshot.trace.id)
+
+
+@dataclass(frozen=True, slots=True)
+class HermesDiagnoser:
+    command: ProcessCommand
+    model: ModelFingerprint
+    agent_version: HermesAgentVersion
+    limits: ProcessLimits
+    maximum_prompt_bytes: int
+
+    def __post_init__(self) -> None:
+        if not 1024 <= self.maximum_prompt_bytes <= 131_072:
+            raise ValueError("Hermes prompt budget must be between 1024 and 131072 bytes")
+
+    def fingerprint(self, root: Path) -> Sha256Digest:
+        del root
+        return _digest_text(
+            "\0".join(
+                (
+                    "hermes-diagnoser-v2",
+                    *self.command.arguments,
+                    self.model.provider,
+                    self.model.model,
+                    self.model.reasoning,
+                    self.agent_version.value,
+                    str(self.limits.timeout.total_seconds()),
+                    str(self.maximum_prompt_bytes),
+                )
+            )
+        )
+
+    def diagnose(
+        self,
+        snapshot: TraceSnapshot,
+        prepared: PreparedEnvironment,
+        revision: HarnessRevision,
+    ) -> TraceDiagnosis:
+        command = ProcessCommand(
+            (
+                sys.executable,
+                "-m",
+                "ofw._hermes_diagnosis_runner",
+                _COMMAND_ADAPTER.dump_json(self.command).decode(),
+                self.model.provider,
+                self.model.model,
+                self.model.reasoning,
+                str(self.limits.timeout.total_seconds()),
+                str(self.maximum_prompt_bytes),
+                _HARNESS_ASSETS_ADAPTER.dump_json(revision.assets).decode(),
+            )
+        )
+        process = prepared.run(command, _SNAPSHOT_ADAPTER.dump_json(snapshot).decode())
+        if process.timed_out or process.exit_code != 0:
+            return TraceDiagnosis.abstained(snapshot.trace.id)
+        try:
+            return _DIAGNOSIS_ADAPTER.validate_json(process.stdout)
+        except ValidationError:
+            return TraceDiagnosis.abstained(snapshot.trace.id)
+
+
+DiagnoserAdapter = PythonDiagnoser | HermesDiagnoser
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +378,10 @@ _DIAGNOSES_ADAPTER: TypeAdapter[tuple[TraceDiagnosis, ...]] = TypeAdapter(
     tuple[TraceDiagnosis, ...]
 )
 _RESULT_ADAPTER: TypeAdapter[DiagnosisResult] = TypeAdapter(DiagnosisResult)
+_COMMAND_ADAPTER: TypeAdapter[ProcessCommand] = TypeAdapter(ProcessCommand)
+_HARNESS_ASSETS_ADAPTER: TypeAdapter[tuple[HarnessAsset, ...]] = TypeAdapter(
+    tuple[HarnessAsset, ...]
+)
 _REVIEWS_ADAPTER: TypeAdapter[tuple[ClusterReview, ...]] = TypeAdapter(tuple[ClusterReview, ...])
 
 
@@ -334,7 +416,7 @@ class DiagnosisReview:
 class DiagnosisRun:
     source: Harness | HarnessRevision
     mine: MineResult
-    diagnoser: PythonDiagnoser
+    diagnoser: DiagnoserAdapter
     previous: DiagnosisResult | None = None
 
     def run(self) -> DiagnosisResult:
@@ -352,7 +434,7 @@ class DiagnosisRun:
         prepared = environment.prepare(revision, CanaryCase(CaseId("diagnosis"), ""))
         try:
             diagnoses = tuple(
-                self._diagnose(read_snapshot(admission, self.mine), prepared)
+                self._diagnose(read_snapshot(admission, self.mine), prepared, revision)
                 for admission in failures
                 if admission.snapshot_path is not None
             )
@@ -387,12 +469,14 @@ class DiagnosisRun:
         self,
         snapshot: TraceSnapshot,
         prepared: PreparedEnvironment,
+        revision: HarnessRevision,
     ) -> TraceDiagnosis:
-        diagnosis = self.diagnoser.diagnose(snapshot, prepared)
+        diagnosis = self.diagnoser.diagnose(snapshot, prepared, revision)
         if (
             diagnosis.trace_id != snapshot.trace.id
             or not _diagnosis_valid(diagnosis)
             or not _anchors_exist(diagnosis, snapshot)
+            or any(revision.component(component) is None for component in diagnosis.components)
         ):
             return TraceDiagnosis.abstained(snapshot.trace.id)
         return diagnosis

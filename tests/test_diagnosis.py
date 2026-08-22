@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -24,11 +25,16 @@ from ofw import (
     DiagnosisRun,
     FunctionName,
     Harness,
+    HermesAgentVersion,
+    HermesDiagnoser,
     MechanismKey,
+    ModelFingerprint,
     ModuleName,
+    ProcessCommand,
     ProcessLimits,
     PythonDiagnoser,
     PythonEntrypoint,
+    Tool,
 )
 from ofw.contracts import HarnessRevisionId, Sha256Digest
 from ofw.mine import (
@@ -66,6 +72,7 @@ def _repository(tmp_path: Path) -> tuple[Path, HarnessRevisionId]:
     root = tmp_path / "diagnosis-agent"
     root.mkdir()
     (root / "prompt.md").write_text("Be accurate.\n", encoding="utf-8")
+    (root / "tool.py").write_text("def search() -> str:\n    return 'result'\n", encoding="utf-8")
     (root / "diagnoser.py").write_text(
         "from __future__ import annotations\n"
         "import time\n"
@@ -102,10 +109,53 @@ def _repository(tmp_path: Path) -> tuple[Path, HarnessRevisionId]:
         "        (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, 'missing'),),\n"
         "        (ComponentKind.PROMPT,), Severity.LOW, 0.5,\n"
         "    )\n"
+        "def unconnected_component(snapshot: TraceSnapshot) -> TraceDiagnosis:\n"
+        "    observation = snapshot.observations[0]\n"
+        "    return TraceDiagnosis.proposed(\n"
+        "        snapshot.trace.id, MechanismKey('missing-component'), 'invalid', 'invalid',\n"
+        "        (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, observation.id.value),),\n"
+        "        (ComponentKind.MIDDLEWARE,), Severity.LOW, 0.5,\n"
+        "    )\n"
         "def slow(snapshot: TraceSnapshot) -> TraceDiagnosis:\n"
         "    del snapshot\n"
         "    time.sleep(2)\n"
         "    raise RuntimeError('late')\n",
+        encoding="utf-8",
+    )
+    (root / "fake_hermes.py").write_text(
+        "from __future__ import annotations\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from pydantic import TypeAdapter\n"
+        "from ofw import (ComponentKind, EvidenceAnchor, EvidenceAnchorKind, "
+        "MechanismKey, Severity, TraceDiagnosis)\n"
+        "from ofw.mine import TraceSnapshot\n"
+        "assert not Path('prompt.md').exists()\n"
+        "assert not Path('trace_snapshot.json').exists()\n"
+        "assert not Path('fake_hermes.py').exists()\n"
+        "assert '--safe-mode' in sys.argv\n"
+        "assert sys.argv[sys.argv.index('--toolsets') + 1] == 'context_engine'\n"
+        "assert sys.argv[sys.argv.index('--provider') + 1] == 'azure-foundry'\n"
+        "if 'invalid-output' in sys.argv:\n"
+        "    print('not-json')\n"
+        "    raise SystemExit(0)\n"
+        "prompt = sys.argv[sys.argv.index('-z') + 1]\n"
+        "assert '\"relative_path\":\"prompt.md\"' in prompt\n"
+        "assert 'fake_hermes.py' not in prompt\n"
+        "snapshot_text = prompt.partition('TRACE_SNAPSHOT_JSON\\n')[2].partition("
+        "'\\nCONNECTED_ASSETS_JSON\\n')[0]\n"
+        "snapshot = TypeAdapter(TraceSnapshot).validate_json(snapshot_text)\n"
+        "observation = snapshot.observations[0]\n"
+        "name = observation.name\n"
+        "mechanism = 'tool-schema' if name == 'tool' else 'prompt-gap'\n"
+        "component = ComponentKind.TOOL if name == 'tool' else ComponentKind.PROMPT\n"
+        "diagnosis = TraceDiagnosis.proposed(\n"
+        "    snapshot.trace.id, MechanismKey(mechanism), mechanism,\n"
+        "    'hermes fixture diagnosis',\n"
+        "    (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, observation.id.value),),\n"
+        "    (component,), Severity.HIGH, 0.95,\n"
+        ")\n"
+        "print(TypeAdapter(TraceDiagnosis).dump_json(diagnosis).decode())\n",
         encoding="utf-8",
     )
     _run_git(root, "init", "-q")
@@ -115,6 +165,7 @@ def _repository(tmp_path: Path) -> tuple[Path, HarnessRevisionId]:
     _run_git(root, "commit", "-qm", "fixture baseline")
     harness = Harness("diagnosis-agent", root=root)
     harness.connect_prompt(Path("prompt.md"))
+    harness.connect_tools(Tool("search", Path("tool.py")))
     return root, harness.process().id
 
 
@@ -214,6 +265,7 @@ def _mine_result(tmp_path: Path) -> tuple[MineResult, Harness]:
     )
     harness = Harness("diagnosis-agent", root=root)
     harness.connect_prompt(Path("prompt.md"))
+    harness.connect_tools(Tool("search", Path("tool.py")))
     harness.process()
     return result, harness
 
@@ -222,6 +274,16 @@ def _diagnoser(function: str, timeout: timedelta = timedelta(seconds=1)) -> Pyth
     return PythonDiagnoser(
         PythonEntrypoint(ModuleName("diagnoser"), FunctionName(function)),
         ProcessLimits(timeout),
+    )
+
+
+def _hermes_diagnoser(root: Path, model: str = "fixture-deployment") -> HermesDiagnoser:
+    return HermesDiagnoser(
+        ProcessCommand((sys.executable, str(root / "fake_hermes.py"))),
+        ModelFingerprint("azure-foundry", model, "high"),
+        HermesAgentVersion("fixture-hermes-v1"),
+        ProcessLimits(timedelta(seconds=2)),
+        128_000,
     )
 
 
@@ -239,6 +301,79 @@ def test_verified_failures_form_evidence_bound_mechanism_clusters(tmp_path: Path
     assert all(cluster.evidence for cluster in result.clusters)
     assert result.abstained_count == 1
     assert TraceId("good") not in tuple(diagnosis.trace_id for diagnosis in result.diagnoses)
+
+
+def test_hermes_diagnoser_runs_toolless_with_bounded_component_evidence(
+    tmp_path: Path,
+) -> None:
+    mine, harness = _mine_result(tmp_path)
+
+    result = DiagnosisRun(harness, mine, _hermes_diagnoser(harness.root)).run()
+
+    assert tuple(cluster.mechanism for cluster in result.clusters) == (
+        MechanismKey("prompt-gap"),
+        MechanismKey("tool-schema"),
+    )
+    assert all(
+        diagnosis.description == "hermes fixture diagnosis" for diagnosis in result.diagnoses
+    )
+    assert (harness.root / "prompt.md").read_text(encoding="utf-8") == "Be accurate.\n"
+
+
+def test_invalid_hermes_output_abstains_fail_closed(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+
+    result = DiagnosisRun(
+        harness,
+        mine,
+        _hermes_diagnoser(harness.root, "invalid-output"),
+    ).run()
+
+    assert not result.clusters
+    assert result.abstained_count == 4
+
+
+def test_hermes_prompt_budget_abstains_before_agent_execution(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    constrained = replace(
+        _hermes_diagnoser(harness.root),
+        maximum_prompt_bytes=1024,
+    )
+
+    result = DiagnosisRun(harness, mine, constrained).run()
+
+    assert not result.clusters
+    assert result.abstained_count == 4
+
+
+def test_hermes_rejects_asset_content_that_no_longer_matches_revision(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    (harness.root / "prompt.md").write_text("Changed after processing.\n", encoding="utf-8")
+
+    result = DiagnosisRun(revision, mine, _hermes_diagnoser(harness.root)).run()
+
+    assert not result.clusters
+    assert result.abstained_count == 4
+
+
+def test_hermes_fingerprint_binds_model_and_agent_version(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    first = _hermes_diagnoser(harness.root)
+    changed_model = _hermes_diagnoser(harness.root, "other-deployment")
+    changed_version = HermesDiagnoser(
+        first.command,
+        first.model,
+        HermesAgentVersion("fixture-hermes-v2"),
+        first.limits,
+        first.maximum_prompt_bytes,
+    )
+
+    assert first.fingerprint(revision.root) != changed_model.fingerprint(revision.root)
+    assert first.fingerprint(revision.root) != changed_version.fingerprint(revision.root)
 
 
 def test_cluster_review_is_content_bound_and_deterministic(tmp_path: Path) -> None:
@@ -338,6 +473,15 @@ def test_invalid_evidence_anchor_becomes_abstention(tmp_path: Path) -> None:
     mine, harness = _mine_result(tmp_path)
 
     result = DiagnosisRun(harness, mine, _diagnoser("invalid_anchor")).run()
+
+    assert not result.clusters
+    assert result.abstained_count == 4
+
+
+def test_unconnected_component_attribution_becomes_abstention(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+
+    result = DiagnosisRun(harness, mine, _diagnoser("unconnected_component")).run()
 
     assert not result.clusters
     assert result.abstained_count == 4
