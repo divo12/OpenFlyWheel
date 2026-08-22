@@ -16,6 +16,7 @@ from ofw import (
     BenchmarkPolicy,
     BenchmarkRunner,
     BenchmarkStatus,
+    DockerCompose,
     FunctionName,
     Harness,
     LocalProcess,
@@ -24,6 +25,7 @@ from ofw import (
     PythonEntrypoint,
     PythonLoop,
     PythonVerifier,
+    ServiceName,
     VerifierVerdict,
 )
 from ofw.contracts import HarnessRevision, Sha256Digest
@@ -106,17 +108,16 @@ def _harness(
 
 
 def _bundle(revision: HarnessRevision) -> ExportBundle:
-    payload = b'{"schema":"safe-snapshot","observations":[]}'
-    digest = Sha256Digest(f"sha256:{hashlib.sha256(payload).hexdigest()}")
-    snapshot = revision.root / ".ofw" / "benchmark-fixture.json"
-    snapshot.write_bytes(payload)
+    developer_snapshot = _snapshot_reference(revision, "developer")
+    selection_snapshot = _snapshot_reference(revision, "selection")
+    admission_snapshot = _snapshot_reference(revision, "admission")
     case = EvalCase(
         "developer-case",
         TraceId("developer-trace"),
         TraceFamilyId("developer-family"),
         ClusterFamilyId("developer-cluster"),
         ExportPartition.FRONTIER,
-        SnapshotReference(snapshot, digest),
+        developer_snapshot,
         (),
     )
     selection_case = EvalCase(
@@ -125,7 +126,7 @@ def _bundle(revision: HarnessRevision) -> ExportBundle:
         TraceFamilyId("selection-family"),
         ClusterFamilyId("selection-cluster"),
         ExportPartition.SELECTION,
-        SnapshotReference(snapshot, digest),
+        selection_snapshot,
         (),
     )
     admission_case = EvalCase(
@@ -134,7 +135,7 @@ def _bundle(revision: HarnessRevision) -> ExportBundle:
         TraceFamilyId("admission-family"),
         ClusterFamilyId("admission-cluster"),
         ExportPartition.ADMISSION,
-        SnapshotReference(snapshot, digest),
+        admission_snapshot,
         (),
     )
     root = revision.root / ".ofw" / "mine" / "exports" / "fixture"
@@ -164,18 +165,21 @@ def _bundle(revision: HarnessRevision) -> ExportBundle:
                     case.family_id,
                     case.cluster_family_id,
                     case.partition,
+                    case.snapshot,
                 ),
                 LedgerEntry(
                     selection_case.trace_id,
                     selection_case.family_id,
                     selection_case.cluster_family_id,
                     selection_case.partition,
+                    selection_case.snapshot,
                 ),
                 LedgerEntry(
                     admission_case.trace_id,
                     admission_case.family_id,
                     admission_case.cluster_family_id,
                     admission_case.partition,
+                    admission_case.snapshot,
                 ),
             )
         ),
@@ -197,6 +201,14 @@ def _bundle(revision: HarnessRevision) -> ExportBundle:
     )
 
 
+def _snapshot_reference(revision: HarnessRevision, label: str) -> SnapshotReference:
+    payload = f'{{"schema":"safe-snapshot","label":"{label}","observations":[]}}'.encode()
+    digest = Sha256Digest(f"sha256:{hashlib.sha256(payload).hexdigest()}")
+    snapshot = revision.root / ".ofw" / f"benchmark-{label}.json"
+    snapshot.write_bytes(payload)
+    return SnapshotReference(snapshot, digest)
+
+
 def _policy(*, max_attempts: int = 10) -> BenchmarkPolicy:
     return BenchmarkPolicy(
         repeats=2,
@@ -204,6 +216,32 @@ def _policy(*, max_attempts: int = 10) -> BenchmarkPolicy:
         simulation_copies=1,
         synthetic_weight=0.25,
     )
+
+
+def _reset_failure_harness(tmp_path: Path) -> Harness:
+    harness = _harness(tmp_path)
+    root = harness.root
+    compose = root / "compose.yaml"
+    compose.write_text(
+        "services:\n  agent:\n    image: fixture-agent:latest\n",
+        encoding="utf-8",
+    )
+    executable = root / "fake_docker.py"
+    executable.write_text(
+        "#!/usr/bin/env python3\nimport sys\nraise SystemExit(1 if 'down' in sys.argv else 0)\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    harness.connect_execute(
+        DockerCompose(
+            Path("compose.yaml"),
+            ServiceName("agent"),
+            executable,
+            ProcessLimits(timedelta(seconds=2)),
+        )
+    )
+    harness.process()
+    return harness
 
 
 def test_baseline_is_reproducible_and_holdouts_remain_sealed(tmp_path: Path) -> None:
@@ -294,3 +332,33 @@ def test_relabelled_holdout_case_still_fails_ledger_check(tmp_path: Path) -> Non
         BenchmarkRunner(harness, replace(bundle, developer_evals=forged_suite), _policy()).run()
 
     assert raised.value.code is BenchmarkErrorCode.HOLDOUT_LEAK
+
+
+def test_authorized_labels_cannot_swap_in_holdout_snapshot(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    bundle = _bundle(revision)
+    forged_case = replace(
+        bundle.developer_evals.cases[0],
+        snapshot=bundle.admission_holdout.cases[0].snapshot,
+    )
+    forged_suite = replace(bundle.developer_evals, cases=(forged_case,))
+
+    with pytest.raises(BenchmarkError) as raised:
+        BenchmarkRunner(harness, replace(bundle, developer_evals=forged_suite), _policy()).run()
+
+    assert raised.value.code is BenchmarkErrorCode.HOLDOUT_LEAK
+
+
+def test_reset_failure_persists_completed_attempt_evidence(tmp_path: Path) -> None:
+    harness = _reset_failure_harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    policy = BenchmarkPolicy(1, 1, 0, 0.25)
+
+    result = BenchmarkRunner(harness, _bundle(revision), policy).run()
+
+    assert result.status is BenchmarkStatus.ENVIRONMENT_ERROR
+    assert len(result.attempts) == 1
+    assert result.manifest_path.is_file()

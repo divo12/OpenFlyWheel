@@ -27,6 +27,7 @@ from ofw.runtime import (
 class BenchmarkStatus(StrEnum):
     COMPLETE = "complete"
     BUDGET_EXHAUSTED = "budget_exhausted"
+    ENVIRONMENT_ERROR = "environment_error"
 
 
 class BenchmarkErrorCode(StrEnum):
@@ -186,10 +187,14 @@ class BenchmarkRunner:
                             attempts.append(
                                 CaseAttempt(case_id, repeat, synthetic, weight, run, verified)
                             )
-                            execution.reset(prepared)
-                        if status is BenchmarkStatus.BUDGET_EXHAUSTED:
+                            try:
+                                execution.reset(prepared)
+                            except RuntimeError:
+                                status = BenchmarkStatus.ENVIRONMENT_ERROR
+                                break
+                        if status is not BenchmarkStatus.COMPLETE:
                             break
-                    if status is BenchmarkStatus.BUDGET_EXHAUSTED:
+                    if status is not BenchmarkStatus.COMPLETE:
                         break
             finally:
                 execution.destroy(prepared)
@@ -276,6 +281,7 @@ def _ledger_authorizes(case: EvalCase, bundle: ExportBundle) -> bool:
         and entry.trace_family_id == case.family_id
         and entry.cluster_family_id == case.cluster_family_id
         and entry.partition == case.partition
+        and entry.snapshot == case.snapshot
         for entry in bundle.ledger.entries
     )
 
