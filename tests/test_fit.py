@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+from pydantic import TypeAdapter
 
 from ofw import (
     BenchmarkPolicy,
+    BenchmarkResult,
     CandidateBuilder,
     CandidateEvidence,
     CandidatePolicy,
@@ -36,6 +38,7 @@ from ofw import (
     StatisticalGateMode,
     Tool,
     ofw,
+    read_fit_experience,
 )
 from ofw.candidate import CandidateBuild
 from ofw.contracts import HarnessRevision, Sha256Digest
@@ -94,7 +97,9 @@ def _harness(tmp_path: Path) -> Harness:
         "    frontier = 'frontier' in output or 'selection' in output or 'admission' in output\n"
         "    passed = ('FIXED' in output) if frontier else ('BROKEN' not in output)\n"
         "    verdict = VerifierVerdict.PASS if passed else VerifierVerdict.FAIL\n"
-        "    return VerifierResult(verdict, 1.0 if passed else 0.0, 'fixture')\n",
+        "    return VerifierResult(\n"
+        "        verdict, 1.0 if passed else 0.0, 'feedback:' + output\n"
+        "    )\n",
         encoding="utf-8",
     )
     _run_git(root, "init", "-q")
@@ -379,6 +384,7 @@ def test_paired_gates_reject_regression_and_admit_one_winner(tmp_path: Path) -> 
     result = campaign.run()
 
     assert campaign.run() == result
+    experience = read_fit_experience(result)
     assert result.winner_id == good.candidate.id
     good_outcome = next(
         outcome for outcome in result.outcomes if outcome.candidate_id == good.candidate.id
@@ -398,6 +404,50 @@ def test_paired_gates_reject_regression_and_admit_one_winner(tmp_path: Path) -> 
     assert bad_outcome.selection_result is None
     assert not bad.workspace.root.exists()
     assert good.workspace.root.exists()
+    assert tuple(item.candidate_id for item in experience.candidates) == (
+        good.candidate.id,
+        bad.candidate.id,
+    )
+    good_experience = experience.candidates[0]
+    assert good_experience.status is good_outcome.status
+    assert good_experience.manifest.hypothesis == "Fix frontier only."
+    assert good_experience.developer_baseline.path.is_file()
+    assert good_experience.developer_candidate.path == good_outcome.developer_result.manifest_path
+    assert tuple(case.trace_id for case in good_experience.developer_cases) == (
+        TraceId("frontier-case"),
+        TraceId("regression-case"),
+    )
+    indexed_feedback = tuple(
+        verifier.feedback
+        for case in good_experience.developer_cases
+        for attempt in case.attempts
+        for verifier in attempt.candidate_verifiers
+    )
+    source_feedback = tuple(
+        verifier.feedback
+        for attempt in good_outcome.developer_result.attempts
+        for verifier in attempt.verifiers
+    )
+    assert indexed_feedback == source_feedback
+    baseline_result = TypeAdapter(BenchmarkResult).validate_json(
+        good_experience.developer_baseline.path.read_bytes()
+    )
+    indexed_baseline_feedback = tuple(
+        verifier.feedback
+        for case in good_experience.developer_cases
+        for attempt in case.attempts
+        for verifier in attempt.baseline_verifiers
+    )
+    source_baseline_feedback = tuple(
+        verifier.feedback
+        for attempt in baseline_result.attempts
+        for verifier in attempt.verifiers
+    )
+    assert indexed_baseline_feedback == source_baseline_feedback
+    assert tuple(decision.passed for decision in good_experience.holdouts) == (True, True)
+    experience_payload = result.experience_path.read_bytes()
+    assert b"selection-case" not in experience_payload
+    assert b"admission-case" not in experience_payload
     assert any(
         delta.case_id == "frontier-case" and delta.pass_delta == 1 for delta in good_outcome.deltas
     )
@@ -435,6 +485,12 @@ def test_admission_failure_returns_no_winner_and_discards_finalist(tmp_path: Pat
 
     assert result.winner_id is None
     assert not candidate.workspace.root.exists()
+    original_experience = result.experience_path.read_bytes()
+    result.experience_path.write_bytes(original_experience + b" ")
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+    assert raised.value.code is FitErrorCode.RESULT_INVALID
+    result.experience_path.write_bytes(original_experience)
     result.manifest_path.write_bytes(result.manifest_path.read_bytes() + b" ")
     with pytest.raises(FitError) as raised:
         campaign.run()
@@ -461,6 +517,14 @@ def test_no_winner_cache_rejects_candidate_artifact_drift(tmp_path: Path) -> Non
     result = campaign.run()
     assert result.winner_id is None
     assert campaign.run() == result
+
+    developer_path = result.outcomes[0].developer_result.manifest_path
+    original_developer_result = developer_path.read_bytes()
+    developer_path.write_bytes(original_developer_result + b" ")
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+    assert raised.value.code is FitErrorCode.RESULT_INVALID
+    developer_path.write_bytes(original_developer_result)
 
     candidate.candidate.diff_path.write_bytes(candidate.candidate.diff_path.read_bytes() + b"\n")
 

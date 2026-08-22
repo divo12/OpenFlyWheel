@@ -79,6 +79,7 @@ class BenchmarkPolicy:
 @dataclass(frozen=True, slots=True)
 class CaseAttempt:
     case_id: str
+    source_case_id: str
     partition: ExportPartition
     critical: bool
     repeat: int
@@ -242,6 +243,7 @@ class BenchmarkRunner:
                             attempts.append(
                                 CaseAttempt(
                                     case_id,
+                                    case.id,
                                     case.partition,
                                     case.critical,
                                     repeat,
@@ -365,6 +367,7 @@ def _semantic(attempts: tuple[CaseAttempt, ...]) -> tuple[CaseAttempt, ...]:
     return tuple(
         CaseAttempt(
             attempt.case_id,
+            attempt.source_case_id,
             attempt.partition,
             attempt.critical,
             attempt.repeat,
