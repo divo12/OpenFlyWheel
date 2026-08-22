@@ -232,6 +232,7 @@ class DiagnosisResult:
     id: DiagnosisRunId
     mine_id: MineRunId
     revision_id: HarnessRevisionId
+    diagnoser_digest: Sha256Digest
     source_watermark: datetime
     diagnoses: tuple[TraceDiagnosis, ...]
     clusters: tuple[FailureCluster, ...]
@@ -298,6 +299,7 @@ class DiagnosisRun:
             run_id,
             self.mine.id,
             revision.id,
+            diagnoser_digest,
             self.mine.window.end,
             diagnoses,
             clusters,
