@@ -299,6 +299,8 @@ class CandidateBuilder:
             diff = _git_bytes(workspace.root, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
             if not diff:
                 raise CandidateError(CandidateErrorCode.NO_CHANGES, str(candidate_id))
+            if len(diff) > self.policy.maximum_changed_bytes:
+                raise CandidateError(CandidateErrorCode.BUDGET_EXCEEDED, str(len(diff)))
             diff_path = manifest_path.with_name("candidate.patch")
             write_artifact(diff_path, diff)
             components = tuple(
