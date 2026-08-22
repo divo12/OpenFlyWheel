@@ -67,7 +67,6 @@ class SyncStream(StrEnum):
 
 class AttributionLevel(StrEnum):
     EXACT = "exact"
-    RELEASE = "release"
     MISSING = "missing"
     AMBIGUOUS = "ambiguous"
 
@@ -153,20 +152,6 @@ class JsonDocument:
 
 
 @dataclass(frozen=True, slots=True)
-class LangfuseServerVersion:
-    major: int
-    minor: int
-    patch: int
-    raw: str
-
-
-@dataclass(frozen=True, slots=True)
-class LangfuseHealth:
-    version: LangfuseServerVersion
-    status: str
-
-
-@dataclass(frozen=True, slots=True)
 class ObservationRecord:
     id: ObservationId
     trace_id: TraceId | None
@@ -245,8 +230,6 @@ class SyncCheckpoint:
     stream: SyncStream
     cursor: PageCursor | None
     complete: bool
-    page_count: int
-    state_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,14 +247,6 @@ class TraceRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class CollectionCapability:
-    collection_ready: bool
-    mine_ready: bool
-    automatic_fit_ready: bool
-    reason: CollectionCapabilityReason
-
-
-@dataclass(frozen=True, slots=True)
 class CollectionResult:
     revision_id: HarnessRevisionId
     connection_id: LangfuseConnectionId
@@ -283,5 +258,5 @@ class CollectionResult:
     score_count: int
     gap_count: int
     snapshot_digest: Sha256Digest
-    capability: CollectionCapability
+    capability: CollectionCapabilityReason
     store_path: Path

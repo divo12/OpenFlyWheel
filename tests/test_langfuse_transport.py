@@ -17,11 +17,9 @@ from ofw import (
     CollectionError,
     CollectionErrorCode,
     LangfuseProject,
-    ObservationType,
-    ScoreDataType,
-    ScoreSubjectKind,
     TraceWindow,
 )
+from ofw.observability.langfuse.domain import ObservationType, ScoreDataType, ScoreSubjectKind
 from ofw.observability.langfuse.transport import LangfuseHttpClient
 from ofw.observability.langfuse.wire import ObservationResponseWire, ScoreResponseWire
 
@@ -204,7 +202,7 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
 ) -> None:
     client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
     try:
-        health = client.get_health()
+        client.check_health()
         observations = client.get_observations(_window())
         scores = client.get_scores(_window())
     finally:
@@ -224,8 +222,6 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
         if request.path == "/api/public/v3/scores"
     )
 
-    assert health.version.major == 4
-    assert health.status == "OK"
     assert observation.type is ObservationType.AGENT
     assert observation.trace_id is not None
     assert observation.trace_id.value == "trace-1"
@@ -349,7 +345,7 @@ def test_langfuse_v3_fails_with_explicit_version_error(
     client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
     try:
         with pytest.raises(CollectionError) as raised:
-            client.get_health()
+            client.check_health()
     finally:
         client.close()
 

@@ -17,10 +17,6 @@ _ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"[A-Z_][A-Z0-9_]*")
 LANGFUSE_CONNECTION_SCHEMA_VERSION = 1
 
 
-class LangfuseProjectMode(StrEnum):
-    EXISTING_PROJECT_READONLY = "existing_project_readonly"
-
-
 class CollectionErrorCode(StrEnum):
     UNSAFE_HOST = "unsafe_host"
     INVALID_ENVIRONMENT = "invalid_environment"
@@ -105,7 +101,6 @@ class LangfuseConnectionManifest:
     id: LangfuseConnectionId
     base_url: LangfuseBaseUrl
     environment: EnvironmentName
-    mode: LangfuseProjectMode
     public_key_environment: SecretEnvironmentVariable
     secret_key_environment: SecretEnvironmentVariable
     allow_private_network: bool
@@ -116,7 +111,6 @@ class LangfuseConnectionManifest:
             f'"schema_version":{LANGFUSE_CONNECTION_SCHEMA_VERSION},'
             f'"base_url":{_quote(self.base_url.value)},'
             f'"environment":{_quote(self.environment.value)},'
-            f'"mode":{_quote(self.mode.value)},'
             f'"public_key_environment":{_quote(self.public_key_environment.value)},'
             f'"secret_key_environment":{_quote(self.secret_key_environment.value)},'
             f'"allow_private_network":{_boolean(self.allow_private_network)}'
@@ -155,10 +149,9 @@ class LangfuseProject:
         environment_name = EnvironmentName(environment)
         public_ref = SecretEnvironmentVariable(public_key_environment)
         secret_ref = SecretEnvironmentVariable(secret_key_environment)
-        mode = LangfuseProjectMode.EXISTING_PROJECT_READONLY
         payload = (
             f"{LANGFUSE_CONNECTION_SCHEMA_VERSION}\0{url.value}\0"
-            f"{environment_name.value}\0{mode.value}\0"
+            f"{environment_name.value}\0"
             f"{public_ref.value}\0{secret_ref.value}\0{allow_private_network}"
         )
         connection_id = LangfuseConnectionId(f"lf_{hashlib.sha256(payload.encode()).hexdigest()}")
@@ -167,7 +160,6 @@ class LangfuseProject:
                 id=connection_id,
                 base_url=url,
                 environment=environment_name,
-                mode=mode,
                 public_key_environment=public_ref,
                 secret_key_environment=secret_ref,
                 allow_private_network=allow_private_network,
@@ -177,10 +169,6 @@ class LangfuseProject:
     @classmethod
     def from_manifest(cls, manifest: LangfuseConnectionManifest) -> LangfuseProject:
         return cls(manifest)
-
-    @property
-    def mode(self) -> LangfuseProjectMode:
-        return self._manifest.mode
 
     def manifest(self) -> LangfuseConnectionManifest:
         return self._manifest

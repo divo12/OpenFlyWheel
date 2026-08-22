@@ -8,6 +8,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import cast
 
+from pydantic import TypeAdapter
+
 from ofw.observability.langfuse.contracts import CollectionError, CollectionErrorCode
 from ofw.observability.langfuse.domain import (
     CollectionSyncId,
@@ -19,7 +21,9 @@ from ofw.observability.langfuse.domain import (
     SyncCheckpoint,
     SyncStream,
 )
-from ofw.observability.langfuse.serde import ObservationStorageModel, ScoreStorageModel
+
+_OBSERVATION_ADAPTER: TypeAdapter[ObservationRecord] = TypeAdapter(ObservationRecord)
+_SCORE_ADAPTER: TypeAdapter[ScoreRecord] = TypeAdapter(ScoreRecord)
 
 _OBSERVATION_UPSERT = """
 INSERT INTO langfuse_observations (
@@ -37,13 +41,11 @@ ON CONFLICT (connection_id, score_id, content_digest) DO NOTHING
 
 _CHECKPOINT_UPSERT = """
 INSERT INTO collection_checkpoints (
-    sync_id, stream, cursor, complete, page_count, state_version
-) VALUES (?, ?, ?, ?, 1, 1)
+    sync_id, stream, cursor, complete
+) VALUES (?, ?, ?, ?)
 ON CONFLICT (sync_id, stream) DO UPDATE SET
     cursor = excluded.cursor,
     complete = excluded.complete,
-    page_count = collection_checkpoints.page_count + 1,
-    state_version = collection_checkpoints.state_version + 1,
     updated_at = CURRENT_TIMESTAMP
 """
 
@@ -84,7 +86,6 @@ class CollectionStore:
         try:
             with self._connection:
                 for record in page.records:
-                    stored = ObservationStorageModel.from_record(record)
                     self._connection.execute(
                         _OBSERVATION_UPSERT,
                         (
@@ -93,7 +94,7 @@ class CollectionStore:
                             None if record.trace_id is None else record.trace_id.value,
                             record.start_time.isoformat(),
                             str(record.digest),
-                            stored.model_dump_json(),
+                            _OBSERVATION_ADAPTER.dump_json(record).decode(),
                         ),
                     )
                     self._connection.execute(
@@ -124,7 +125,6 @@ class CollectionStore:
         try:
             with self._connection:
                 for record in page.records:
-                    stored = ScoreStorageModel.from_record(record)
                     self._connection.execute(
                         _SCORE_UPSERT,
                         (
@@ -132,7 +132,7 @@ class CollectionStore:
                             record.id.value,
                             record.timestamp.isoformat(),
                             str(record.digest),
-                            stored.model_dump_json(),
+                            _SCORE_ADAPTER.dump_json(record).decode(),
                         ),
                     )
                     self._connection.execute(
@@ -156,10 +156,10 @@ class CollectionStore:
         stream: SyncStream,
     ) -> SyncCheckpoint | None:
         row = cast(
-            tuple[str | None, int, int, int] | None,
+            tuple[str | None, int] | None,
             self._connection.execute(
                 """
-                SELECT cursor, complete, page_count, state_version
+                SELECT cursor, complete
                 FROM collection_checkpoints
                 WHERE sync_id = ? AND stream = ?
                 """,
@@ -168,14 +168,12 @@ class CollectionStore:
         )
         if row is None:
             return None
-        cursor, complete, page_count, state_version = row
+        cursor, complete = row
         return SyncCheckpoint(
             sync_id=sync_id,
             stream=stream,
             cursor=None if cursor is None else PageCursor(cursor),
             complete=bool(complete),
-            page_count=page_count,
-            state_version=state_version,
         )
 
     def observations(self, sync_id: CollectionSyncId) -> tuple[ObservationRecord, ...]:
@@ -193,9 +191,7 @@ class CollectionStore:
             (sync_id.value,),
         )
         rows = cast(Iterable[tuple[str]], cursor)
-        return tuple(
-            ObservationStorageModel.model_validate_json(row[0]).to_record() for row in rows
-        )
+        return tuple(_OBSERVATION_ADAPTER.validate_json(row[0]) for row in rows)
 
     def scores(self, sync_id: CollectionSyncId) -> tuple[ScoreRecord, ...]:
         cursor = self._connection.execute(
@@ -212,7 +208,7 @@ class CollectionStore:
             (sync_id.value,),
         )
         rows = cast(Iterable[tuple[str]], cursor)
-        return tuple(ScoreStorageModel.model_validate_json(row[0]).to_record() for row in rows)
+        return tuple(_SCORE_ADAPTER.validate_json(row[0]) for row in rows)
 
     def _advance_checkpoint(
         self,

@@ -1,10 +1,5 @@
 BEGIN IMMEDIATE;
 
-CREATE TABLE IF NOT EXISTS ofw_schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE langfuse_observations (
     connection_id TEXT NOT NULL,
     observation_id TEXT NOT NULL,
@@ -54,13 +49,10 @@ CREATE TABLE collection_checkpoints (
     stream TEXT NOT NULL CHECK (stream IN ('observations', 'scores')),
     cursor TEXT,
     complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
-    page_count INTEGER NOT NULL CHECK (page_count > 0),
-    state_version INTEGER NOT NULL CHECK (state_version > 0),
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (sync_id, stream)
 );
 
-INSERT INTO ofw_schema_migrations (version) VALUES (1);
 PRAGMA user_version = 1;
 
 COMMIT;

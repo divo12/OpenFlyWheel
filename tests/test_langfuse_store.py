@@ -6,7 +6,9 @@ import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ofw import (
+from ofw import Sha256Digest
+from ofw.observability.langfuse.domain import (
+    CollectionSyncId,
     JsonDocument,
     ObservationId,
     ObservationPage,
@@ -21,11 +23,10 @@ from ofw import (
     ScoreSource,
     ScoreSubject,
     ScoreSubjectKind,
-    Sha256Digest,
+    SyncStream,
     TraceId,
     TracePayload,
 )
-from ofw.observability.langfuse.domain import CollectionSyncId, SyncStream
 from ofw.observability.langfuse.store import CollectionStore
 
 
@@ -94,8 +95,6 @@ def test_migrates_catalog_and_round_trips_atomic_pages(tmp_path: Path) -> None:
         checkpoint = store.checkpoint(sync_id, SyncStream.OBSERVATIONS)
         assert checkpoint is not None
         assert checkpoint.cursor == PageCursor("next-page")
-        assert checkpoint.page_count == 1
-        assert checkpoint.state_version == 1
         assert not checkpoint.complete
         assert store.observations(sync_id) == (_observation("obs-1"),)
     finally:
@@ -115,8 +114,6 @@ def test_migrates_catalog_and_round_trips_atomic_pages(tmp_path: Path) -> None:
         assert completed is not None
         assert completed.complete
         assert completed.cursor is None
-        assert completed.page_count == 2
-        assert completed.state_version == 2
         assert tuple(record.id.value for record in reopened.observations(sync_id)) == (
             "obs-1",
             "obs-2",
@@ -146,8 +143,6 @@ def test_repeated_observation_and_score_pages_are_idempotent(tmp_path: Path) -> 
         score_checkpoint = store.checkpoint(score_sync, SyncStream.SCORES)
         assert observation_checkpoint is not None
         assert score_checkpoint is not None
-        assert observation_checkpoint.page_count == 2
-        assert score_checkpoint.page_count == 2
     finally:
         store.close()
 

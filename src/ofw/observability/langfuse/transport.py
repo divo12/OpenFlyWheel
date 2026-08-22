@@ -19,7 +19,6 @@ from ofw.observability.langfuse.contracts import (
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import (
-    LangfuseHealth,
     ObservationPage,
     PageCursor,
     ScorePage,
@@ -58,13 +57,13 @@ class LangfuseHttpClient:
     def close(self) -> None:
         self._client.close()
 
-    def get_health(self) -> LangfuseHealth:
+    def check_health(self) -> None:
         response = self._get(
             LangfuseEndpoint.HEALTH,
             (),
             TypeAdapter(HealthWire),
         )
-        return response.normalize()
+        response.validate_server_version()
 
     def get_observations(
         self,

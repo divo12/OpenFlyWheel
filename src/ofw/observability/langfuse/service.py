@@ -18,7 +18,6 @@ from ofw.observability.langfuse.contracts import (
 )
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
-    CollectionCapability,
     CollectionCapabilityReason,
     CollectionResult,
     CollectionSyncId,
@@ -70,7 +69,7 @@ def collect(
         project = LangfuseProject.from_manifest(revision.observability)
         client = LangfuseHttpClient(project)
         try:
-            client.get_health()
+            client.check_health()
             _sync_observations(
                 client,
                 store,
@@ -305,7 +304,7 @@ def _multiple_values(values: tuple[str | None, ...]) -> bool:
     return len({value for value in values if value}) > 1
 
 
-def _capability(traces: tuple[TraceRecord, ...]) -> CollectionCapability:
+def _capability(traces: tuple[TraceRecord, ...]) -> CollectionCapabilityReason:
     if not traces:
         reason = CollectionCapabilityReason.NO_TRACES
     elif any(trace.attribution is AttributionLevel.AMBIGUOUS for trace in traces):
@@ -316,13 +315,7 @@ def _capability(traces: tuple[TraceRecord, ...]) -> CollectionCapability:
         reason = CollectionCapabilityReason.INCOMPLETE_TRACE
     else:
         reason = CollectionCapabilityReason.READY
-    ready = reason is CollectionCapabilityReason.READY
-    return CollectionCapability(
-        collection_ready=True,
-        mine_ready=ready,
-        automatic_fit_ready=ready,
-        reason=reason,
-    )
+    return reason
 
 
 def _snapshot_digest(

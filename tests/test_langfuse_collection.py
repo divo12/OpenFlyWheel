@@ -14,8 +14,6 @@ from urllib.parse import parse_qsl, urlsplit
 import pytest
 
 from ofw import (
-    AttributionLevel,
-    CollectionCapabilityReason,
     CollectionError,
     CollectionErrorCode,
     Harness,
@@ -25,7 +23,12 @@ from ofw import (
     TraceWindow,
     ofw,
 )
-from ofw.observability.langfuse.domain import CollectionSyncId, SyncStream
+from ofw.observability.langfuse.domain import (
+    AttributionLevel,
+    CollectionCapabilityReason,
+    CollectionSyncId,
+    SyncStream,
+)
 from ofw.observability.langfuse.store import CollectionStore
 
 
@@ -255,10 +258,7 @@ def test_collects_1001_observations_and_refreshes_completed_window(
     assert first.traces[0].root_observation_ids[0].value == "obs-0000"
     assert first.traces[0].score_ids[0].value == "score-1"
     assert first.traces[0].attribution is AttributionLevel.EXACT
-    assert first.capability.collection_ready
-    assert first.capability.mine_ready
-    assert first.capability.automatic_fit_ready
-    assert first.capability.reason is CollectionCapabilityReason.READY
+    assert first.capability is CollectionCapabilityReason.READY
     assert collection_server.state.writes == 0
 
 
@@ -277,10 +277,7 @@ def test_missing_revision_metadata_is_collected_but_not_fit_ready(
     )
 
     assert result.observation_count == 2
-    assert result.capability.collection_ready
-    assert not result.capability.mine_ready
-    assert not result.capability.automatic_fit_ready
-    assert result.capability.reason is CollectionCapabilityReason.MISSING_REVISION_ATTRIBUTION
+    assert result.capability is CollectionCapabilityReason.MISSING_REVISION_ATTRIBUTION
 
 
 def test_wrong_revision_metadata_is_ambiguous_and_not_fit_ready(
@@ -299,11 +296,10 @@ def test_wrong_revision_metadata_is_ambiguous_and_not_fit_ready(
     )
 
     assert result.traces[0].attribution is AttributionLevel.AMBIGUOUS
-    assert not result.capability.automatic_fit_ready
-    assert result.capability.reason is CollectionCapabilityReason.AMBIGUOUS_REVISION_ATTRIBUTION
+    assert result.capability is CollectionCapabilityReason.AMBIGUOUS_REVISION_ATTRIBUTION
 
 
-def test_empty_window_is_collection_ready_but_not_mine_ready(
+def test_empty_window_reports_no_traces(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
@@ -319,9 +315,7 @@ def test_empty_window_is_collection_ready_but_not_mine_ready(
 
     assert result.observation_count == 0
     assert not result.traces
-    assert result.capability.collection_ready
-    assert not result.capability.mine_ready
-    assert result.capability.reason is CollectionCapabilityReason.NO_TRACES
+    assert result.capability is CollectionCapabilityReason.NO_TRACES
 
 
 def test_failed_second_page_resumes_from_committed_cursor(

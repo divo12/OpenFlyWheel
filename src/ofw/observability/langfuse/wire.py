@@ -13,8 +13,6 @@ from ofw.contracts import Sha256Digest
 from ofw.observability.langfuse.contracts import CollectionError, CollectionErrorCode
 from ofw.observability.langfuse.domain import (
     JsonDocument,
-    LangfuseHealth,
-    LangfuseServerVersion,
     ObservationId,
     ObservationLevel,
     ObservationPage,
@@ -42,22 +40,15 @@ class HealthWire(BaseModel):
     version: str
     status: str
 
-    def normalize(self) -> LangfuseHealth:
+    def validate_server_version(self) -> None:
         matched = _VERSION_PATTERN.match(self.version)
         if matched is None:
             raise CollectionError(CollectionErrorCode.INVALID_RESPONSE, self.version)
-        version = LangfuseServerVersion(
-            major=int(matched.group(1)),
-            minor=int(matched.group(2)),
-            patch=int(matched.group(3)),
-            raw=self.version,
-        )
-        if version.major != 4:
+        if int(matched.group(1)) != 4:
             raise CollectionError(
                 CollectionErrorCode.UNSUPPORTED_LANGFUSE_VERSION,
                 self.version,
             )
-        return LangfuseHealth(version=version, status=self.status)
 
 
 class ObservationWire(BaseModel):

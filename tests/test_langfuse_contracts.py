@@ -14,7 +14,6 @@ from ofw import (
     CollectionErrorCode,
     Harness,
     LangfuseProject,
-    LangfuseProjectMode,
     TraceWindow,
     ofw,
 )
@@ -54,7 +53,6 @@ def test_from_env_keeps_credentials_out_of_manifest_and_repr(
     manifest = project.manifest()
     rendered = manifest.to_json()
 
-    assert project.mode is LangfuseProjectMode.EXISTING_PROJECT_READONLY
     assert manifest.environment.value == "production"
     assert manifest.public_key_environment.value == "LANGFUSE_PUBLIC_KEY"
     assert manifest.secret_key_environment.value == "LANGFUSE_SECRET_KEY"
