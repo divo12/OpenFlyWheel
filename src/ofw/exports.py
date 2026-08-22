@@ -214,6 +214,7 @@ class EvalCase:
     verifier_score_ids: tuple[ScoreId, ...]
     deterministic: bool = True
     repeats: int = 1
+    critical: bool = False
 
 
 @dataclass(frozen=True, slots=True)

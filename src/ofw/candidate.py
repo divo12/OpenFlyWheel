@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from ofw.contracts import (
     AssetAccess,
@@ -40,6 +40,7 @@ class CandidateErrorCode(StrEnum):
     FROZEN_ASSET_CHANGED = "frozen_asset_changed"
     NO_CHANGES = "no_changes"
     REVISION_STALE = "revision_stale"
+    MANIFEST_INVALID = "manifest_invalid"
 
 
 class CandidateError(Exception):
@@ -194,9 +195,17 @@ class CandidateRevision:
     branch: CandidateBranch
     root: Path
     changed_files: tuple[Path, ...]
+    changed_file_states: tuple[CandidateFileState, ...]
     changed_components: tuple[ComponentKind, ...]
     manifest_path: Path
     diff_path: Path
+    diff_digest: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateFileState:
+    path: Path
+    digest: Sha256Digest
 
 
 @dataclass(slots=True)
@@ -248,30 +257,12 @@ class CandidateBuilder:
             )
             for edit in ordered_edits
         )
-        candidate_id = CandidateId(
-            "candidate_"
-            + hashlib.sha256(
-                "\0".join(
-                    (
-                        str(self.revision.id),
-                        str(self.evidence.digest),
-                        str(self.policy.digest),
-                        str(int(CandidateSchemaVersion.V1)),
-                        prediction.hypothesis,
-                        *(cluster.value for cluster in prediction.target_clusters),
-                        *prediction.at_risk_cases,
-                        *(component.value for component in prediction.affected_components),
-                        *(cluster.value for cluster in prediction.memory_candidates),
-                        str(prediction.expected_quality_delta),
-                        str(prediction.expected_cost_delta),
-                        str(prediction.expected_latency_delta),
-                        *(intent.path.as_posix() for intent in intents),
-                        *(str(intent.base_digest) for intent in intents),
-                        *(str(intent.replacement_digest) for intent in intents),
-                        *(_selector_text(intent.selector) for intent in intents),
-                    )
-                ).encode()
-            ).hexdigest()
+        candidate_id = _candidate_id(
+            self.revision.id,
+            self.evidence.digest,
+            self.policy.digest,
+            prediction,
+            intents,
         )
         manifest = CandidateManifest(
             CandidateSchemaVersion.V1,
@@ -317,9 +308,14 @@ class CandidateBuilder:
                 workspace.branch,
                 workspace.root,
                 tuple(edit.path for edit in ordered_edits),
+                tuple(
+                    CandidateFileState(edit.path, _digest_file(workspace.root / edit.path))
+                    for edit in ordered_edits
+                ),
                 components,
                 manifest_path,
                 diff_path,
+                _digest_bytes(diff),
             )
             return CandidateBuild(candidate, workspace)
         except Exception:
@@ -505,11 +501,80 @@ def _digest_file(path: Path) -> Sha256Digest:
 
 
 def _digest_text(value: str) -> Sha256Digest:
-    return Sha256Digest(f"sha256:{hashlib.sha256(value.encode()).hexdigest()}")
+    return _digest_bytes(value.encode())
+
+
+def _digest_bytes(value: bytes) -> Sha256Digest:
+    return Sha256Digest(f"sha256:{hashlib.sha256(value).hexdigest()}")
 
 
 def _component_sort_key(component: ComponentKind) -> str:
     return component.value
+
+
+def read_candidate_manifest(path: Path) -> CandidateManifest:
+    try:
+        return _MANIFEST_ADAPTER.validate_json(path.read_bytes())
+    except (OSError, ValidationError) as error:
+        raise CandidateError(CandidateErrorCode.MANIFEST_INVALID, str(path)) from error
+
+
+def validate_candidate_revision(
+    candidate: CandidateRevision,
+    champion: HarnessRevision,
+) -> None:
+    manifest = read_candidate_manifest(candidate.manifest_path)
+    if (
+        candidate.base_revision_id != champion.id
+        or manifest.candidate_id != candidate.id
+        or manifest.base_revision_id != champion.id
+        or _candidate_id(
+            manifest.base_revision_id,
+            manifest.evidence_digest,
+            manifest.policy_digest,
+            ChangePrediction(
+                manifest.hypothesis,
+                manifest.target_clusters,
+                manifest.at_risk_cases,
+                manifest.affected_components,
+                manifest.memory_candidates,
+                manifest.expected_quality_delta,
+                manifest.expected_cost_delta,
+                manifest.expected_latency_delta,
+            ),
+            manifest.edits,
+        )
+        != candidate.id
+    ):
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
+    try:
+        patch = candidate.diff_path.read_bytes()
+    except OSError as error:
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value) from error
+    current = _git_bytes(candidate.root, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
+    if patch != current or _digest_bytes(patch) != candidate.diff_digest:
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
+    changed = _git_bytes(candidate.root, "diff", "--name-only", "-z", "HEAD", "--")
+    try:
+        changed_files = tuple(
+            sorted(Path(value.decode()) for value in changed.split(b"\0") if value)
+        )
+    except UnicodeDecodeError as error:
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value) from error
+    if changed_files != tuple(sorted(candidate.changed_files)):
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
+    for state in candidate.changed_file_states:
+        if _digest_file(candidate.root / state.path) != state.digest:
+            raise CandidateError(CandidateErrorCode.REVISION_STALE, state.path.as_posix())
+    for asset in champion.assets:
+        if (
+            asset.access is AssetAccess.FROZEN
+            and _digest_file(candidate.root / asset.source.relative_path) != asset.digest
+        ):
+            raise CandidateError(
+                CandidateErrorCode.FROZEN_ASSET_CHANGED,
+                asset.source.relative_path.as_posix(),
+            )
 
 
 def _edit_sort_key(edit: FileEdit) -> str:
@@ -518,6 +583,40 @@ def _edit_sort_key(edit: FileEdit) -> str:
 
 def _selector_text(selector: LineRange | None) -> str:
     return "all" if selector is None else f"{selector.start}:{selector.end}"
+
+
+def _candidate_id(
+    revision_id: HarnessRevisionId,
+    evidence_digest: Sha256Digest,
+    policy_digest: Sha256Digest,
+    prediction: ChangePrediction,
+    intents: tuple[EditIntent, ...],
+) -> CandidateId:
+    return CandidateId(
+        "candidate_"
+        + hashlib.sha256(
+            "\0".join(
+                (
+                    str(revision_id),
+                    str(evidence_digest),
+                    str(policy_digest),
+                    str(int(CandidateSchemaVersion.V1)),
+                    prediction.hypothesis,
+                    *(cluster.value for cluster in prediction.target_clusters),
+                    *prediction.at_risk_cases,
+                    *(component.value for component in prediction.affected_components),
+                    *(cluster.value for cluster in prediction.memory_candidates),
+                    str(prediction.expected_quality_delta),
+                    str(prediction.expected_cost_delta),
+                    str(prediction.expected_latency_delta),
+                    *(intent.path.as_posix() for intent in intents),
+                    *(str(intent.base_digest) for intent in intents),
+                    *(str(intent.replacement_digest) for intent in intents),
+                    *(_selector_text(intent.selector) for intent in intents),
+                )
+            ).encode()
+        ).hexdigest()
+    )
 
 
 def _copy_revision_assets(revision: HarnessRevision, root: Path) -> None:
