@@ -31,6 +31,7 @@ from ofw.contracts import (
 logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_TOOL_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,8 +40,21 @@ class EditableFile:
 
 
 @dataclass(frozen=True, slots=True)
+class Tool:
+    name: str
+    source: Path | EditableFile
+
+    def __post_init__(self) -> None:
+        if _TOOL_NAME_PATTERN.fullmatch(self.name) is None:
+            raise HarnessValidationError(HarnessErrorCode.INVALID_TOOL_NAME, self.name)
+        if not isinstance(self.source, (Path, EditableFile)):
+            raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(self.source))
+
+
+@dataclass(frozen=True, slots=True)
 class _FileRegistration:
     component: ComponentKind
+    name: str | None
     path: Path
     access: AssetAccess
 
@@ -76,12 +90,14 @@ class Harness:
         self._register_files(ComponentKind.PROMPT, sources)
         return self
 
-    def connect_tool_implementations(self, *sources: Path | EditableFile) -> Harness:
-        self._register_files(ComponentKind.TOOL_IMPLEMENTATION, sources)
-        return self
-
-    def connect_tool_descriptions(self, *sources: Path | EditableFile) -> Harness:
-        self._register_files(ComponentKind.TOOL_DESCRIPTION, sources)
+    def connect_tools(self, *tools: Tool) -> Harness:
+        for tool in tools:
+            if any(
+                registration.component is ComponentKind.TOOL and registration.name == tool.name
+                for registration in self._files
+            ):
+                raise HarnessValidationError(HarnessErrorCode.DUPLICATE_TOOL, tool.name)
+            self._files.append(_registration(ComponentKind.TOOL, tool.source, tool.name))
         return self
 
     def connect_skills(self, *sources: Path | EditableFile) -> Harness:
@@ -102,17 +118,7 @@ class Harness:
         sources: tuple[Path | EditableFile, ...],
     ) -> None:
         for source in sources:
-            if isinstance(source, EditableFile):
-                registration = _FileRegistration(
-                    component,
-                    source.path,
-                    AssetAccess.FIT_EDITABLE,
-                )
-            elif isinstance(source, Path):
-                registration = _FileRegistration(component, source, AssetAccess.FROZEN)
-            else:
-                raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(source))
-            self._files.append(registration)
+            self._files.append(_registration(component, source, None))
 
     def process(self) -> HarnessRevision:
         logger.debug("Compiling harness revision: %s", self.name)
@@ -167,6 +173,7 @@ def _compile_components(
             _CompiledAsset(
                 component=registration.component,
                 asset=HarnessAsset(
+                    name=registration.name,
                     access=registration.access,
                     source=WorkspaceFile(relative_path=relative),
                     digest=_digest_file(resolved),
@@ -201,6 +208,8 @@ def _validate_component_boundaries(compiled: list[_CompiledAsset]) -> None:
                     HarnessErrorCode.COMPONENT_OVERLAP,
                     item.asset.source.relative_path.as_posix(),
                 )
+            if item.component is ComponentKind.TOOL and existing.asset.name != item.asset.name:
+                continue
             code = (
                 HarnessErrorCode.DUPLICATE_ASSET
                 if existing.asset.access is item.asset.access
@@ -217,6 +226,7 @@ def _component_digest(
     for asset in assets:
         fields.extend(
             (
+                asset.name or "",
                 asset.access.value,
                 asset.source.relative_path.as_posix(),
                 str(asset.digest),
@@ -229,8 +239,20 @@ def _compiled_asset_sort_key(item: _CompiledAsset) -> tuple[str, str, str]:
     return (
         item.component.value,
         item.asset.source.relative_path.as_posix(),
-        item.asset.access.value,
+        item.asset.name or "",
     )
+
+
+def _registration(
+    component: ComponentKind,
+    source: Path | EditableFile,
+    name: str | None,
+) -> _FileRegistration:
+    if isinstance(source, EditableFile):
+        return _FileRegistration(component, name, source.path, AssetAccess.FIT_EDITABLE)
+    if isinstance(source, Path):
+        return _FileRegistration(component, name, source, AssetAccess.FROZEN)
+    raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(source))
 
 
 def _resolve_file(root: Path, source: Path) -> tuple[Path, Path]:

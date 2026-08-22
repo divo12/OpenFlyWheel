@@ -19,6 +19,7 @@ from ofw import (
     HarnessErrorCode,
     HarnessRevision,
     HarnessValidationError,
+    Tool,
     WorkspaceFile,
     ofw,
 )
@@ -83,10 +84,9 @@ def test_process_creates_typed_immutable_revision_and_manifest(tmp_path: Path) -
         revision.harness_name = "changed"  # type: ignore[misc]
 
 
-def test_process_records_only_six_ahe_components_for_polyglot_agent(tmp_path: Path) -> None:
+def test_process_records_five_file_level_components_for_polyglot_agent(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     files = (
-        Path("tool_descriptions/search.yaml"),
         Path("tools/search.ts"),
         Path("tools/worker.go"),
         Path("skills/research/SKILL.md"),
@@ -99,12 +99,9 @@ def test_process_records_only_six_ahe_components_for_polyglot_agent(tmp_path: Pa
         path.write_text(f"fixture: {relative_path.as_posix()}\n", encoding="utf-8")
 
     harness = _configured_harness(root)
-    harness.connect_tool_descriptions(
-        ofw.editable(Path("tool_descriptions/search.yaml")),
-    )
-    harness.connect_tool_implementations(
-        ofw.editable(Path("tools/search.ts")),
-        ofw.editable(Path("tools/worker.go")),
+    harness.connect_tools(
+        Tool(name="search", source=ofw.editable(Path("tools/search.ts"))),
+        Tool(name="worker", source=ofw.editable(Path("tools/worker.go"))),
     )
     harness.connect_skills(ofw.editable(Path("skills/research/SKILL.md")))
     harness.connect_subagents(ofw.editable(Path("subagents/reviewer.yaml")))
@@ -113,57 +110,47 @@ def test_process_records_only_six_ahe_components_for_polyglot_agent(tmp_path: Pa
     revision = harness.process()
 
     assert {component.kind for component in revision.components} == set(ComponentKind)
-    assert len(revision.components) == 6
+    assert len(revision.components) == 5
     assert all(component.assets for component in revision.components)
     assert all(str(component.digest).startswith("sha256:") for component in revision.components)
-    assert Path("tool_descriptions/search.yaml") in revision.editable_files
     assert Path("tools/search.ts") in revision.editable_files
     assert Path("tools/worker.go") in revision.editable_files
 
 
-def test_tool_description_and_implementation_are_distinct_components(tmp_path: Path) -> None:
+def test_tool_object_preserves_name_and_source(tmp_path: Path) -> None:
     root = _repository(tmp_path)
-    description = root / "search.yaml"
     implementation = root / "search.ts"
-    description.write_text("name: search\n", encoding="utf-8")
     implementation.write_text("export const search = () => [];\n", encoding="utf-8")
     harness = _configured_harness(root)
-    harness.connect_tool_descriptions(ofw.editable(Path("search.yaml")))
-    harness.connect_tool_implementations(ofw.editable(Path("search.ts")))
+    harness.connect_tools(Tool(name="search", source=ofw.editable(Path("search.ts"))))
 
     revision = harness.process()
 
-    description_component = _required_component(revision, ComponentKind.TOOL_DESCRIPTION)
-    implementation_component = _required_component(revision, ComponentKind.TOOL_IMPLEMENTATION)
-    assert description_component.assets[0].source.relative_path == Path("search.yaml")
-    assert implementation_component.assets[0].source.relative_path == Path("search.ts")
-    assert description_component.digest != implementation_component.digest
+    tool_component = _required_component(revision, ComponentKind.TOOL)
+    assert tool_component.assets[0].name == "search"
+    assert tool_component.assets[0].source.relative_path == Path("search.ts")
 
 
-def test_component_fingerprint_localizes_a_tool_implementation_change(tmp_path: Path) -> None:
+def test_component_fingerprint_localizes_a_tool_change(tmp_path: Path) -> None:
     root = _repository(tmp_path)
-    description = root / "search.yaml"
     implementation = root / "search.ts"
-    description.write_text("name: search\n", encoding="utf-8")
     implementation.write_text("export const search = () => 1;\n", encoding="utf-8")
     first_harness = _configured_harness(root)
-    first_harness.connect_tool_descriptions(ofw.editable(Path("search.yaml")))
-    first_harness.connect_tool_implementations(ofw.editable(Path("search.ts")))
+    first_harness.connect_tools(
+        Tool(name="search", source=ofw.editable(Path("search.ts"))),
+    )
     first = first_harness.process()
 
     implementation.write_text("export const search = () => 2;\n", encoding="utf-8")
     second_harness = _configured_harness(root)
-    second_harness.connect_tool_descriptions(ofw.editable(Path("search.yaml")))
-    second_harness.connect_tool_implementations(ofw.editable(Path("search.ts")))
+    second_harness.connect_tools(
+        Tool(name="search", source=ofw.editable(Path("search.ts"))),
+    )
     second = second_harness.process()
 
     assert (
-        _required_component(first, ComponentKind.TOOL_IMPLEMENTATION).digest
-        != _required_component(second, ComponentKind.TOOL_IMPLEMENTATION).digest
-    )
-    assert (
-        _required_component(first, ComponentKind.TOOL_DESCRIPTION).digest
-        == _required_component(second, ComponentKind.TOOL_DESCRIPTION).digest
+        _required_component(first, ComponentKind.TOOL).digest
+        != _required_component(second, ComponentKind.TOOL).digest
     )
     assert (
         _required_component(first, ComponentKind.PROMPT).digest
@@ -196,6 +183,46 @@ def test_file_cannot_be_owned_by_two_components(tmp_path: Path) -> None:
         harness.process()
 
     assert raised.value.code is HarnessErrorCode.COMPONENT_OVERLAP
+
+
+@pytest.mark.parametrize("name", ("", "contains spaces", "UPPERCASE"))
+def test_invalid_tool_name_fails(name: str) -> None:
+    with pytest.raises(HarnessValidationError) as raised:
+        Tool(name=name, source=Path("tool.py"))
+    assert raised.value.code is HarnessErrorCode.INVALID_TOOL_NAME
+
+
+def test_duplicate_tool_name_fails(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    first = root / "first.py"
+    second = root / "second.ts"
+    first.write_text("def run(): pass\n", encoding="utf-8")
+    second.write_text("export const run = () => {};\n", encoding="utf-8")
+    harness = _configured_harness(root)
+
+    with pytest.raises(HarnessValidationError) as raised:
+        harness.connect_tools(
+            Tool(name="run", source=Path("first.py")),
+            Tool(name="run", source=Path("second.ts")),
+        )
+
+    assert raised.value.code is HarnessErrorCode.DUPLICATE_TOOL
+
+
+def test_multiple_named_tools_may_share_one_source_file(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    source = root / "tools.py"
+    source.write_text("def read(): pass\n\ndef write(): pass\n", encoding="utf-8")
+    harness = _configured_harness(root)
+    harness.connect_tools(
+        Tool(name="read", source=ofw.editable(Path("tools.py"))),
+        Tool(name="write", source=ofw.editable(Path("tools.py"))),
+    )
+
+    revision = harness.process()
+
+    tool_component = _required_component(revision, ComponentKind.TOOL)
+    assert tuple(asset.name for asset in tool_component.assets) == ("read", "write")
 
 
 def test_assets_are_frozen_unless_explicitly_editable(tmp_path: Path) -> None:

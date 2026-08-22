@@ -14,8 +14,7 @@ class HarnessSchemaVersion(IntEnum):
 
 class ComponentKind(StrEnum):
     PROMPT = "prompt"
-    TOOL_IMPLEMENTATION = "tool_implementation"
-    TOOL_DESCRIPTION = "tool_description"
+    TOOL = "tool"
     SKILL = "skill"
     SUBAGENT = "subagent"
     MIDDLEWARE = "middleware"
@@ -38,6 +37,8 @@ class HarnessErrorCode(StrEnum):
     DUPLICATE_ASSET = "duplicate_asset"
     CONFLICTING_ACCESS = "conflicting_access"
     COMPONENT_OVERLAP = "component_overlap"
+    INVALID_TOOL_NAME = "invalid_tool_name"
+    DUPLICATE_TOOL = "duplicate_tool"
     GIT_REPOSITORY_REQUIRED = "git_repository_required"
     GIT_COMMAND_FAILED = "git_command_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"
@@ -86,6 +87,7 @@ class WorkspaceFile:
 
 @dataclass(frozen=True, slots=True)
 class HarnessAsset:
+    name: str | None
     access: AssetAccess
     source: WorkspaceFile
     digest: Sha256Digest
@@ -207,8 +209,10 @@ def _render_component(component: HarnessComponent) -> str:
 
 
 def _render_asset(asset: HarnessAsset) -> str:
+    name = "null" if asset.name is None else _quote(asset.name)
     return (
         "{"
+        f'"name":{name},'
         f'"access":{_quote(asset.access.value)},'
         f'"source":{{"relative_path":{_quote(asset.source.relative_path.as_posix())}}},'
         f'"digest":{_quote(str(asset.digest))}'
