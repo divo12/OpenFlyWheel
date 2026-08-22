@@ -339,3 +339,54 @@ def test_new_cluster_does_not_reassign_existing_cluster_families(tmp_path: Path)
             if candidate.cluster_family_id == entry.cluster_family_id
         )
         assert matching.partition is entry.partition
+
+
+def test_reordered_same_topology_cannot_cross_training_and_eval(tmp_path: Path) -> None:
+    revision, mine, diagnosis = _inputs(tmp_path)
+    good_admission = mine.admissions[0]
+    failed_admission = mine.admissions[2]
+    assert good_admission.snapshot_path is not None
+    assert failed_admission.snapshot_path is not None
+    good_snapshot = _SNAPSHOT_ADAPTER.validate_json(good_admission.snapshot_path.read_bytes())
+    failed_snapshot = _SNAPSHOT_ADAPTER.validate_json(failed_admission.snapshot_path.read_bytes())
+    good_root = replace(good_snapshot.observations[0], name="shared-root")
+    good_child = replace(
+        good_root,
+        id=ObservationId("good-child"),
+        parent_observation_id=good_root.id,
+        is_root=False,
+        name="shared-child",
+    )
+    failed_root = replace(failed_snapshot.observations[0], name="shared-root")
+    failed_child = replace(
+        failed_root,
+        id=ObservationId("failed-child"),
+        parent_observation_id=failed_root.id,
+        is_root=False,
+        name="shared-child",
+    )
+    changed_good = replace(good_snapshot, observations=(good_root, good_child))
+    changed_failed = replace(failed_snapshot, observations=(failed_child, failed_root))
+    good_admission = _replace_snapshot(good_admission, changed_good)
+    failed_admission = _replace_snapshot(failed_admission, changed_failed)
+    changed_mine = replace(
+        mine,
+        admissions=(good_admission, mine.admissions[1], failed_admission, mine.admissions[3]),
+    )
+
+    with pytest.raises(LeakageError) as raised:
+        MineExports(revision, changed_mine, diagnosis, _policy()).run()
+
+    assert raised.value.code is LeakageErrorCode.FAMILY_CONFLICT
+
+
+def _replace_snapshot(
+    admission: TraceAdmission,
+    snapshot: TraceSnapshot,
+) -> TraceAdmission:
+    payload = _SNAPSHOT_ADAPTER.dump_json(snapshot)
+    digest = Sha256Digest(f"sha256:{hashlib.sha256(payload).hexdigest()}")
+    assert admission.snapshot_path is not None
+    path = admission.snapshot_path.with_name(f"{digest.value[7:]}.json")
+    path.write_bytes(payload)
+    return replace(admission, snapshot_digest=digest, snapshot_path=path)

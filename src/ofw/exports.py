@@ -14,6 +14,7 @@ from ofw.contracts import ComponentKind, HarnessRevision, HarnessRevisionId, Sha
 from ofw.diagnosis import DiagnosisResult, FailureCluster, read_snapshot
 from ofw.mine import (
     MineResult,
+    SnapshotObservation,
     TraceAdmission,
     TracePartition,
     TraceSnapshot,
@@ -520,9 +521,19 @@ class MineExports:
 def _trace_family(snapshot: TraceSnapshot) -> TraceFamilyId:
     payload = "\0".join(
         f"{observation.type.value}:{observation.name or ''}:{observation.is_root}"
-        for observation in snapshot.observations
+        f":{observation.level}:{observation.parent_observation_id is not None}"
+        for observation in sorted(snapshot.observations, key=_observation_family_key)
     )
     return TraceFamilyId(f"family_{hashlib.sha256(payload.encode()).hexdigest()}")
+
+
+def _observation_family_key(observation: SnapshotObservation) -> tuple[str, str, str, str]:
+    return (
+        observation.type.value,
+        observation.name or "",
+        str(observation.is_root),
+        str(observation.parent_observation_id is not None),
+    )
 
 
 def _cluster_for_trace(diagnosis: DiagnosisResult, trace_id: TraceId) -> FailureCluster | None:
