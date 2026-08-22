@@ -26,6 +26,20 @@ from ofw.contracts import (
     Sha256Digest,
     WorkspaceFile,
 )
+from ofw.diagnosis import (
+    ClusterState,
+    DiagnosisError,
+    DiagnosisErrorCode,
+    DiagnosisResult,
+    DiagnosisRun,
+    EvidenceAnchor,
+    EvidenceAnchorKind,
+    FailureCluster,
+    MechanismKey,
+    PythonDiagnoser,
+    Severity,
+    TraceDiagnosis,
+)
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.mine import (
     Mine,
@@ -88,6 +102,7 @@ class _OfwNamespace:
     ServiceName = ServiceName
     MiningPolicy = MiningPolicy
     ScoreName = ScoreName
+    PythonDiagnoser = PythonDiagnoser
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -108,6 +123,7 @@ __all__ = [
     "AssetAccess",
     "CanaryCase",
     "CaseId",
+    "ClusterState",
     "ComponentKind",
     "CollectionError",
     "CollectionErrorCode",
@@ -115,7 +131,14 @@ __all__ = [
     "CommandLoop",
     "CommandVerifier",
     "DockerCompose",
+    "DiagnosisResult",
+    "DiagnosisRun",
+    "DiagnosisError",
+    "DiagnosisErrorCode",
     "EditableFile",
+    "EvidenceAnchor",
+    "EvidenceAnchorKind",
+    "FailureCluster",
     "GitCommit",
     "Harness",
     "HarnessAsset",
@@ -136,11 +159,13 @@ __all__ = [
     "MineError",
     "MineErrorCode",
     "MiningPolicy",
+    "MechanismKey",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
     "PythonEntrypoint",
     "PythonLoop",
+    "PythonDiagnoser",
     "PythonVerifier",
     "RunErrorCode",
     "RunResult",
@@ -148,11 +173,13 @@ __all__ = [
     "ScoreName",
     "Sha256Digest",
     "ServiceName",
+    "Severity",
     "Subagent",
     "Tool",
     "TraceWindow",
     "TracePartition",
     "TraceQualityThreshold",
+    "TraceDiagnosis",
     "VerifierResult",
     "VerifierVerdict",
     "WorkspaceFile",
