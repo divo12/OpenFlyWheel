@@ -52,6 +52,7 @@ from ofw.exports import (
     SnapshotReference,
     TraceFamilyId,
 )
+from ofw.fit import AdmissionState, read_admission_record
 from ofw.observability.langfuse.domain import TraceId
 
 
@@ -276,6 +277,12 @@ def test_paired_gates_reject_regression_and_admit_one_winner(tmp_path: Path) -> 
     )
     assert good_outcome.selection_result is not None
     assert good_outcome.admission_result is not None
+    admission_record = read_admission_record(
+        result.manifest_path.parent / f"admission-{good.candidate.id.value}.json"
+    )
+    assert admission_record.state is AdmissionState.COMPLETED
+    assert admission_record.result_path == good_outcome.admission_result.manifest_path
+    assert admission_record.semantic_digest == good_outcome.admission_result.semantic_digest
     assert bad_outcome.critical_regressions == 1
     assert bad_outcome.selection_result is None
     assert not bad.workspace.root.exists()
@@ -283,6 +290,13 @@ def test_paired_gates_reject_regression_and_admit_one_winner(tmp_path: Path) -> 
     assert any(
         delta.case_id == "frontier-case" and delta.pass_delta == 1 for delta in good_outcome.deltas
     )
+    (good.workspace.root / "tool.py").write_text(
+        "def run(value: str) -> str:\n    return value + ' DRIFTED'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+    assert raised.value.code is FitErrorCode.CANDIDATE_DRIFT
     good.workspace.close()
 
 
@@ -298,16 +312,22 @@ def test_admission_failure_returns_no_winner_and_discards_finalist(tmp_path: Pat
         "Fix frontier but not admission.",
     )
 
-    result = FitCampaign(
+    campaign = FitCampaign(
         harness,
         bundle,
         BenchmarkPolicy(1, 10, 0, 0.25),
         _fit_policy(),
         (candidate,),
-    ).run()
+    )
+
+    result = campaign.run()
 
     assert result.winner_id is None
     assert not candidate.workspace.root.exists()
+    result.manifest_path.write_bytes(result.manifest_path.read_bytes() + b" ")
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+    assert raised.value.code is FitErrorCode.RESULT_INVALID
 
 
 def test_candidate_drift_is_rejected_before_baseline_or_holdouts(tmp_path: Path) -> None:

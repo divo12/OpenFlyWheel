@@ -28,7 +28,7 @@ from ofw.candidate import (
 from ofw.contracts import Sha256Digest
 from ofw.exports import ExportBundle, ExportPartition
 from ofw.harness import Harness
-from ofw.mine import write_artifact
+from ofw.mine import digest_bytes, write_artifact
 from ofw.runtime import MetricKind, VerifierResult
 
 
@@ -64,6 +64,12 @@ class GateReason(StrEnum):
     ADMISSION = "admission"
     PARETO = "pareto"
     COST = "cost"
+
+
+class AdmissionState(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    ERROR = "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +176,10 @@ class FitResult:
     def manifest_path(self) -> Path:
         return self.root / ".ofw" / "fit" / self.id / "manifest.json"
 
+    @property
+    def digest_path(self) -> Path:
+        return self.manifest_path.with_suffix(".sha256")
+
     def to_json(self) -> str:
         return _FIT_ADAPTER.dump_json(self).decode()
 
@@ -180,7 +190,21 @@ class _Survivor:
     outcome: CandidateOutcome
 
 
+@dataclass(frozen=True, slots=True)
+class AdmissionRecord:
+    campaign_id: str
+    candidate_id: CandidateId
+    state: AdmissionState
+    result_path: Path | None = None
+    semantic_digest: Sha256Digest | None = None
+
+    def to_json(self) -> str:
+        return _ADMISSION_ADAPTER.dump_json(self).decode()
+
+
 _FIT_ADAPTER: TypeAdapter[FitResult] = TypeAdapter(FitResult)
+_ADMISSION_ADAPTER: TypeAdapter[AdmissionRecord] = TypeAdapter(AdmissionRecord)
+_DIGEST_ADAPTER: TypeAdapter[Sha256Digest] = TypeAdapter(Sha256Digest)
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,13 +286,31 @@ class FitCampaign:
                 survivor.build.workspace.close()
         winner_id: CandidateId | None = None
         if finalist is not None:
-            marker = self._admission_marker(finalist.build.candidate.id)
-            if marker.exists():
+            record_path = self._admission_record_path(finalist.build.candidate.id)
+            if record_path.exists():
+                read_admission_record(record_path)
                 raise FitError(
                     FitErrorCode.ADMISSION_ALREADY_USED, finalist.build.candidate.id.value
                 )
-            write_artifact(marker, f"{finalist.build.candidate.id}\n".encode())
-            admission = runner.run_admission(finalist.build.candidate)
+            record = AdmissionRecord(
+                self._campaign_id(),
+                finalist.build.candidate.id,
+                AdmissionState.RUNNING,
+            )
+            write_artifact(record_path, f"{record.to_json()}\n".encode())
+            try:
+                admission = runner.run_admission(finalist.build.candidate)
+            except Exception:
+                failed = replace(record, state=AdmissionState.ERROR)
+                write_artifact(record_path, f"{failed.to_json()}\n".encode())
+                raise
+            completed = replace(
+                record,
+                state=AdmissionState.COMPLETED,
+                result_path=admission.manifest_path,
+                semantic_digest=admission.semantic_digest,
+            )
+            write_artifact(record_path, f"{completed.to_json()}\n".encode())
             if (
                 admission.status is BenchmarkStatus.COMPLETE
                 and admission.weighted_pass_rate >= self.fit_policy.minimum_admission_pass_rate
@@ -299,7 +341,9 @@ class FitCampaign:
             winner_id,
             self.harness.root,
         )
-        write_artifact(result.manifest_path, f"{result.to_json()}\n".encode())
+        payload = f"{result.to_json()}\n".encode()
+        write_artifact(result.manifest_path, payload)
+        write_artifact(result.digest_path, _DIGEST_ADAPTER.dump_json(digest_bytes(payload)) + b"\n")
         return result
 
     def _campaign_id(self) -> str:
@@ -317,13 +361,13 @@ class FitCampaign:
             ).hexdigest()
         )
 
-    def _admission_marker(self, candidate_id: CandidateId) -> Path:
+    def _admission_record_path(self, candidate_id: CandidateId) -> Path:
         return (
             self.harness.root
             / ".ofw"
             / "fit"
             / self._campaign_id()
-            / f"admission-{candidate_id.value}.reserved"
+            / f"admission-{candidate_id.value}.json"
         )
 
     def _read_existing(self) -> FitResult | None:
@@ -331,9 +375,13 @@ class FitCampaign:
         if not path.exists():
             return None
         try:
-            result = _FIT_ADAPTER.validate_json(path.read_bytes())
+            payload = path.read_bytes()
+            expected = _DIGEST_ADAPTER.validate_json(path.with_suffix(".sha256").read_bytes())
+            result = _FIT_ADAPTER.validate_json(payload)
         except (OSError, ValidationError) as error:
             raise FitError(FitErrorCode.RESULT_INVALID, str(path)) from error
+        if digest_bytes(payload) != expected:
+            raise FitError(FitErrorCode.RESULT_INVALID, str(path))
         candidate_ids = tuple(candidate.candidate.id for candidate in self.candidates)
         if (
             result.id != self._campaign_id()
@@ -343,7 +391,27 @@ class FitCampaign:
             or (result.winner_id is not None and result.winner_id not in candidate_ids)
         ):
             raise FitError(FitErrorCode.RESULT_INVALID, str(path))
+        if result.winner_id is not None:
+            champion_revision = self.harness.current_revision
+            winner = next(
+                candidate
+                for candidate in self.candidates
+                if candidate.candidate.id == result.winner_id
+            )
+            if champion_revision is None:
+                raise FitError(FitErrorCode.CANDIDATE_DRIFT, self.harness.name)
+            try:
+                validate_candidate_revision(winner.candidate, champion_revision)
+            except CandidateError as error:
+                raise FitError(FitErrorCode.CANDIDATE_DRIFT, error.subject) from error
         return result
+
+
+def read_admission_record(path: Path) -> AdmissionRecord:
+    try:
+        return _ADMISSION_ADAPTER.validate_json(path.read_bytes())
+    except (OSError, ValidationError) as error:
+        raise FitError(FitErrorCode.RESULT_INVALID, str(path)) from error
 
 
 def _developer_outcome(
