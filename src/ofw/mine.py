@@ -76,7 +76,7 @@ class ScoreName:
     value: str
 
     def __post_init__(self) -> None:
-        if not self.value:
+        if not self.value or "\0" in self.value:
             raise MineError(MineErrorCode.INVALID_POLICY, "empty score name")
 
 
@@ -85,7 +85,7 @@ class TraceTag:
     value: str
 
     def __post_init__(self) -> None:
-        if not self.value:
+        if not self.value or "\0" in self.value:
             raise MineError(MineErrorCode.INVALID_POLICY, "empty trace tag")
 
 
@@ -155,7 +155,7 @@ class MineResult:
     schema_version: MineSchemaVersion
     id: MineRunId
     revision_id: HarnessRevisionId
-    created_at: datetime
+    source_watermark: datetime
     collection_digest: Sha256Digest
     policy_digest: Sha256Digest
     admissions: tuple[TraceAdmission, ...]
@@ -210,6 +210,7 @@ class Mine:
                         str(revision.id),
                         str(self.collection.snapshot_digest),
                         str(self.policy.digest),
+                        str(int(MineSchemaVersion.V1)),
                     )
                 ).encode()
             ).hexdigest()
@@ -341,9 +342,10 @@ def _trace_sort_key(trace: TraceRecord) -> str:
 def _resolve_revision(source: Harness | HarnessRevision) -> HarnessRevision:
     if isinstance(source, HarnessRevision):
         return source
-    if source.current_revision is None:
+    revision = source.current_revision
+    if revision is None:
         raise MineError(MineErrorCode.STALE_HARNESS, source.name)
-    return source.current_revision
+    return revision
 
 
 def _write_artifact(path: Path, payload: bytes) -> None:

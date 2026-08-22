@@ -180,9 +180,14 @@ class Harness:
             root = _resolve_root(self.root)
             components = _compile_components(root, self._files)
             repository = _snapshot_repository(root)
+            runtime = self._runtime(root)
         except HarnessValidationError:
             return None
-        if components != revision.components or repository != revision.repository:
+        if (
+            components != revision.components
+            or repository != revision.repository
+            or runtime != revision.runtime
+        ):
             return None
         return revision
 
