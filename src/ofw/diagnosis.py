@@ -516,7 +516,13 @@ def _cluster_revision(
         if previous is None
         else (
             ClusterState.REOPENED
-            if previous.state in (ClusterState.RESOLVED, ClusterState.REJECTED)
+            if previous.state
+            in (
+                ClusterState.CONFIRMED,
+                ClusterState.TARGETED,
+                ClusterState.RESOLVED,
+                ClusterState.REJECTED,
+            )
             else previous.state
         )
     )

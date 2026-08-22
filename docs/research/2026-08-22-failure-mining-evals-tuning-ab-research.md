@@ -1,7 +1,7 @@
 # Failure mining, agent evals, behavior tuning, and A/B testing
 
-Generated: 2026-08-22  
-Scope: production agent traces → trusted failures → evals → harness edits → paired comparison → governed promotion  
+Generated: 2026-08-22
+Scope: production agent traces → trusted failures → evals → harness edits → paired comparison → governed promotion
 Method: current OFW code audit plus primary papers and official platform documentation
 
 ## Executive conclusion

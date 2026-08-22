@@ -85,6 +85,17 @@ def _repository(tmp_path: Path) -> tuple[Path, HarnessRevisionId]:
         "        (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, observation.id.value),),\n"
         "        (component,), Severity.HIGH, 0.9,\n"
         "    )\n"
+        "def diagnose_changed(snapshot: TraceSnapshot) -> TraceDiagnosis:\n"
+        "    observation = snapshot.observations[0]\n"
+        "    mechanism = 'tool-schema' if observation.name == 'tool' else 'prompt-gap'\n"
+        "    component = (\n"
+        "        ComponentKind.TOOL if observation.name == 'tool' else ComponentKind.PROMPT\n"
+        "    )\n"
+        "    return TraceDiagnosis.proposed(\n"
+        "        snapshot.trace.id, MechanismKey(mechanism), mechanism, 'changed diagnosis',\n"
+        "        (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, observation.id.value),),\n"
+        "        (component,), Severity.HIGH, 0.9,\n"
+        "    )\n"
         "def invalid_anchor(snapshot: TraceSnapshot) -> TraceDiagnosis:\n"
         "    return TraceDiagnosis.proposed(\n"
         "        snapshot.trace.id, MechanismKey('invalid-anchor'), 'invalid', 'invalid',\n"
@@ -290,6 +301,37 @@ def test_rejected_cluster_remains_a_review_artifact(tmp_path: Path) -> None:
 
     reviewed = next(item for item in result.clusters if item.id == cluster.id)
     assert reviewed.state is ClusterState.REJECTED
+
+
+def test_changed_confirmed_cluster_requires_a_new_review(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    diagnosis = DiagnosisRun(harness, mine, _diagnoser("diagnose")).run()
+    cluster = diagnosis.clusters[0]
+    confirmed = DiagnosisReview(
+        diagnosis,
+        (
+            ClusterReview(
+                cluster.id,
+                cluster.revision,
+                cluster.content_digest,
+                ClusterReviewerId("reviewer-1"),
+                ClusterReviewDecision.CONFIRM,
+                datetime(2026, 8, 22, 1, tzinfo=UTC),
+            ),
+        ),
+    ).run()
+
+    changed = DiagnosisRun(
+        harness,
+        mine,
+        _diagnoser("diagnose_changed"),
+        previous=confirmed,
+    ).run()
+
+    changed_cluster = next(item for item in changed.clusters if item.id == cluster.id)
+    assert changed_cluster.revision == cluster.revision + 1
+    assert changed_cluster.content_digest != cluster.content_digest
+    assert changed_cluster.state is ClusterState.REOPENED
 
 
 def test_invalid_evidence_anchor_becomes_abstention(tmp_path: Path) -> None:

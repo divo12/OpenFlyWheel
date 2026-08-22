@@ -397,6 +397,13 @@ class MineExports:
                 _snapshot_reference(admission),
             )
         previous = self._previous_partition(family_id, admission.trace_id)
+        if (
+            previous is ExportPartition.REVIEW
+            and admission.partition is TracePartition.VERIFIED_FAILURE
+            and cluster is not None
+            and cluster.state in (ClusterState.CONFIRMED, ClusterState.TARGETED)
+        ):
+            previous = None
         if previous is not None:
             is_good = admission.partition is TracePartition.VERIFIED_GOOD
             if is_good != (previous is ExportPartition.TRAINING):
