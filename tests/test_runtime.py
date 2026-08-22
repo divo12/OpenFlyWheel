@@ -185,17 +185,22 @@ def test_local_process_reports_timeout_and_nonzero_exit(tmp_path: Path) -> None:
     timeout_script.write_text("import time\ntime.sleep(2)\n", encoding="utf-8")
     crash_script = root / "crash.py"
     crash_script.write_text("raise SystemExit(7)\n", encoding="utf-8")
-    environment = LocalProcess(ProcessLimits(timedelta(milliseconds=50)))
-    prepared = environment.prepare(revision, CanaryCase(CaseId("failure"), "input"))
+    timeout_environment = LocalProcess(ProcessLimits(timedelta(milliseconds=50)))
+    prepared = timeout_environment.prepare(revision, CanaryCase(CaseId("failure"), "input"))
     try:
         timed_out = CommandLoop(ProcessCommand((sys.executable, "timeout.py"))).invoke(
             CanaryCase(CaseId("timeout"), "input"), prepared, revision
         )
+    finally:
+        timeout_environment.destroy(prepared)
+    crash_environment = LocalProcess(ProcessLimits(timedelta(seconds=1)))
+    prepared = crash_environment.prepare(revision, CanaryCase(CaseId("failure"), "input"))
+    try:
         crashed = CommandLoop(ProcessCommand((sys.executable, "crash.py"))).invoke(
             CanaryCase(CaseId("crash"), "input"), prepared, revision
         )
     finally:
-        environment.destroy(prepared)
+        crash_environment.destroy(prepared)
 
     assert timed_out.status is RunStatus.TIMEOUT
     assert timed_out.error_code is RunErrorCode.TIMEOUT
