@@ -191,6 +191,18 @@ class Harness:
             return None
         return revision
 
+    def runtime_adapters(
+        self,
+    ) -> tuple[ExecutionEnvironment, LifecycleAdapter, tuple[VerifierAdapter, ...]]:
+        if (
+            self.current_revision is None
+            or self._execution is None
+            or self._lifecycle is None
+            or not self._verifiers
+        ):
+            raise HarnessValidationError(HarnessErrorCode.RUNTIME_INCOMPLETE, self.name)
+        return self._execution, self._lifecycle, tuple(self._verifiers)
+
     def _register_files(
         self,
         component: ComponentKind,
