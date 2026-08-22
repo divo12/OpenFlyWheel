@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -92,7 +93,7 @@ def _observation(
         session_id=f"session-{trace}",
         created_at=datetime(2026, 8, 22, 0, 1, tzinfo=UTC),
         updated_at=datetime(2026, 8, 22, 0, 1, tzinfo=UTC),
-        metadata=JsonDocument(f'{{"ofw.harness.revision":"{revision.id}"}}'),
+        metadata=JsonDocument(f'{{"ofw.harness.revision":"{revision.id}","secret":"token"}}'),
         usage=None,
         costs=None,
         total_cost=None,
@@ -148,8 +149,14 @@ def _collection(
     revision: HarnessRevision,
     *,
     conflict: bool = False,
+    foreign_good_score: bool = False,
 ) -> CollectionResult:
     good_score = _score("good", True)
+    if foreign_good_score:
+        good_score = replace(
+            good_score,
+            subject=ScoreSubject(ScoreSubjectKind.TRACE, "other-trace", None),
+        )
     failed_score = _score("failed", False)
     conflicting_scores: tuple[ScoreRecord, ...] = (
         (_score("ambiguous", True, "-pass"), _score("ambiguous", False, "-fail"))
@@ -264,6 +271,44 @@ def test_mine_is_content_addressed_and_idempotent(tmp_path: Path) -> None:
     assert first.manifest_path.read_text(encoding="utf-8") == f"{first.to_json()}\n"
     assert all(admission.snapshot_path is not None for admission in first.admissions[:-1])
     assert first.admissions[-1].snapshot_path is None
+    good = next(
+        admission for admission in first.admissions if admission.trace_id == TraceId("good")
+    )
+    assert good.snapshot_path is not None
+    snapshot = good.snapshot_path.read_text(encoding="utf-8")
+    assert "token" not in snapshot
+    assert "reviewed" not in snapshot
+
+
+def test_foreign_score_subject_cannot_label_trace(tmp_path: Path) -> None:
+    revision = _harness(tmp_path).process()
+    result = Mine(
+        revision,
+        _collection(tmp_path, revision, foreign_good_score=True),
+        _policy(),
+    ).run()
+    good = next(
+        admission for admission in result.admissions if admission.trace_id == TraceId("good")
+    )
+
+    assert good.partition is TracePartition.AMBIGUOUS
+
+
+def test_source_window_is_part_of_mine_identity(tmp_path: Path) -> None:
+    revision = _harness(tmp_path).process()
+    collection = _collection(tmp_path, revision)
+    shifted = replace(
+        collection,
+        window=TraceWindow(
+            collection.window.start + timedelta(hours=1),
+            collection.window.end + timedelta(hours=1),
+        ),
+    )
+
+    first = Mine(revision, collection, _policy()).run()
+    second = Mine(revision, shifted, _policy()).run()
+
+    assert first.id != second.id
 
 
 def test_processed_harness_is_accepted_and_later_connection_makes_it_stale(

@@ -15,14 +15,21 @@ from pydantic import TypeAdapter
 
 from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.harness import Harness
+from ofw.observability.langfuse.contracts import TraceWindow
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
     CollectionResult,
+    ObservationId,
+    ObservationLevel,
     ObservationRecord,
+    ObservationType,
     ScoreDataType,
     ScoreId,
     ScoreRecord,
     ScoreSource,
+    ScoreSubject,
+    ScoreSubjectKind,
+    TraceGap,
     TraceId,
     TraceRecord,
 )
@@ -135,9 +142,47 @@ class TraceSnapshot:
     schema_version: MineSchemaVersion
     revision_id: HarnessRevisionId
     collection_digest: Sha256Digest
-    trace: TraceRecord
-    observations: tuple[ObservationRecord, ...]
-    scores: tuple[ScoreRecord, ...]
+    trace: SnapshotTrace
+    observations: tuple[SnapshotObservation, ...]
+    scores: tuple[SnapshotScore, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotTrace:
+    id: TraceId
+    observation_ids: tuple[ObservationId, ...]
+    root_observation_ids: tuple[ObservationId, ...]
+    evidence_score_ids: tuple[ScoreId, ...]
+    attribution: AttributionLevel
+    gaps: tuple[TraceGap, ...]
+    digest: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotObservation:
+    id: ObservationId
+    trace_id: TraceId | None
+    start_time: datetime
+    end_time: datetime | None
+    parent_observation_id: ObservationId | None
+    type: ObservationType
+    is_root: bool | None
+    name: str | None
+    level: ObservationLevel | None
+    status_message: str | None
+    digest: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotScore:
+    id: ScoreId
+    name: str
+    value: bool | float | str
+    data_type: ScoreDataType
+    source: ScoreSource
+    timestamp: datetime
+    subject: ScoreSubject | None
+    digest: Sha256Digest
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,7 +200,7 @@ class MineResult:
     schema_version: MineSchemaVersion
     id: MineRunId
     revision_id: HarnessRevisionId
-    source_watermark: datetime
+    window: TraceWindow
     collection_digest: Sha256Digest
     policy_digest: Sha256Digest
     admissions: tuple[TraceAdmission, ...]
@@ -211,6 +256,8 @@ class Mine:
                         str(self.collection.snapshot_digest),
                         str(self.policy.digest),
                         str(int(MineSchemaVersion.V1)),
+                        self.collection.window.start.isoformat(),
+                        self.collection.window.end.isoformat(),
                     )
                 ).encode()
             ).hexdigest()
@@ -229,7 +276,7 @@ class Mine:
             MineSchemaVersion.V1,
             run_id,
             revision.id,
-            self.collection.window.end,
+            self.collection.window,
             self.collection.snapshot_digest,
             self.policy.digest,
             admissions,
@@ -250,7 +297,11 @@ class Mine:
         trace_observations = tuple(
             observation for observation in observations if observation.id in trace.observation_ids
         )
-        trace_scores = tuple(score for score in scores if score.id in trace.score_ids)
+        trace_scores = tuple(
+            score
+            for score in scores
+            if score.id in trace.score_ids and _score_belongs(score, trace, trace_observations)
+        )
         partition, reason, evidence = self._classify(trace, trace_observations, trace_scores)
         if partition is TracePartition.INVALID:
             return TraceAdmission(trace.id, partition, reason, evidence, None, None)
@@ -259,9 +310,9 @@ class Mine:
             MineSchemaVersion.V1,
             revision.id,
             self.collection.snapshot_digest,
-            trace,
-            trace_observations,
-            snapshot_scores,
+            _snapshot_trace(trace, evidence),
+            tuple(_snapshot_observation(observation) for observation in trace_observations),
+            tuple(_snapshot_score(score) for score in snapshot_scores),
         )
         payload = _SNAPSHOT_ADAPTER.dump_json(snapshot)
         digest = _digest_bytes(payload)
@@ -333,6 +384,66 @@ def _score_passes(score: ScoreRecord, numeric_pass_at: float) -> bool | None:
     if score.data_type is ScoreDataType.NUMERIC and isinstance(score.value, float):
         return score.value >= numeric_pass_at
     return None
+
+
+def _score_belongs(
+    score: ScoreRecord,
+    trace: TraceRecord,
+    observations: tuple[ObservationRecord, ...],
+) -> bool:
+    subject = score.subject
+    if subject is None:
+        return False
+    if subject.kind is ScoreSubjectKind.TRACE:
+        return subject.id == trace.id.value
+    if subject.kind is ScoreSubjectKind.OBSERVATION:
+        return any(observation.id.value == subject.id for observation in observations) and (
+            subject.trace_id is None or subject.trace_id == trace.id
+        )
+    if subject.kind is ScoreSubjectKind.SESSION:
+        return trace.session_id is not None and subject.id == trace.session_id
+    return False
+
+
+def _snapshot_trace(trace: TraceRecord, evidence: tuple[ScoreId, ...]) -> SnapshotTrace:
+    return SnapshotTrace(
+        trace.id,
+        trace.observation_ids,
+        trace.root_observation_ids,
+        evidence,
+        trace.attribution,
+        trace.gaps,
+        trace.digest,
+    )
+
+
+def _snapshot_observation(observation: ObservationRecord) -> SnapshotObservation:
+    return SnapshotObservation(
+        observation.id,
+        observation.trace_id,
+        observation.start_time,
+        observation.end_time,
+        observation.parent_observation_id,
+        observation.type,
+        observation.is_root,
+        observation.name,
+        observation.level,
+        observation.status_message,
+        observation.digest,
+    )
+
+
+def _snapshot_score(score: ScoreRecord) -> SnapshotScore:
+    return SnapshotScore(
+        score.id,
+        score.name,
+        score.value,
+        score.data_type,
+        score.source,
+        score.timestamp,
+        score.subject,
+        score.digest,
+    )
 
 
 def _trace_sort_key(trace: TraceRecord) -> str:
