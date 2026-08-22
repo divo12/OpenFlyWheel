@@ -20,6 +20,6 @@ Langfuse-compatible traces
   → isolated Git commit, review PR reference, and reverse patch
 ```
 
-The planted fixture contains one verified-good trace and four failures assigned to frontier, regression, selection, and admission partitions. The candidate fixes frontier and sealed holdouts while preserving the regression case. The test proves one winner, one PR, no deploy, no Langfuse write, and a non-empty rollback artifact.
+The planted fixture contains one verified-good trace and four failures assigned to frontier, regression, selection, and admission partitions. The candidate fixes frontier and sealed holdouts while preserving the regression case. A real heartbeat materializes the seven-job DAG; the scheduler restarts before promotion and preserves its budget ledger. The test proves one winner, one PR, no deploy, no Langfuse write, and a non-empty rollback artifact.
 
 This is the local-v0 release boundary. Distributed scheduling, cloud workspaces, provider-backed candidate generation, and production deployment remain explicit adapters rather than hidden behavior in the offline proof.

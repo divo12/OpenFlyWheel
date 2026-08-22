@@ -23,15 +23,16 @@ from ofw import (
     ComponentKind,
     ConsentStatus,
     DataLicense,
-    Dependency,
-    DependencyMode,
+    EvidenceOrigin,
     ExportPartition,
     ExportPolicy,
     FileEdit,
-    FitCampaign,
     FitPolicy,
     FunctionName,
     Harness,
+    Heartbeat,
+    HeartbeatEvidence,
+    HeartbeatOwner,
     JobKind,
     JobResult,
     JobSpec,
@@ -228,7 +229,7 @@ def _harness(tmp_path: Path, base_url: str, monkeypatch: pytest.MonkeyPatch) -> 
     harness.connect_prompt(Path("prompt.md"))
     harness.connect_tools(Tool("run", ofw.editable(Path("tool.py"))))
     harness.connect_middleware(Path("diagnoser.py"))
-    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=2))))
+    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=5))))
     harness.connect_lifecycle(
         PythonLoop(PythonEntrypoint(ModuleName("agent_loop"), FunctionName("run_case")))
     )
@@ -259,7 +260,7 @@ def _finish(
     assert lease is not None
     assert lease.job.spec == expected
     scheduler.start(lease, now)
-    scheduler.succeed(lease, result, Money(0), now)
+    scheduler.succeed(lease, result, Money(100), now)
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,7 +330,7 @@ def test_offline_trace_to_review_release(
         ).run()
         diagnoser = PythonDiagnoser(
             PythonEntrypoint(ModuleName("diagnoser"), FunctionName("diagnose")),
-            ProcessLimits(timedelta(seconds=2)),
+            ProcessLimits(timedelta(seconds=5)),
         )
         diagnosis_run = DiagnosisRun(harness, mine, diagnoser)
         diagnosis = diagnosis_run.run()
@@ -396,14 +397,14 @@ def test_offline_trace_to_review_release(
             ),
         )
         fit_policy = FitPolicy(0.5, 1.0, 0, 1.0, 0.0, 1.0, 1.0)
-        campaign = FitCampaign(
+        campaign = ofw.fit(
             harness,
             bundle,
-            BenchmarkPolicy(1, 10, 0, 0.25),
-            fit_policy,
             (candidate,),
+            benchmark_policy=BenchmarkPolicy(1, 10, 0, 0.25),
+            policy=fit_policy,
         )
-        fit_result = campaign.run()
+        fit_result = campaign.wait()
         assert fit_result.winner_id == candidate.candidate.id
 
         remote = tmp_path / "review.git"
@@ -420,16 +421,21 @@ def test_offline_trace_to_review_release(
             ),
             None,
         )
-        scheduler = LocalScheduler(
-            tmp_path / "scheduler.sqlite3",
-            _scheduler_policy(fit_policy),
-        )
+        scheduler_path = tmp_path / "scheduler.sqlite3"
+        scheduler_policy = _scheduler_policy(fit_policy)
+        scheduler = LocalScheduler(scheduler_path, scheduler_policy)
         source = SourceWindowId("offline-window")
-        trace_spec = JobSpec(JobKind.TRACE_SYNC, revision.id, source, Money(0))
-        trace_job = scheduler.enqueue(trace_spec, (), _NOW)
+        heartbeat = Heartbeat(scheduler, HeartbeatOwner("offline-daemon"))
+        heartbeat_report = heartbeat.tick(
+            revision.id,
+            HeartbeatEvidence(source, EvidenceOrigin.PRODUCTION, 5, True),
+            _NOW,
+        )
+        assert len(heartbeat_report.created) == 7
+        trace_job = next(job for job in scheduler.jobs() if job.spec.kind is JobKind.TRACE_SYNC)
         _finish(
             scheduler,
-            trace_spec,
+            trace_job.spec,
             JobResult(
                 ResultId(str(collection.snapshot_digest)),
                 JobKind.TRACE_SYNC,
@@ -440,29 +446,40 @@ def test_offline_trace_to_review_release(
             ),
             _NOW,
         )
-        mine_spec = JobSpec(JobKind.MINE, revision.id, source, Money(0))
-        mine_job = scheduler.enqueue(
-            mine_spec,
-            (Dependency(trace_job.id, DependencyMode.REQUIRED),),
-            _NOW,
-        )
         scheduler.reconcile(_NOW)
+        mine_job = next(job for job in scheduler.jobs() if job.spec.kind is JobKind.MINE)
         _finish(
             scheduler,
-            mine_spec,
+            mine_job.spec,
             JobResult(ResultId(str(mine.id)), JobKind.MINE, revision.id, None, None, True),
             _NOW,
         )
-        export_spec = JobSpec(JobKind.EXPORT_BENCH_EVAL, revision.id, source, Money(0))
-        export_job = scheduler.enqueue(
-            export_spec,
-            (Dependency(mine_job.id, DependencyMode.REQUIRED),),
-            _NOW,
-        )
         scheduler.reconcile(_NOW)
+        good_job = next(
+            job for job in scheduler.jobs() if job.spec.kind is JobKind.EXPORT_GOOD_TRACES
+        )
+        export_job = next(
+            job for job in scheduler.jobs() if job.spec.kind is JobKind.EXPORT_BENCH_EVAL
+        )
+        memory_job = next(
+            job for job in scheduler.jobs() if job.spec.kind is JobKind.PROPOSE_MEMORY
+        )
         _finish(
             scheduler,
-            export_spec,
+            good_job.spec,
+            JobResult(
+                ResultId(bundle.good_traces.id),
+                JobKind.EXPORT_GOOD_TRACES,
+                revision.id,
+                ResultId(str(mine.id)),
+                None,
+                True,
+            ),
+            _NOW,
+        )
+        _finish(
+            scheduler,
+            export_job.spec,
             JobResult(
                 ResultId(bundle.id),
                 JobKind.EXPORT_BENCH_EVAL,
@@ -473,25 +490,24 @@ def test_offline_trace_to_review_release(
             ),
             _NOW,
         )
-        fit_spec = JobSpec(
-            JobKind.FIT,
-            revision.id,
-            source,
-            Money(0),
-            fit_policy.digest,
-        )
-        fit_job = scheduler.enqueue(
-            fit_spec,
-            (
-                Dependency(mine_job.id, DependencyMode.REQUIRED),
-                Dependency(export_job.id, DependencyMode.REQUIRED),
+        _finish(
+            scheduler,
+            memory_job.spec,
+            JobResult(
+                ResultId(bundle.memory.id),
+                JobKind.PROPOSE_MEMORY,
+                revision.id,
+                ResultId(str(mine.id)),
+                None,
+                True,
             ),
             _NOW,
         )
         scheduler.reconcile(_NOW)
+        fit_job = next(job for job in scheduler.jobs() if job.spec.kind is JobKind.FIT)
         _finish(
             scheduler,
-            fit_spec,
+            fit_job.spec,
             JobResult(
                 ResultId(fit_result.id),
                 JobKind.FIT,
@@ -502,13 +518,12 @@ def test_offline_trace_to_review_release(
             ),
             _NOW,
         )
-        promotion_spec = JobSpec(JobKind.PROMOTE, revision.id, source, Money(0))
-        promotion_job = scheduler.enqueue(
-            promotion_spec,
-            (Dependency(fit_job.id, DependencyMode.REQUIRED),),
-            _NOW,
-        )
         scheduler.reconcile(_NOW)
+        promotion_job = next(job for job in scheduler.jobs() if job.spec.kind is JobKind.PROMOTE)
+        assert promotion_job.state is JobState.READY
+        scheduler.close()
+        scheduler = LocalScheduler(scheduler_path, scheduler_policy)
+        assert scheduler.job(promotion_job.id).state is JobState.READY
         requests: PromotionRequestResolver = _PromotionRequests(
             ResultId(fit_result.id),
             promotion_request,
@@ -540,6 +555,9 @@ def test_offline_trace_to_review_release(
         assert promotion.pull_request is not None
         assert promotion.deployment is None
         assert promotion.rollback.reverse_patch.read_bytes()
+        budget = scheduler.budget(_NOW.date())
+        assert budget.reserved == Money(0)
+        assert budget.spent == Money(600)
         assert state.writes == 0
         scheduler.close()
         candidate.workspace.close()
