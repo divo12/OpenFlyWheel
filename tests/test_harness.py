@@ -19,6 +19,7 @@ from ofw import (
     HarnessErrorCode,
     HarnessRevision,
     HarnessValidationError,
+    Subagent,
     Tool,
     WorkspaceFile,
     ofw,
@@ -104,7 +105,12 @@ def test_process_records_five_file_level_components_for_polyglot_agent(tmp_path:
         Tool(name="worker", source=ofw.editable(Path("tools/worker.go"))),
     )
     harness.connect_skills(ofw.editable(Path("skills/research/SKILL.md")))
-    harness.connect_subagents(ofw.editable(Path("subagents/reviewer.yaml")))
+    harness.connect_subagents(
+        Subagent(
+            name="reviewer",
+            source=ofw.editable(Path("subagents/reviewer.yaml")),
+        )
+    )
     harness.connect_middleware(ofw.editable(Path("middleware/retry.ts")))
 
     revision = harness.process()
@@ -115,6 +121,7 @@ def test_process_records_five_file_level_components_for_polyglot_agent(tmp_path:
     assert all(str(component.digest).startswith("sha256:") for component in revision.components)
     assert Path("tools/search.ts") in revision.editable_files
     assert Path("tools/worker.go") in revision.editable_files
+    assert _required_component(revision, ComponentKind.SUBAGENT).assets[0].name == "reviewer"
 
 
 def test_tool_object_preserves_name_and_source(tmp_path: Path) -> None:
@@ -223,6 +230,44 @@ def test_multiple_named_tools_may_share_one_source_file(tmp_path: Path) -> None:
 
     tool_component = _required_component(revision, ComponentKind.TOOL)
     assert tuple(asset.name for asset in tool_component.assets) == ("read", "write")
+
+
+@pytest.mark.parametrize("name", ("", "contains spaces", "UPPERCASE"))
+def test_invalid_subagent_name_fails(name: str) -> None:
+    with pytest.raises(HarnessValidationError) as raised:
+        Subagent(name=name, source=Path("subagent.py"))
+    assert raised.value.code is HarnessErrorCode.INVALID_SUBAGENT_NAME
+
+
+def test_duplicate_subagent_name_fails(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    source = root / "subagents.py"
+    source.write_text("reviewer = object()\n", encoding="utf-8")
+    harness = _configured_harness(root)
+
+    with pytest.raises(HarnessValidationError) as raised:
+        harness.connect_subagents(
+            Subagent(name="reviewer", source=Path("subagents.py")),
+            Subagent(name="reviewer", source=Path("subagents.py")),
+        )
+
+    assert raised.value.code is HarnessErrorCode.DUPLICATE_SUBAGENT
+
+
+def test_multiple_named_subagents_may_share_one_source_file(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    source = root / "subagents.py"
+    source.write_text("reviewer = object()\nresearcher = object()\n", encoding="utf-8")
+    harness = _configured_harness(root)
+    harness.connect_subagents(
+        Subagent(name="reviewer", source=ofw.editable(Path("subagents.py"))),
+        Subagent(name="researcher", source=ofw.editable(Path("subagents.py"))),
+    )
+
+    revision = harness.process()
+
+    component = _required_component(revision, ComponentKind.SUBAGENT)
+    assert tuple(asset.name for asset in component.assets) == ("researcher", "reviewer")
 
 
 def test_assets_are_frozen_unless_explicitly_editable(tmp_path: Path) -> None:

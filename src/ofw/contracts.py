@@ -39,6 +39,8 @@ class HarnessErrorCode(StrEnum):
     COMPONENT_OVERLAP = "component_overlap"
     INVALID_TOOL_NAME = "invalid_tool_name"
     DUPLICATE_TOOL = "duplicate_tool"
+    INVALID_SUBAGENT_NAME = "invalid_subagent_name"
+    DUPLICATE_SUBAGENT = "duplicate_subagent"
     GIT_REPOSITORY_REQUIRED = "git_repository_required"
     GIT_COMMAND_FAILED = "git_command_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"

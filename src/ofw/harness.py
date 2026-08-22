@@ -31,7 +31,7 @@ from ofw.contracts import (
 logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_TOOL_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
+_NAMED_SOURCE_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,10 +45,16 @@ class Tool:
     source: Path | EditableFile
 
     def __post_init__(self) -> None:
-        if _TOOL_NAME_PATTERN.fullmatch(self.name) is None:
-            raise HarnessValidationError(HarnessErrorCode.INVALID_TOOL_NAME, self.name)
-        if not isinstance(self.source, (Path, EditableFile)):
-            raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(self.source))
+        _validate_named_source(self.name, self.source, HarnessErrorCode.INVALID_TOOL_NAME)
+
+
+@dataclass(frozen=True, slots=True)
+class Subagent:
+    name: str
+    source: Path | EditableFile
+
+    def __post_init__(self) -> None:
+        _validate_named_source(self.name, self.source, HarnessErrorCode.INVALID_SUBAGENT_NAME)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +110,20 @@ class Harness:
         self._register_files(ComponentKind.SKILL, sources)
         return self
 
-    def connect_subagents(self, *sources: Path | EditableFile) -> Harness:
-        self._register_files(ComponentKind.SUBAGENT, sources)
+    def connect_subagents(self, *subagents: Subagent) -> Harness:
+        for subagent in subagents:
+            if any(
+                registration.component is ComponentKind.SUBAGENT
+                and registration.name == subagent.name
+                for registration in self._files
+            ):
+                raise HarnessValidationError(
+                    HarnessErrorCode.DUPLICATE_SUBAGENT,
+                    subagent.name,
+                )
+            self._files.append(
+                _registration(ComponentKind.SUBAGENT, subagent.source, subagent.name)
+            )
         return self
 
     def connect_middleware(self, *sources: Path | EditableFile) -> Harness:
@@ -208,7 +226,10 @@ def _validate_component_boundaries(compiled: list[_CompiledAsset]) -> None:
                     HarnessErrorCode.COMPONENT_OVERLAP,
                     item.asset.source.relative_path.as_posix(),
                 )
-            if item.component is ComponentKind.TOOL and existing.asset.name != item.asset.name:
+            if (
+                item.component in (ComponentKind.TOOL, ComponentKind.SUBAGENT)
+                and existing.asset.name != item.asset.name
+            ):
                 continue
             code = (
                 HarnessErrorCode.DUPLICATE_ASSET
@@ -253,6 +274,17 @@ def _registration(
     if isinstance(source, Path):
         return _FileRegistration(component, name, source, AssetAccess.FROZEN)
     raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(source))
+
+
+def _validate_named_source(
+    name: str,
+    source: Path | EditableFile,
+    error_code: HarnessErrorCode,
+) -> None:
+    if _NAMED_SOURCE_PATTERN.fullmatch(name) is None:
+        raise HarnessValidationError(error_code, name)
+    if not isinstance(source, (Path, EditableFile)):
+        raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(source))
 
 
 def _resolve_file(root: Path, source: Path) -> tuple[Path, Path]:
