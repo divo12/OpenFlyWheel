@@ -281,7 +281,7 @@ class DiagnosisRun:
                 f"{int(DiagnosisSchemaVersion.V1)}".encode()
             ).hexdigest()
         )
-        clusters = _clusters(diagnoses, diagnoser_digest, diagnoses_digest)
+        clusters = _clusters(diagnoses, diagnoser_digest)
         result = DiagnosisResult(
             DiagnosisSchemaVersion.V1,
             run_id,
@@ -314,7 +314,6 @@ class DiagnosisRun:
 def _clusters(
     diagnoses: tuple[TraceDiagnosis, ...],
     diagnoser_digest: Sha256Digest,
-    diagnoses_digest: Sha256Digest,
 ) -> tuple[FailureCluster, ...]:
     mechanisms = tuple(
         sorted(
@@ -331,7 +330,6 @@ def _clusters(
             mechanism,
             tuple(diagnosis for diagnosis in diagnoses if diagnosis.mechanism == mechanism),
             diagnoser_digest,
-            diagnoses_digest,
         )
         for mechanism in mechanisms
     )
@@ -341,7 +339,6 @@ def _cluster(
     mechanism: MechanismKey,
     diagnoses: tuple[TraceDiagnosis, ...],
     diagnoser_digest: Sha256Digest,
-    diagnoses_digest: Sha256Digest,
 ) -> FailureCluster:
     first = diagnoses[0]
     evidence = tuple(anchor for diagnosis in diagnoses for anchor in diagnosis.evidence)
@@ -357,6 +354,7 @@ def _cluster(
     )
     confidence = sum(diagnosis.confidence or 0 for diagnosis in diagnoses) / len(diagnoses)
     trace_ids = tuple(diagnosis.trace_id for diagnosis in diagnoses)
+    diagnoses_digest = digest_bytes(_DIAGNOSES_ADAPTER.dump_json(diagnoses))
     cluster_id = ClusterId(
         "cluster_"
         + hashlib.sha256(
