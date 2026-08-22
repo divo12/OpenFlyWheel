@@ -82,7 +82,11 @@ def _observation_json(index: int, revision_id: str | None) -> str:
         '"environment":"production",'
         '"sessionId":"session-1",'
         f'"metadata":{metadata},'
-        '"release":"chorus-17"'
+        '"release":"chorus-17",'
+        '"modelId":null,'
+        '"inputPrice":null,'
+        '"outputPrice":null,'
+        '"totalPrice":null'
         "}"
     )
 
@@ -174,7 +178,7 @@ def _handler(state: CollectionFixtureState) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-@pytest.fixture
+@pytest.fixture()
 def collection_server() -> Iterator[CollectionFixtureServer]:
     state = CollectionFixtureState()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(state))
@@ -230,7 +234,7 @@ def _window() -> TraceWindow:
     return TraceWindow(start, start + timedelta(hours=1))
 
 
-def test_collects_1001_observations_reconstructs_trace_and_caches_repeat(
+def test_collects_1001_observations_and_refreshes_completed_window(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
@@ -240,11 +244,11 @@ def test_collects_1001_observations_reconstructs_trace_and_caches_repeat(
     store_path = tmp_path / "collection.sqlite"
 
     first = ofw.collect(revision, window=_window(), store_path=store_path)
-    request_count = len(collection_server.state.requests)
+    collection_server.state.observation_count = 1002
     repeated = ofw.collect(revision, window=_window(), store_path=store_path)
 
-    assert first == repeated
     assert first.observation_count == 1001
+    assert repeated.observation_count == 1002
     assert first.score_count == 1
     assert len(first.traces) == 1
     assert len(first.traces[0].observation_ids) == 1001
@@ -255,7 +259,6 @@ def test_collects_1001_observations_reconstructs_trace_and_caches_repeat(
     assert first.capability.mine_ready
     assert first.capability.automatic_fit_ready
     assert first.capability.reason is CollectionCapabilityReason.READY
-    assert len(collection_server.state.requests) == request_count
     assert collection_server.state.writes == 0
 
 

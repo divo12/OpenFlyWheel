@@ -50,14 +50,20 @@ ON CONFLICT (sync_id, stream) DO UPDATE SET
 
 class CollectionStore:
     def __init__(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        connection: sqlite3.Connection | None = None
         try:
-            self._connection = sqlite3.connect(path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(mode=0o600, exist_ok=True)
+            path.chmod(0o600)
+            connection = sqlite3.connect(path)
+            self._connection = connection
             self._connection.execute("PRAGMA foreign_keys = ON")
             self._connection.execute("PRAGMA journal_mode = WAL")
             self._connection.execute("PRAGMA busy_timeout = 5000")
             self._migrate()
-        except sqlite3.Error as error:
+        except (OSError, sqlite3.Error) as error:
+            if connection is not None:
+                connection.close()
             raise CollectionError(CollectionErrorCode.DATABASE_ERROR, str(path)) from error
 
     def close(self) -> None:

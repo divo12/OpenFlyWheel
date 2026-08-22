@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -84,6 +85,7 @@ def test_migrates_catalog_and_round_trips_atomic_pages(tmp_path: Path) -> None:
     store = CollectionStore(path)
     try:
         assert store.schema_version() == 1
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
         store.commit_observation_page(
             connection_id="connection-1",
             sync_id=sync_id,

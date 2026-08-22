@@ -23,6 +23,7 @@ from ofw import (
     TraceWindow,
 )
 from ofw.observability.langfuse.transport import LangfuseHttpClient
+from ofw.observability.langfuse.wire import ObservationResponseWire, ScoreResponseWire
 
 OBSERVATIONS_RESPONSE = r"""
 {
@@ -50,6 +51,10 @@ OBSERVATIONS_RESPONSE = r"""
       "usageDetails": {"input": 10, "output": 4},
       "costDetails": {"total": 0.02},
       "totalCost": 0.02,
+      "modelId": null,
+      "inputPrice": null,
+      "outputPrice": null,
+      "totalPrice": null,
       "tags": ["production", "chorus"],
       "release": "chorus-17",
       "traceName": "employee-run"
@@ -161,7 +166,7 @@ def _handler(state: FixtureState) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-@pytest.fixture
+@pytest.fixture()
 def langfuse_server() -> Iterator[FixtureServer]:
     state = FixtureState()
     server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(state))
@@ -243,6 +248,33 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert ("fields", "details,subject") in score_query
     assert all(request.authorization == expected_auth for request in langfuse_server.state.requests)
     assert langfuse_server.state.writes == 0
+
+
+def test_persisted_observation_and_score_changes_produce_new_digests() -> None:
+    first_observation = (
+        ObservationResponseWire.model_validate_json(OBSERVATIONS_RESPONSE).normalize().records[0]
+    )
+    changed_observation = (
+        ObservationResponseWire.model_validate_json(
+            OBSERVATIONS_RESPONSE.replace(
+                '"name": "backend-engineer"',
+                '"name": "backend-engineer-v2"',
+            )
+        )
+        .normalize()
+        .records[0]
+    )
+    first_score = ScoreResponseWire.model_validate_json(SCORES_RESPONSE).normalize().records[0]
+    changed_score = (
+        ScoreResponseWire.model_validate_json(
+            SCORES_RESPONSE.replace('"comment": "reviewed"', '"comment": "reviewed again"')
+        )
+        .normalize()
+        .records[0]
+    )
+
+    assert first_observation.digest != changed_observation.digest
+    assert first_score.digest != changed_score.digest
 
 
 def test_missing_credential_fails_before_request(

@@ -67,33 +67,36 @@ def collect(
             SyncStream.OBSERVATIONS,
         )
         score_checkpoint = store.checkpoint(score_sync_id, SyncStream.SCORES)
-        needs_observations = observation_checkpoint is None or not observation_checkpoint.complete
-        needs_scores = score_checkpoint is None or not score_checkpoint.complete
-        if needs_observations or needs_scores:
-            project = LangfuseProject.from_manifest(revision.observability)
-            client = LangfuseHttpClient(project)
-            try:
-                client.get_health()
-                if needs_observations:
-                    _sync_observations(
-                        client,
-                        store,
-                        str(revision.observability.id),
-                        observation_sync_id,
-                        window,
-                        None if observation_checkpoint is None else observation_checkpoint.cursor,
-                    )
-                if needs_scores:
-                    _sync_scores(
-                        client,
-                        store,
-                        str(revision.observability.id),
-                        score_sync_id,
-                        window,
-                        None if score_checkpoint is None else score_checkpoint.cursor,
-                    )
-            finally:
-                client.close()
+        project = LangfuseProject.from_manifest(revision.observability)
+        client = LangfuseHttpClient(project)
+        try:
+            client.get_health()
+            _sync_observations(
+                client,
+                store,
+                str(revision.observability.id),
+                observation_sync_id,
+                window,
+                (
+                    observation_checkpoint.cursor
+                    if observation_checkpoint is not None and not observation_checkpoint.complete
+                    else None
+                ),
+            )
+            _sync_scores(
+                client,
+                store,
+                str(revision.observability.id),
+                score_sync_id,
+                window,
+                (
+                    score_checkpoint.cursor
+                    if score_checkpoint is not None and not score_checkpoint.complete
+                    else None
+                ),
+            )
+        finally:
+            client.close()
         observations = store.observations(observation_sync_id)
         scores = store.scores(score_sync_id)
         traces, orphan_count = _assemble_traces(observations, scores, revision.id)

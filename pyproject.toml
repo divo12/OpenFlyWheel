@@ -36,6 +36,7 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
+files = ["src", "tests"]
 python_version = "3.11"
 strict = true
 warn_unused_configs = true

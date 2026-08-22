@@ -1,7 +1,6 @@
 """Public OpenFlyWheel harness API."""
 
-from importlib import import_module
-from types import ModuleType
+from pathlib import Path
 
 from ofw.contracts import (
     AssetAccess,
@@ -60,7 +59,24 @@ from ofw.observability.langfuse.domain import (
 )
 from ofw.observability.langfuse.service import collect
 
-ofw: ModuleType = import_module(__name__)
+
+class _OfwNamespace:
+    __slots__ = ()
+
+    def editable(self, path: Path) -> EditableFile:
+        return editable(path)
+
+    def collect(
+        self,
+        revision: HarnessRevision,
+        *,
+        window: TraceWindow,
+        store_path: Path | None = None,
+    ) -> CollectionResult:
+        return collect(revision, window=window, store_path=store_path)
+
+
+ofw = _OfwNamespace()
 
 __all__ = [
     "AssetAccess",

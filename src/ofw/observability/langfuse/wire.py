@@ -90,6 +90,10 @@ class ObservationWire(BaseModel):
     cost_details: JsonValue | None = Field(default=None, alias="costDetails")
     total_cost: float | None = Field(default=None, alias="totalCost")
     usage_pricing_tier_name: str | None = Field(default=None, alias="usagePricingTierName")
+    model_id: str | None = Field(alias="modelId")
+    input_price: str | None = Field(alias="inputPrice")
+    output_price: str | None = Field(alias="outputPrice")
+    total_price: str | None = Field(alias="totalPrice")
     tags: tuple[str, ...] | None = None
     release: str | None = None
     trace_name: str | None = Field(default=None, alias="traceName")
@@ -167,21 +171,45 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
     metadata = _json_document(wire.metadata)
     usage = _json_document(wire.usage_details)
     costs = _json_document(wire.cost_details)
-    digest_source = "\0".join(
+    digest_source = json.dumps(
         (
             wire.id,
-            wire.trace_id or "",
+            wire.trace_id,
             wire.start_time.isoformat(),
-            "" if wire.end_time is None else wire.end_time.isoformat(),
-            wire.parent_observation_id or "",
+            None if wire.end_time is None else wire.end_time.isoformat(),
+            wire.project_id,
+            wire.parent_observation_id,
             wire.type.value,
-            wire.input or "",
-            wire.output or "",
-            "" if metadata is None else metadata.canonical,
-            "" if usage is None else usage.canonical,
-            "" if costs is None else costs.canonical,
-            wire.release or "",
-        )
+            wire.is_root,
+            wire.name,
+            None if wire.level is None else wire.level.value,
+            wire.status_message,
+            wire.version,
+            wire.environment,
+            wire.bookmarked,
+            wire.public,
+            wire.user_id,
+            wire.session_id,
+            (
+                None
+                if wire.completion_start_time is None
+                else wire.completion_start_time.isoformat()
+            ),
+            None if wire.created_at is None else wire.created_at.isoformat(),
+            None if wire.updated_at is None else wire.updated_at.isoformat(),
+            wire.input,
+            wire.output,
+            None if metadata is None else metadata.canonical,
+            None if usage is None else usage.canonical,
+            None if costs is None else costs.canonical,
+            wire.total_cost,
+            wire.usage_pricing_tier_name,
+            wire.tags,
+            wire.release,
+            wire.trace_name,
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
     return ObservationRecord(
         id=ObservationId(wire.id),
@@ -234,18 +262,27 @@ def _normalize_score(wire: ScoreWire) -> ScoreRecord:
             trace_id=None if wire.subject.trace_id is None else TraceId(wire.subject.trace_id),
         )
     )
-    digest_source = "\0".join(
+    digest_source = json.dumps(
         (
             wire.id,
+            wire.project_id,
             wire.name,
             wire.data_type.value,
-            str(wire.value),
+            wire.value,
             wire.source.value,
             wire.timestamp.isoformat(),
-            "" if subject is None else subject.kind.value,
-            "" if subject is None else subject.id,
-            "" if metadata is None else metadata.canonical,
-        )
+            wire.environment,
+            wire.created_at.isoformat(),
+            wire.updated_at.isoformat(),
+            wire.comment,
+            wire.config_id,
+            None if subject is None else subject.kind.value,
+            None if subject is None else subject.id,
+            (None if subject is None or subject.trace_id is None else subject.trace_id.value),
+            None if metadata is None else metadata.canonical,
+        ),
+        ensure_ascii=False,
+        separators=(",", ":"),
     )
     return ScoreRecord(
         id=ScoreId(wire.id),
