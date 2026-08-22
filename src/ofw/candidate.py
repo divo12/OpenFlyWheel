@@ -236,6 +236,7 @@ class CandidateBuilder:
         prediction: ChangePrediction,
     ) -> CandidateBuild:
         self._validate_request(edits, prediction)
+        ordered_edits = tuple(sorted(edits, key=_edit_sort_key))
         intents = tuple(
             EditIntent(
                 edit.path,
@@ -243,7 +244,7 @@ class CandidateBuilder:
                 _digest_text(edit.replacement),
                 edit.selector,
             )
-            for edit in edits
+            for edit in ordered_edits
         )
         candidate_id = CandidateId(
             "candidate_"
@@ -292,7 +293,7 @@ class CandidateBuilder:
         write_artifact(manifest_path, f"{manifest.to_json()}\n".encode())
         workspace = self._worktree(candidate_id)
         try:
-            for edit in edits:
+            for edit in ordered_edits:
                 _apply_edit(workspace.root, edit)
             self._validate_frozen(workspace.root)
             diff = _git_bytes(workspace.root, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
@@ -302,7 +303,7 @@ class CandidateBuilder:
             write_artifact(diff_path, diff)
             components = tuple(
                 sorted(
-                    {self._component(edit.path) for edit in edits},
+                    {self._component(edit.path) for edit in ordered_edits},
                     key=_component_sort_key,
                 )
             )
@@ -311,7 +312,7 @@ class CandidateBuilder:
                 self.revision.id,
                 workspace.branch,
                 workspace.root,
-                tuple(edit.path for edit in edits),
+                tuple(edit.path for edit in ordered_edits),
                 components,
                 manifest_path,
                 diff_path,
@@ -405,6 +406,7 @@ class CandidateBuilder:
                 )
                 if dirty:
                     _git_with_input(root, dirty, "apply", "--binary", "-")
+                _copy_revision_assets(self.revision, root)
             except Exception:
                 workspace.close()
                 raise
@@ -489,5 +491,17 @@ def _component_sort_key(component: ComponentKind) -> str:
     return component.value
 
 
+def _edit_sort_key(edit: FileEdit) -> str:
+    return edit.path.as_posix()
+
+
 def _selector_text(selector: LineRange | None) -> str:
     return "all" if selector is None else f"{selector.start}:{selector.end}"
+
+
+def _copy_revision_assets(revision: HarnessRevision, root: Path) -> None:
+    for asset in revision.assets:
+        source = revision.root / asset.source.relative_path
+        destination = root / asset.source.relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)

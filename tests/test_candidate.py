@@ -239,3 +239,31 @@ def test_noop_edit_is_rejected_and_worktree_is_cleaned(tmp_path: Path) -> None:
 
     assert raised.value.code is CandidateErrorCode.NO_CHANGES
     assert _run_git(revision.root, "branch", "--format=%(refname:short)") == branches_before
+
+
+def test_equivalent_edit_order_produces_one_candidate_identity(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    second = harness.root / "second_tool.py"
+    second.write_text("def second() -> int:\n    return 1\n", encoding="utf-8")
+    harness.connect_tools(Tool("second", ofw.editable(Path("second_tool.py"))))
+    revision = harness.process()
+    first_edit = FileEdit(
+        Path("tool.py"),
+        _digest(revision.root / "tool.py"),
+        "def run(value: str) -> str:\n    return value.strip()\n",
+    )
+    second_edit = FileEdit(
+        Path("second_tool.py"),
+        _digest(second),
+        "def second() -> int:\n    return 2\n",
+    )
+    builder = CandidateBuilder(revision, _evidence(revision.id), _policy())
+
+    first = builder.create((first_edit, second_edit), _prediction())
+    first_id = first.candidate.id
+    first.workspace.close()
+    reversed_build = builder.create((second_edit, first_edit), _prediction())
+    try:
+        assert reversed_build.candidate.id == first_id
+    finally:
+        reversed_build.workspace.close()
