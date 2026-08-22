@@ -12,4 +12,5 @@ runtime/
 **/book.sqlite-*
 .workspaces/
 .expert-notes/
-
+.coverage
+.ofw/
