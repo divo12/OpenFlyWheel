@@ -37,6 +37,7 @@ from ofw.exports import (
     ExportBundle,
     ExportPartition,
     GoodTraceDataset,
+    LedgerEntry,
     MemoryPatchSet,
     PartitionLedger,
     PrivacyTransform,
@@ -156,7 +157,28 @@ def _bundle(revision: HarnessRevision) -> ExportBundle:
         "exports-fixture",
         None,
         revision.id,
-        PartitionLedger(()),
+        PartitionLedger(
+            (
+                LedgerEntry(
+                    case.trace_id,
+                    case.family_id,
+                    case.cluster_family_id,
+                    case.partition,
+                ),
+                LedgerEntry(
+                    selection_case.trace_id,
+                    selection_case.family_id,
+                    selection_case.cluster_family_id,
+                    selection_case.partition,
+                ),
+                LedgerEntry(
+                    admission_case.trace_id,
+                    admission_case.family_id,
+                    admission_case.cluster_family_id,
+                    admission_case.partition,
+                ),
+            )
+        ),
         GoodTraceDataset(
             "good",
             revision.id,
@@ -253,5 +275,22 @@ def test_holdout_case_in_developer_suite_fails_before_execution(tmp_path: Path) 
 
     with pytest.raises(BenchmarkError) as raised:
         BenchmarkRunner(harness, leaked, _policy()).run()
+
+    assert raised.value.code is BenchmarkErrorCode.HOLDOUT_LEAK
+
+
+def test_relabelled_holdout_case_still_fails_ledger_check(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    bundle = _bundle(revision)
+    forged_case = replace(
+        bundle.admission_holdout.cases[0],
+        partition=ExportPartition.FRONTIER,
+    )
+    forged_suite = replace(bundle.developer_evals, cases=(forged_case,))
+
+    with pytest.raises(BenchmarkError) as raised:
+        BenchmarkRunner(harness, replace(bundle, developer_evals=forged_suite), _policy()).run()
 
     assert raised.value.code is BenchmarkErrorCode.HOLDOUT_LEAK

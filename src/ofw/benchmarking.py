@@ -146,6 +146,7 @@ class BenchmarkRunner:
         cases = self.bundle.developer_evals.cases
         if any(
             case.partition not in (ExportPartition.FRONTIER, ExportPartition.REGRESSION)
+            or not _ledger_authorizes(case, self.bundle)
             for case in cases
         ):
             raise BenchmarkError(BenchmarkErrorCode.HOLDOUT_LEAK, self.bundle.developer_evals.id)
@@ -267,6 +268,16 @@ def _case_payload(case: EvalCase, root: Path) -> str:
     if digest_bytes(payload) != case.snapshot.digest:
         raise BenchmarkError(BenchmarkErrorCode.SNAPSHOT_INVALID, case.id)
     return payload.decode()
+
+
+def _ledger_authorizes(case: EvalCase, bundle: ExportBundle) -> bool:
+    return any(
+        entry.trace_id == case.trace_id
+        and entry.trace_family_id == case.family_id
+        and entry.cluster_family_id == case.cluster_family_id
+        and entry.partition == case.partition
+        for entry in bundle.ledger.entries
+    )
 
 
 def _semantic(attempts: tuple[CaseAttempt, ...]) -> tuple[CaseAttempt, ...]:
