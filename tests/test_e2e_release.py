@@ -20,9 +20,13 @@ from ofw import (
     ChangePrediction,
     ClusterFamilyId,
     ClusterPartitionRule,
+    ClusterReview,
+    ClusterReviewDecision,
+    ClusterReviewerId,
     ComponentKind,
     ConsentStatus,
     DataLicense,
+    DiagnosisReview,
     EvidenceOrigin,
     ExportPartition,
     ExportPolicy,
@@ -334,6 +338,20 @@ def test_offline_trace_to_review_release(
         )
         diagnosis_run = DiagnosisRun(harness, mine, diagnoser)
         diagnosis = diagnosis_run.run()
+        diagnosis = DiagnosisReview(
+            diagnosis,
+            tuple(
+                ClusterReview(
+                    cluster.id,
+                    cluster.revision,
+                    cluster.content_digest,
+                    ClusterReviewerId("offline-reviewer"),
+                    ClusterReviewDecision.CONFIRM,
+                    _NOW,
+                )
+                for cluster in diagnosis.clusters
+            ),
+        ).run()
         partitions = (
             ("frontier", ExportPartition.FRONTIER),
             ("regression", ExportPartition.REGRESSION),
@@ -396,7 +414,7 @@ def test_offline_trace_to_review_release(
                 0.0,
             ),
         )
-        fit_policy = FitPolicy(0.5, 1.0, 0, 1.0, 0.0, 1.0, 1.0)
+        fit_policy = FitPolicy(0.5, 1.0, 0, 10.0, 0.0, 1.0, 1.0)
         campaign = ofw.fit(
             harness,
             bundle,

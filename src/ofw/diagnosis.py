@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import IntEnum, StrEnum
 from pathlib import Path
@@ -59,6 +59,12 @@ class ClusterState(StrEnum):
     TARGETED = "targeted"
     RESOLVED = "resolved"
     REOPENED = "reopened"
+    REJECTED = "rejected"
+
+
+class ClusterReviewDecision(StrEnum):
+    CONFIRM = "confirm"
+    REJECT = "reject"
 
 
 class DiagnosisStatus(StrEnum):
@@ -70,6 +76,7 @@ class DiagnosisErrorCode(StrEnum):
     STALE_HARNESS = "stale_harness"
     REVISION_MISMATCH = "revision_mismatch"
     ARTIFACT_INVALID = "artifact_invalid"
+    REVIEW_INVALID = "review_invalid"
 
 
 class DiagnosisError(Exception):
@@ -201,6 +208,35 @@ class ClusterId:
 
 
 @dataclass(frozen=True, slots=True)
+class ClusterReviewerId:
+    value: str
+
+    def __post_init__(self) -> None:
+        if not self.value.strip() or "\0" in self.value:
+            raise DiagnosisError(DiagnosisErrorCode.REVIEW_INVALID, self.value)
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class ClusterReview:
+    cluster_id: ClusterId
+    cluster_revision: int
+    cluster_content_digest: Sha256Digest
+    reviewer_id: ClusterReviewerId
+    decision: ClusterReviewDecision
+    reviewed_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.cluster_revision < 1 or self.reviewed_at.utcoffset() is None:
+            raise DiagnosisError(
+                DiagnosisErrorCode.REVIEW_INVALID,
+                self.cluster_id.value,
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class ClusterRevisionRef:
     id: ClusterId
     revision: int
@@ -244,6 +280,7 @@ class DiagnosisResult:
     diagnoses: tuple[TraceDiagnosis, ...]
     clusters: tuple[FailureCluster, ...]
     root: Path
+    reviews: tuple[ClusterReview, ...] = ()
 
     @property
     def abstained_count(self) -> int:
@@ -263,6 +300,34 @@ _DIAGNOSES_ADAPTER: TypeAdapter[tuple[TraceDiagnosis, ...]] = TypeAdapter(
     tuple[TraceDiagnosis, ...]
 )
 _RESULT_ADAPTER: TypeAdapter[DiagnosisResult] = TypeAdapter(DiagnosisResult)
+_REVIEWS_ADAPTER: TypeAdapter[tuple[ClusterReview, ...]] = TypeAdapter(tuple[ClusterReview, ...])
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosisReview:
+    source: DiagnosisResult
+    reviews: tuple[ClusterReview, ...]
+
+    def run(self) -> DiagnosisResult:
+        _validate_reviews(self.source, self.reviews)
+        combined = (*self.source.reviews, *self.reviews)
+        review_digest = digest_bytes(_REVIEWS_ADAPTER.dump_json(combined))
+        run_id = DiagnosisRunId(
+            "diagnosis_"
+            + hashlib.sha256(
+                f"{self.source.id}\0{review_digest}\0{int(DiagnosisSchemaVersion.V1)}".encode()
+            ).hexdigest()
+        )
+        result = replace(
+            self.source,
+            id=run_id,
+            clusters=tuple(
+                _reviewed_cluster(cluster, self.reviews) for cluster in self.source.clusters
+            ),
+            reviews=combined,
+        )
+        write_artifact(result.manifest_path, f"{result.to_json()}\n".encode())
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +378,7 @@ class DiagnosisRun:
             diagnoses,
             clusters,
             revision.root,
+            () if self.previous is None else self.previous.reviews,
         )
         write_artifact(result.manifest_path, f"{result.to_json()}\n".encode())
         return result
@@ -330,6 +396,53 @@ class DiagnosisRun:
         ):
             return TraceDiagnosis.abstained(snapshot.trace.id)
         return diagnosis
+
+
+def _validate_reviews(
+    source: DiagnosisResult,
+    reviews: tuple[ClusterReview, ...],
+) -> None:
+    keys = tuple((review.cluster_id, review.cluster_revision) for review in reviews)
+    previous_keys = tuple((review.cluster_id, review.cluster_revision) for review in source.reviews)
+    if not reviews or len(set(keys)) != len(keys) or any(key in previous_keys for key in keys):
+        raise DiagnosisError(DiagnosisErrorCode.REVIEW_INVALID, str(source.id))
+    for review in reviews:
+        cluster = next(
+            (item for item in source.clusters if item.id == review.cluster_id),
+            None,
+        )
+        if (
+            cluster is None
+            or cluster.revision != review.cluster_revision
+            or cluster.content_digest != review.cluster_content_digest
+            or cluster.state not in (ClusterState.PROPOSED, ClusterState.REOPENED)
+        ):
+            raise DiagnosisError(
+                DiagnosisErrorCode.REVIEW_INVALID,
+                review.cluster_id.value,
+            )
+
+
+def _reviewed_cluster(
+    cluster: FailureCluster,
+    reviews: tuple[ClusterReview, ...],
+) -> FailureCluster:
+    review = next(
+        (
+            item
+            for item in reviews
+            if item.cluster_id == cluster.id and item.cluster_revision == cluster.revision
+        ),
+        None,
+    )
+    if review is None:
+        return cluster
+    state = (
+        ClusterState.CONFIRMED
+        if review.decision is ClusterReviewDecision.CONFIRM
+        else ClusterState.REJECTED
+    )
+    return replace(cluster, state=state)
 
 
 def _clusters(
@@ -401,7 +514,11 @@ def _cluster_revision(
     state = (
         ClusterState.PROPOSED
         if previous is None
-        else (ClusterState.REOPENED if previous.state is ClusterState.RESOLVED else previous.state)
+        else (
+            ClusterState.REOPENED
+            if previous.state in (ClusterState.RESOLVED, ClusterState.REJECTED)
+            else previous.state
+        )
     )
     return FailureCluster(
         _cluster_id(mechanism),
@@ -423,7 +540,7 @@ def _cluster_revision(
 
 
 def _resolved_cluster(previous: FailureCluster) -> FailureCluster:
-    if previous.state is ClusterState.RESOLVED:
+    if previous.state in (ClusterState.RESOLVED, ClusterState.REJECTED):
         return previous
     return FailureCluster(
         previous.id,
