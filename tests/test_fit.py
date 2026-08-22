@@ -6,6 +6,7 @@ import hashlib
 import subprocess
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -313,6 +314,13 @@ def test_exact_paired_evidence_uses_discordant_real_trials() -> None:
     ties = paired_evidence((_pass_delta(7, True, True),))[0]
     assert ties.exact_one_sided_probability == 1.0
     assert not paired_evidence_passes(ties, 1, policy)
+
+
+def test_paired_evidence_policy_rejects_a_raw_string_mode() -> None:
+    raw_mode = cast(StatisticalGateMode, "exact_sign_test")
+
+    with pytest.raises(ValueError):
+        PairedEvidencePolicy(raw_mode, 0, 1.0)
 
 
 def test_exact_paired_gate_admits_repeated_target_wins(tmp_path: Path) -> None:

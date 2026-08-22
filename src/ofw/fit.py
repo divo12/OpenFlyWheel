@@ -87,7 +87,8 @@ class PairedEvidencePolicy:
 
     def __post_init__(self) -> None:
         if (
-            self.minimum_discordant_pairs < 0
+            not isinstance(self.mode, StatisticalGateMode)
+            or self.minimum_discordant_pairs < 0
             or not math.isfinite(self.maximum_probability)
             or not 0 < self.maximum_probability <= 1
             or (
