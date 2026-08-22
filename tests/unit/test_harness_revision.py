@@ -109,8 +109,104 @@ def test_process_records_explicit_asset_objects(tmp_path: Path) -> None:
     assert isinstance(context_assets[0].source, FileAssetSource)
     assert isinstance(lifecycle_assets[0].source, PythonClassAssetSource)
     assert context_assets[0].access is AssetAccess.FROZEN
-    assert context_assets[1].access is AssetAccess.EDITABLE
+    assert context_assets[1].access is AssetAccess.FIT_EDITABLE
     assert lifecycle_assets[0].access is AssetAccess.FROZEN
+
+
+def test_process_records_the_seven_harness_component_groups(tmp_path: Path) -> None:
+    root, loop = _repository(tmp_path)
+    files = (
+        Path("instructions.md"),
+        Path("memory.py"),
+        Path("skills/research/SKILL.md"),
+        Path("sandbox/__init__.py"),
+        Path("pyproject.toml"),
+        Path("tools/search.py"),
+        Path("channels/chat.py"),
+        Path("connectors/mcp.py"),
+        Path("schedules/nightly.py"),
+        Path("connectors/otel.py"),
+        Path("evals/tasks/factual/task.toml"),
+        Path("middleware/retry.py"),
+        Path("identity.py"),
+    )
+    for relative_path in files:
+        path = root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"fixture: {relative_path.as_posix()}\n", encoding="utf-8")
+
+    harness = Harness("fixtureco-agent", root=root)
+    harness.connect_context(
+        ofw.editable(Path("instructions.md")),
+        ofw.editable(Path("memory.py")),
+        ofw.editable(Path("skills/research/SKILL.md")),
+    )
+    harness.connect_execute(Path("sandbox/__init__.py"), Path("pyproject.toml"))
+    harness.connect_tools(
+        ofw.editable(Path("tools/search.py")),
+        ofw.editable(Path("channels/chat.py")),
+        ofw.editable(Path("connectors/mcp.py")),
+        ofw.editable(Path("schedules/nightly.py")),
+    )
+    harness.connect_observability(Path("connectors/otel.py"))
+    harness.connect_verifiers(ofw.mine_managed(Path("evals/tasks/factual/task.toml")))
+    harness.connect_lifecycle(loop, ofw.editable(Path("middleware/retry.py")))
+    harness.connect_governance(Path("identity.py"))
+
+    revision = harness.process()
+
+    assert {asset.kind for asset in revision.assets} == set(AssetKind)
+    assert revision.mine_managed_files == (Path("evals/tasks/factual/task.toml"),)
+    assert Path("sandbox/__init__.py") in revision.frozen_files
+    assert Path("connectors/otel.py") in revision.frozen_files
+    assert Path("identity.py") in revision.frozen_files
+    assert Path("middleware/retry.py") in revision.editable_files
+
+
+@pytest.mark.parametrize(
+    "connector",
+    (
+        AssetKind.EXECUTION,
+        AssetKind.OBSERVABILITY,
+        AssetKind.VERIFIER,
+        AssetKind.GOVERNANCE,
+    ),
+)
+def test_governed_components_reject_fit_edit_authority(
+    connector: AssetKind,
+    tmp_path: Path,
+) -> None:
+    root, _ = _repository(tmp_path)
+    editable_source = ofw.editable(Path("prompt.md"))
+    harness = Harness("fixtureco-agent", root=root)
+
+    with pytest.raises(HarnessValidationError) as raised:
+        match connector:
+            case AssetKind.EXECUTION:
+                harness.connect_execute(cast(Path, editable_source))
+            case AssetKind.OBSERVABILITY:
+                harness.connect_observability(cast(Path, editable_source))
+            case AssetKind.VERIFIER:
+                harness.connect_verifiers(cast(Path, editable_source))
+            case AssetKind.GOVERNANCE:
+                harness.connect_governance(cast(Path, editable_source))
+            case _:
+                pytest.fail(f"unexpected governed component: {connector}")
+
+    assert raised.value.code is HarnessErrorCode.ACCESS_NOT_ALLOWED
+
+
+def test_environment_secret_file_is_never_fingerprinted(tmp_path: Path) -> None:
+    root, loop = _repository(tmp_path)
+    (root / ".env").write_text("SECRET=do-not-read\n", encoding="utf-8")
+    harness = Harness("fixtureco-agent", root=root)
+    harness.connect_context(Path("prompt.md"), Path(".env"))
+    harness.connect_lifecycle(loop)
+
+    with pytest.raises(HarnessValidationError) as raised:
+        harness.process()
+
+    assert raised.value.code is HarnessErrorCode.SENSITIVE_ASSET
 
 
 def test_same_inputs_produce_same_revision(tmp_path: Path) -> None:

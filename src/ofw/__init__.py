@@ -14,7 +14,14 @@ from openflywheel.contracts.harness import (
     PythonClassAssetSource,
     RepositorySnapshot,
 )
-from openflywheel.harness import EditableFile, Harness, Lifecycle, editable
+from openflywheel.harness import (
+    EditableFile,
+    Harness,
+    Lifecycle,
+    MineManagedFile,
+    editable,
+    mine_managed,
+)
 
 ofw: ModuleType = import_module(__name__)
 
@@ -29,8 +36,10 @@ __all__ = [
     "HarnessRevision",
     "HarnessValidationError",
     "Lifecycle",
+    "MineManagedFile",
     "PythonClassAssetSource",
     "RepositorySnapshot",
     "editable",
+    "mine_managed",
     "ofw",
 ]

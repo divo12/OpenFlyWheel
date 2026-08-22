@@ -16,12 +16,18 @@ class HarnessSchemaVersion(IntEnum):
 
 class AssetKind(StrEnum):
     CONTEXT = "context"
+    EXECUTION = "execution"
+    TOOLING = "tooling"
+    OBSERVABILITY = "observability"
+    VERIFIER = "verifier"
     LIFECYCLE = "lifecycle"
+    GOVERNANCE = "governance"
 
 
 class AssetAccess(StrEnum):
     FROZEN = "frozen"
-    EDITABLE = "editable"
+    FIT_EDITABLE = "fit_editable"
+    MINE_MANAGED = "mine_managed"
 
 
 class AssetSourceKind(StrEnum):
@@ -46,6 +52,8 @@ class HarnessErrorCode(StrEnum):
     GIT_REPOSITORY_REQUIRED = "git_repository_required"
     GIT_COMMAND_FAILED = "git_command_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"
+    ACCESS_NOT_ALLOWED = "access_not_allowed"
+    SENSITIVE_ASSET = "sensitive_asset"
 
 
 class HarnessValidationError(Exception):
@@ -122,7 +130,8 @@ class HarnessRevision(BaseModel):
         return tuple(
             asset.source.relative_path
             for asset in self.assets
-            if asset.access is AssetAccess.EDITABLE and isinstance(asset.source, FileAssetSource)
+            if asset.access is AssetAccess.FIT_EDITABLE
+            and isinstance(asset.source, FileAssetSource)
         )
 
     @property
@@ -130,7 +139,14 @@ class HarnessRevision(BaseModel):
         return tuple(
             asset.source.relative_path
             for asset in self.assets
-            if asset.access is AssetAccess.FROZEN
-            and asset.kind is AssetKind.CONTEXT
+            if asset.access is AssetAccess.FROZEN and isinstance(asset.source, FileAssetSource)
+        )
+
+    @property
+    def mine_managed_files(self) -> tuple[Path, ...]:
+        return tuple(
+            asset.source.relative_path
+            for asset in self.assets
+            if asset.access is AssetAccess.MINE_MANAGED
             and isinstance(asset.source, FileAssetSource)
         )
