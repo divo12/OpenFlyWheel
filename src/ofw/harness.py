@@ -188,7 +188,6 @@ class Harness:
             components=components,
             observability=(None if self._observability is None else self._observability.manifest()),
             runtime=runtime,
-            canary_digest=None,
         )
         revision = _revision_from_content(content, root)
         report: CanaryReport | None = None
@@ -205,16 +204,7 @@ class Harness:
             if not report.passed:
                 _write_canary(revision, report)
                 raise HarnessValidationError(HarnessErrorCode.CANARY_FAILED, canary.id.value)
-            content = HarnessRevisionContent(
-                schema_version=content.schema_version,
-                harness_name=content.harness_name,
-                repository=content.repository,
-                components=content.components,
-                observability=content.observability,
-                runtime=content.runtime,
-                canary_digest=report.digest,
-            )
-            revision = _revision_from_content(content, root)
+            revision = _revision_from_content(content, root, report.digest)
         _write_manifest(revision)
         if report is not None:
             _write_canary(revision, report)
@@ -231,19 +221,26 @@ class Harness:
             return None
         if not all(connections) or self._execution is None or self._lifecycle is None:
             raise HarnessValidationError(HarnessErrorCode.RUNTIME_INCOMPLETE, self.name)
-        return runtime_configuration(
-            root,
-            self._execution,
-            self._lifecycle,
-            tuple(self._verifiers),
-        )
+        try:
+            return runtime_configuration(
+                root,
+                self._execution,
+                self._lifecycle,
+                tuple(self._verifiers),
+            )
+        except ValueError as error:
+            raise HarnessValidationError(HarnessErrorCode.RUNTIME_INVALID, self.name) from error
 
 
 def _has_component(registrations: list[_FileRegistration], kind: ComponentKind) -> bool:
     return any(registration.component is kind for registration in registrations)
 
 
-def _revision_from_content(content: HarnessRevisionContent, root: Path) -> HarnessRevision:
+def _revision_from_content(
+    content: HarnessRevisionContent,
+    root: Path,
+    canary_digest: Sha256Digest | None = None,
+) -> HarnessRevision:
     content_digest = _digest_text(content.canonical_json())
     return HarnessRevision(
         schema_version=content.schema_version,
@@ -254,7 +251,7 @@ def _revision_from_content(content: HarnessRevisionContent, root: Path) -> Harne
         components=content.components,
         observability=content.observability,
         runtime=content.runtime,
-        canary_digest=content.canary_digest,
+        canary_digest=canary_digest,
     )
 
 

@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
-import inspect
 import re
 import shutil
 import subprocess  # nosec B404
 import sys
 import tempfile
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from ofw.contracts import HarnessRevision, RuntimeConfiguration, Sha256Digest
 
@@ -323,11 +322,11 @@ class PythonLoop:
     models: tuple[ModelFingerprint, ...] = ()
 
     def fingerprint(self, root: Path) -> Sha256Digest:
-        module_path = root / Path(*self.entrypoint.module.value.split(".")).with_suffix(".py")
-        source_digest = _digest_file(module_path) if module_path.is_file() else "missing"
+        module_path = _python_source(root, self.entrypoint)
         return _digest_text(
             f"python-loop\0{self.entrypoint.module.value}\0"
-            f"{self.entrypoint.function.value}\0{source_digest}\0{_models_text(self.models)}"
+            f"{self.entrypoint.function.value}\0{_digest_file(module_path)}\0"
+            f"{_models_text(self.models)}"
         )
 
     def invoke(
@@ -350,40 +349,57 @@ class PythonLoop:
 
 
 LifecycleAdapter = CommandLoop | PythonLoop
-VerifierFunction = Callable[[RunResult], VerifierResult]
 
 
 @dataclass(frozen=True, slots=True)
 class PythonVerifier:
     name: str
-    function: VerifierFunction
+    entrypoint: PythonEntrypoint
 
     def __post_init__(self) -> None:
         if _NAME_PATTERN.fullmatch(self.name) is None:
             raise ValueError("invalid verifier name")
 
     def fingerprint(self, root: Path) -> Sha256Digest:
-        del root
-        source = inspect.getsourcefile(self.function)
-        if source is None:
-            raise ValueError("verifier must be file-backed")
-        return _digest_text(f"python-verifier\0{self.name}\0{_digest_file(Path(source))}")
+        source = _python_source(root, self.entrypoint)
+        return _digest_text(
+            f"python-verifier\0{self.name}\0{self.entrypoint.module.value}\0"
+            f"{self.entrypoint.function.value}\0{_digest_file(source)}"
+        )
 
     def verify(
         self,
         result: RunResult,
         prepared: PreparedEnvironment,
     ) -> VerifierResult:
-        del prepared
-        try:
-            return self.function(result)
-        except Exception:
+        command = ProcessCommand(
+            (
+                sys.executable,
+                "-m",
+                "ofw._verifier_runner",
+                self.entrypoint.module.value,
+                self.entrypoint.function.value,
+            )
+        )
+        process = prepared.run(command, _RUN_ADAPTER.dump_json(result).decode())
+        if process.timed_out:
+            return VerifierResult(
+                VerifierVerdict.ERROR,
+                None,
+                "python verifier timed out",
+                retryable=True,
+            )
+        if process.exit_code != 0:
             return VerifierResult(
                 VerifierVerdict.ERROR,
                 None,
                 "python verifier failed",
                 retryable=True,
             )
+        try:
+            return _VERIFIER_ADAPTER.validate_json(process.stdout)
+        except ValidationError:
+            return VerifierResult(VerifierVerdict.ERROR, None, "invalid verifier result")
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +437,9 @@ class CommandVerifier:
 
 
 VerifierAdapter = PythonVerifier | CommandVerifier
+
+_RUN_ADAPTER: TypeAdapter[RunResult] = TypeAdapter(RunResult)
+_VERIFIER_ADAPTER: TypeAdapter[VerifierResult] = TypeAdapter(VerifierResult)
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +592,22 @@ def _command_fingerprint(
         if (root / argument).is_file()
     )
     return _digest_text("\0".join((kind, *command.arguments, *sources, _models_text(models))))
+
+
+def _python_source(root: Path, entrypoint: PythonEntrypoint) -> Path:
+    path = root / Path(*entrypoint.module.value.split(".")).with_suffix(".py")
+    if not path.is_file():
+        raise ValueError("python module is missing")
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError) as error:
+        raise ValueError("python module is invalid") from error
+    if not any(
+        isinstance(node, ast.FunctionDef) and node.name == entrypoint.function.value
+        for node in module.body
+    ):
+        raise ValueError("top-level python function is missing")
+    return path
 
 
 def _models_text(models: tuple[ModelFingerprint, ...]) -> str:

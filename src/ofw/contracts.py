@@ -50,6 +50,7 @@ class HarnessErrorCode(StrEnum):
     RUNTIME_INCOMPLETE = "runtime_incomplete"
     CANARY_FAILED = "canary_failed"
     DUPLICATE_VERIFIER = "duplicate_verifier"
+    RUNTIME_INVALID = "runtime_invalid"
 
 
 class HarnessValidationError(Exception):
@@ -139,7 +140,6 @@ class HarnessRevisionContent:
     components: tuple[HarnessComponent, ...]
     observability: LangfuseConnectionManifest | None
     runtime: RuntimeConfiguration | None
-    canary_digest: Sha256Digest | None
 
     def canonical_json(self) -> str:
         return _render_content(self)
@@ -217,7 +217,6 @@ def _render_content(content: HarnessRevisionContent) -> str:
         f'"repository":{_render_repository(content.repository)},'
         f'"observability":{_render_observability(content.observability)},'
         f'"runtime":{_render_runtime(content.runtime)},'
-        f'"canary_digest":{_render_digest(content.canary_digest)},'
         f'"components":[{components}]'
         "}"
     )
