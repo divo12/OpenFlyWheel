@@ -145,6 +145,7 @@ class LedgerEntry:
     trace_family_id: TraceFamilyId
     cluster_family_id: ClusterFamilyId | None
     partition: ExportPartition
+    snapshot: SnapshotReference
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,15 +394,39 @@ class MineExports:
                 )
             cluster = _cluster_for_trace(self.diagnosis, admission.trace_id)
             cluster_family = None if cluster is None else ClusterFamilyId(cluster.id.value)
-            return LedgerEntry(admission.trace_id, family_id, cluster_family, previous)
+            return LedgerEntry(
+                admission.trace_id,
+                family_id,
+                cluster_family,
+                previous,
+                _snapshot_reference(admission),
+            )
         if admission.partition is TracePartition.VERIFIED_GOOD:
-            return LedgerEntry(admission.trace_id, family_id, None, ExportPartition.TRAINING)
+            return LedgerEntry(
+                admission.trace_id,
+                family_id,
+                None,
+                ExportPartition.TRAINING,
+                _snapshot_reference(admission),
+            )
         cluster = _cluster_for_trace(self.diagnosis, admission.trace_id)
         if cluster is None:
-            return LedgerEntry(admission.trace_id, family_id, None, ExportPartition.REVIEW)
+            return LedgerEntry(
+                admission.trace_id,
+                family_id,
+                None,
+                ExportPartition.REVIEW,
+                _snapshot_reference(admission),
+            )
         cluster_family = ClusterFamilyId(cluster.id.value)
         partition = _failure_partition(cluster_family, self.policy)
-        return LedgerEntry(admission.trace_id, family_id, cluster_family, partition)
+        return LedgerEntry(
+            admission.trace_id,
+            family_id,
+            cluster_family,
+            partition,
+            _snapshot_reference(admission),
+        )
 
     def _previous_partition(
         self,
