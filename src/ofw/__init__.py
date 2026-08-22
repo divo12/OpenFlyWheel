@@ -27,6 +27,15 @@ from ofw.contracts import (
     WorkspaceFile,
 )
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
+from ofw.mine import (
+    Mine,
+    MineError,
+    MineErrorCode,
+    MiningPolicy,
+    ScoreName,
+    TracePartition,
+    TraceQualityThreshold,
+)
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
@@ -77,6 +86,8 @@ class _OfwNamespace:
     CanaryCase = CanaryCase
     CaseId = CaseId
     ServiceName = ServiceName
+    MiningPolicy = MiningPolicy
+    ScoreName = ScoreName
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -121,6 +132,10 @@ __all__ = [
     "LocalProcess",
     "ModelFingerprint",
     "ModuleName",
+    "Mine",
+    "MineError",
+    "MineErrorCode",
+    "MiningPolicy",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
@@ -130,11 +145,14 @@ __all__ = [
     "RunErrorCode",
     "RunResult",
     "RunStatus",
+    "ScoreName",
     "Sha256Digest",
     "ServiceName",
     "Subagent",
     "Tool",
     "TraceWindow",
+    "TracePartition",
+    "TraceQualityThreshold",
     "VerifierResult",
     "VerifierVerdict",
     "WorkspaceFile",
