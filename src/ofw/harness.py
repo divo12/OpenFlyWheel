@@ -39,11 +39,6 @@ class EditableFile:
 
 
 @dataclass(frozen=True, slots=True)
-class MineManagedFile:
-    path: Path
-
-
-@dataclass(frozen=True, slots=True)
 class _FileRegistration:
     component: ComponentKind
     path: Path
@@ -63,13 +58,6 @@ def editable(path: Path) -> EditableFile:
     return EditableFile(path=path)
 
 
-def mine_managed(path: Path) -> MineManagedFile:
-    """Grant Mine authority to maintain one verifier or eval file."""
-    if not isinstance(path, Path):
-        raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(path))
-    return MineManagedFile(path=path)
-
-
 @dataclass(slots=True)
 class Harness:
     """Mutable component registry; ``process`` returns an immutable revision."""
@@ -84,55 +72,34 @@ class Harness:
         if not isinstance(self.root, Path):
             raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(self.root))
 
-    def connect_context(self, *sources: Path | EditableFile) -> Harness:
-        self._register_files(
-            ComponentKind.CONTEXT,
-            sources,
-            (AssetAccess.FROZEN, AssetAccess.FIT_EDITABLE),
-        )
+    def connect_prompt(self, *sources: Path | EditableFile) -> Harness:
+        self._register_files(ComponentKind.PROMPT, sources)
         return self
 
-    def connect_execute(self, *sources: Path) -> Harness:
-        self._register_files(ComponentKind.EXECUTION, sources, (AssetAccess.FROZEN,))
+    def connect_tool_implementations(self, *sources: Path | EditableFile) -> Harness:
+        self._register_files(ComponentKind.TOOL_IMPLEMENTATION, sources)
         return self
 
-    def connect_tools(self, *sources: Path | EditableFile) -> Harness:
-        self._register_files(
-            ComponentKind.TOOLING,
-            sources,
-            (AssetAccess.FROZEN, AssetAccess.FIT_EDITABLE),
-        )
+    def connect_tool_descriptions(self, *sources: Path | EditableFile) -> Harness:
+        self._register_files(ComponentKind.TOOL_DESCRIPTION, sources)
         return self
 
-    def connect_observability(self, *sources: Path) -> Harness:
-        self._register_files(ComponentKind.OBSERVABILITY, sources, (AssetAccess.FROZEN,))
+    def connect_skills(self, *sources: Path | EditableFile) -> Harness:
+        self._register_files(ComponentKind.SKILL, sources)
         return self
 
-    def connect_verifiers(self, *sources: Path | MineManagedFile) -> Harness:
-        self._register_files(
-            ComponentKind.VERIFIER,
-            sources,
-            (AssetAccess.FROZEN, AssetAccess.MINE_MANAGED),
-        )
+    def connect_subagents(self, *sources: Path | EditableFile) -> Harness:
+        self._register_files(ComponentKind.SUBAGENT, sources)
         return self
 
-    def connect_lifecycle(self, *sources: Path | EditableFile) -> Harness:
-        self._register_files(
-            ComponentKind.LIFECYCLE,
-            sources,
-            (AssetAccess.FROZEN, AssetAccess.FIT_EDITABLE),
-        )
-        return self
-
-    def connect_governance(self, *sources: Path) -> Harness:
-        self._register_files(ComponentKind.GOVERNANCE, sources, (AssetAccess.FROZEN,))
+    def connect_middleware(self, *sources: Path | EditableFile) -> Harness:
+        self._register_files(ComponentKind.MIDDLEWARE, sources)
         return self
 
     def _register_files(
         self,
         component: ComponentKind,
-        sources: tuple[Path | EditableFile | MineManagedFile, ...],
-        allowed_access: tuple[AssetAccess, ...],
+        sources: tuple[Path | EditableFile, ...],
     ) -> None:
         for source in sources:
             if isinstance(source, EditableFile):
@@ -141,30 +108,17 @@ class Harness:
                     source.path,
                     AssetAccess.FIT_EDITABLE,
                 )
-            elif isinstance(source, MineManagedFile):
-                registration = _FileRegistration(
-                    component,
-                    source.path,
-                    AssetAccess.MINE_MANAGED,
-                )
             elif isinstance(source, Path):
                 registration = _FileRegistration(component, source, AssetAccess.FROZEN)
             else:
                 raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(source))
-            if registration.access not in allowed_access:
-                raise HarnessValidationError(
-                    HarnessErrorCode.ACCESS_NOT_ALLOWED,
-                    f"{component.value}:{registration.access.value}:{registration.path}",
-                )
             self._files.append(registration)
 
     def process(self) -> HarnessRevision:
         logger.debug("Compiling harness revision: %s", self.name)
         root = _resolve_root(self.root)
-        if not _has_component(self._files, ComponentKind.CONTEXT):
-            raise HarnessValidationError(HarnessErrorCode.CONTEXT_REQUIRED, self.name)
-        if not _has_component(self._files, ComponentKind.LIFECYCLE):
-            raise HarnessValidationError(HarnessErrorCode.LIFECYCLE_REQUIRED, self.name)
+        if not _has_component(self._files, ComponentKind.PROMPT):
+            raise HarnessValidationError(HarnessErrorCode.PROMPT_REQUIRED, self.name)
 
         components = _compile_components(root, self._files)
         repository = _snapshot_repository(root)

@@ -13,19 +13,17 @@ class HarnessSchemaVersion(IntEnum):
 
 
 class ComponentKind(StrEnum):
-    CONTEXT = "context"
-    EXECUTION = "execution"
-    TOOLING = "tooling"
-    OBSERVABILITY = "observability"
-    VERIFIER = "verifier"
-    LIFECYCLE = "lifecycle"
-    GOVERNANCE = "governance"
+    PROMPT = "prompt"
+    TOOL_IMPLEMENTATION = "tool_implementation"
+    TOOL_DESCRIPTION = "tool_description"
+    SKILL = "skill"
+    SUBAGENT = "subagent"
+    MIDDLEWARE = "middleware"
 
 
 class AssetAccess(StrEnum):
     FROZEN = "frozen"
     FIT_EDITABLE = "fit_editable"
-    MINE_MANAGED = "mine_managed"
 
 
 class HarnessErrorCode(StrEnum):
@@ -33,8 +31,7 @@ class HarnessErrorCode(StrEnum):
     INVALID_SOURCE = "invalid_source"
     ROOT_NOT_FOUND = "root_not_found"
     ROOT_NOT_DIRECTORY = "root_not_directory"
-    CONTEXT_REQUIRED = "context_required"
-    LIFECYCLE_REQUIRED = "lifecycle_required"
+    PROMPT_REQUIRED = "prompt_required"
     MISSING_ASSET = "missing_asset"
     PATH_OUTSIDE_ROOT = "path_outside_root"
     NOT_A_FILE = "not_a_file"
@@ -44,7 +41,6 @@ class HarnessErrorCode(StrEnum):
     GIT_REPOSITORY_REQUIRED = "git_repository_required"
     GIT_COMMAND_FAILED = "git_command_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"
-    ACCESS_NOT_ALLOWED = "access_not_allowed"
     SENSITIVE_ASSET = "sensitive_asset"
 
 
@@ -151,14 +147,6 @@ class HarnessRevision:
             asset.source.relative_path
             for asset in self.assets
             if asset.access is AssetAccess.FROZEN
-        )
-
-    @property
-    def mine_managed_files(self) -> tuple[Path, ...]:
-        return tuple(
-            asset.source.relative_path
-            for asset in self.assets
-            if asset.access is AssetAccess.MINE_MANAGED
         )
 
     def component(self, kind: ComponentKind) -> HarnessComponent | None:

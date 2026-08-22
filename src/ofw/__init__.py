@@ -17,7 +17,7 @@ from ofw.contracts import (
     Sha256Digest,
     WorkspaceFile,
 )
-from ofw.harness import EditableFile, Harness, MineManagedFile, editable, mine_managed
+from ofw.harness import EditableFile, Harness, editable
 
 ofw: ModuleType = import_module(__name__)
 
@@ -33,11 +33,9 @@ __all__ = [
     "HarnessRevision",
     "HarnessRevisionId",
     "HarnessValidationError",
-    "MineManagedFile",
     "RepositorySnapshot",
     "Sha256Digest",
     "WorkspaceFile",
     "editable",
-    "mine_managed",
     "ofw",
 ]
