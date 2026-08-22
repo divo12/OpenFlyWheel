@@ -189,7 +189,7 @@ class BenchmarkRunner:
                             )
                             try:
                                 execution.reset(prepared)
-                            except RuntimeError:
+                            except (OSError, RuntimeError):
                                 status = BenchmarkStatus.ENVIRONMENT_ERROR
                                 break
                         if status is not BenchmarkStatus.COMPLETE:
@@ -197,7 +197,10 @@ class BenchmarkRunner:
                     if status is not BenchmarkStatus.COMPLETE:
                         break
             finally:
-                execution.destroy(prepared)
+                try:
+                    execution.destroy(prepared)
+                except (OSError, RuntimeError):
+                    status = BenchmarkStatus.ENVIRONMENT_ERROR
         frozen_attempts = tuple(attempts)
         semantic_digest = digest_bytes(_ATTEMPTS_ADAPTER.dump_json(_semantic(frozen_attempts)))
         result_id = (
