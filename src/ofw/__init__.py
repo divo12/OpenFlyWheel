@@ -5,46 +5,38 @@ from types import ModuleType
 
 from ofw.contracts import (
     AssetAccess,
-    AssetKind,
-    FileAssetSource,
+    ComponentKind,
     GitCommit,
     HarnessAsset,
+    HarnessComponent,
     HarnessErrorCode,
     HarnessRevision,
     HarnessRevisionId,
     HarnessValidationError,
-    PythonClassAssetSource,
     RepositorySnapshot,
     Sha256Digest,
+    WorkspaceFile,
 )
-from ofw.harness import (
-    EditableFile,
-    Harness,
-    Lifecycle,
-    MineManagedFile,
-    editable,
-    mine_managed,
-)
+from ofw.harness import EditableFile, Harness, MineManagedFile, editable, mine_managed
 
 ofw: ModuleType = import_module(__name__)
 
 __all__ = [
     "AssetAccess",
-    "AssetKind",
+    "ComponentKind",
     "EditableFile",
-    "FileAssetSource",
     "GitCommit",
     "Harness",
     "HarnessAsset",
+    "HarnessComponent",
     "HarnessErrorCode",
     "HarnessRevision",
     "HarnessRevisionId",
     "HarnessValidationError",
-    "Lifecycle",
     "MineManagedFile",
-    "PythonClassAssetSource",
     "RepositorySnapshot",
     "Sha256Digest",
+    "WorkspaceFile",
     "editable",
     "mine_managed",
     "ofw",

@@ -1,35 +1,27 @@
-"""Immutable harness revision behavior."""
+"""Component-observable harness revision behavior."""
 
 from __future__ import annotations
 
-import importlib
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError
 from pathlib import Path
-from types import ModuleType
 from typing import cast
-from uuid import uuid4
 
 import pytest
 
 from ofw import (
-    AssetAccess,
-    AssetKind,
-    FileAssetSource,
+    ComponentKind,
+    EditableFile,
     Harness,
     HarnessAsset,
+    HarnessComponent,
     HarnessErrorCode,
     HarnessRevision,
     HarnessValidationError,
-    Lifecycle,
-    PythonClassAssetSource,
+    WorkspaceFile,
     ofw,
 )
-
-
-class FixtureLoopShape(Lifecycle):
-    """Static test type for dynamically imported fixture loop classes."""
 
 
 def _run_git(root: Path, *arguments: str) -> None:
@@ -41,51 +33,44 @@ def _run_git(root: Path, *arguments: str) -> None:
     )
 
 
-def _load_loop(
-    root: Path,
-    source: str = "from ofw import Lifecycle\n\nclass FixtureLoop(Lifecycle):\n    pass\n",
-) -> type[FixtureLoopShape]:
-    module_name = f"fixture_runtime_{uuid4().hex}"
-    module_path = root / f"{module_name}.py"
-    module_path.write_text(source, encoding="utf-8")
-    sys.path.insert(0, str(root))
-    try:
-        module: ModuleType = importlib.import_module(module_name)
-    finally:
-        sys.path.remove(str(root))
-    return cast(type[FixtureLoopShape], module.FixtureLoop)
-
-
-def _repository(tmp_path: Path) -> tuple[Path, type[FixtureLoopShape]]:
+def _repository(tmp_path: Path) -> Path:
     root = tmp_path / "fixtureco-agent"
     root.mkdir()
     (root / "prompt.md").write_text("Be accurate.\n", encoding="utf-8")
     (root / "policy.md").write_text("Cite sources.\n", encoding="utf-8")
-    loop = _load_loop(root)
+    (root / "agent.py").write_text("class AgentLoop:\n    pass\n", encoding="utf-8")
     _run_git(root, "init", "-q")
     _run_git(root, "config", "user.email", "fixture@example.test")
     _run_git(root, "config", "user.name", "FixtureCo")
     _run_git(root, "add", ".")
     _run_git(root, "commit", "-qm", "fixture baseline")
-    return root, loop
+    return root
 
 
-def _configured_harness(root: Path, loop: type[FixtureLoopShape]) -> Harness:
+def _configured_harness(root: Path) -> Harness:
     harness = Harness("fixtureco-research-agent", root=root)
     harness.connect_context(Path("policy.md"), ofw.editable(Path("prompt.md")))
-    harness.connect_lifecycle(loop)
+    harness.connect_lifecycle(Path("agent.py"))
     return harness
 
 
-def test_process_creates_typed_immutable_revision_and_manifest(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
+def _required_component(revision: HarnessRevision, kind: ComponentKind) -> HarnessComponent:
+    component = revision.component(kind)
+    assert component is not None
+    return component
 
-    revision = _configured_harness(root, loop).process()
+
+def test_process_creates_typed_immutable_revision_and_manifest(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    revision = _configured_harness(root).process()
 
     assert isinstance(revision, HarnessRevision)
+    assert all(isinstance(component, HarnessComponent) for component in revision.components)
     assert all(isinstance(asset, HarnessAsset) for asset in revision.assets)
-    assert revision.editable_files == (Path("prompt.md"),)
-    assert revision.frozen_files == (Path("policy.md"),)
+    assert all(isinstance(asset.source, WorkspaceFile) for asset in revision.assets)
+    assert Path("prompt.md") in revision.editable_files
+    assert Path("policy.md") in revision.frozen_files
+    assert Path("agent.py") in revision.frozen_files
     assert (
         revision.manifest_path == root / ".ofw" / "revisions" / str(revision.id) / "manifest.json"
     )
@@ -100,39 +85,23 @@ def test_process_creates_typed_immutable_revision_and_manifest(tmp_path: Path) -
         revision.harness_name = "changed"  # type: ignore[misc]
 
 
-def test_process_records_explicit_asset_objects(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-
-    revision = _configured_harness(root, loop).process()
-
-    context_assets = tuple(asset for asset in revision.assets if asset.kind is AssetKind.CONTEXT)
-    lifecycle_assets = tuple(
-        asset for asset in revision.assets if asset.kind is AssetKind.LIFECYCLE
-    )
-    assert len(context_assets) == 2
-    assert len(lifecycle_assets) == 1
-    assert isinstance(context_assets[0].source, FileAssetSource)
-    assert isinstance(lifecycle_assets[0].source, PythonClassAssetSource)
-    assert context_assets[0].access is AssetAccess.FROZEN
-    assert context_assets[1].access is AssetAccess.FIT_EDITABLE
-    assert lifecycle_assets[0].access is AssetAccess.FROZEN
-
-
-def test_process_records_the_seven_harness_component_groups(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
+def test_process_records_seven_file_level_components_for_polyglot_agent(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
     files = (
         Path("instructions.md"),
         Path("memory.py"),
         Path("skills/research/SKILL.md"),
         Path("sandbox/__init__.py"),
         Path("pyproject.toml"),
-        Path("tools/search.py"),
-        Path("channels/chat.py"),
-        Path("connectors/mcp.py"),
-        Path("schedules/nightly.py"),
-        Path("connectors/otel.py"),
+        Path("tools/search.ts"),
+        Path("tools/worker.go"),
+        Path("tool_descriptions/search.yaml"),
+        Path("channels/chat.ts"),
+        Path("connectors/mcp.go"),
+        Path("schedules/nightly.ts"),
+        Path("connectors/otel.ts"),
         Path("evals/tasks/factual/task.toml"),
-        Path("middleware/retry.py"),
+        Path("middleware/retry.ts"),
         Path("identity.py"),
     )
     for relative_path in files:
@@ -148,65 +117,129 @@ def test_process_records_the_seven_harness_component_groups(tmp_path: Path) -> N
     )
     harness.connect_execute(Path("sandbox/__init__.py"), Path("pyproject.toml"))
     harness.connect_tools(
-        ofw.editable(Path("tools/search.py")),
-        ofw.editable(Path("channels/chat.py")),
-        ofw.editable(Path("connectors/mcp.py")),
-        ofw.editable(Path("schedules/nightly.py")),
+        ofw.editable(Path("tools/search.ts")),
+        ofw.editable(Path("tools/worker.go")),
+        ofw.editable(Path("tool_descriptions/search.yaml")),
+        ofw.editable(Path("channels/chat.ts")),
+        ofw.editable(Path("connectors/mcp.go")),
+        ofw.editable(Path("schedules/nightly.ts")),
     )
-    harness.connect_observability(Path("connectors/otel.py"))
+    harness.connect_observability(Path("connectors/otel.ts"))
     harness.connect_verifiers(ofw.mine_managed(Path("evals/tasks/factual/task.toml")))
-    harness.connect_lifecycle(loop, ofw.editable(Path("middleware/retry.py")))
+    harness.connect_lifecycle(Path("agent.py"), ofw.editable(Path("middleware/retry.ts")))
     harness.connect_governance(Path("identity.py"))
 
     revision = harness.process()
 
-    assert {asset.kind for asset in revision.assets} == set(AssetKind)
+    assert {component.kind for component in revision.components} == set(ComponentKind)
+    assert all(component.assets for component in revision.components)
+    assert all(str(component.digest).startswith("sha256:") for component in revision.components)
     assert revision.mine_managed_files == (Path("evals/tasks/factual/task.toml"),)
-    assert Path("sandbox/__init__.py") in revision.frozen_files
-    assert Path("connectors/otel.py") in revision.frozen_files
-    assert Path("identity.py") in revision.frozen_files
-    assert Path("middleware/retry.py") in revision.editable_files
+    assert Path("tools/search.ts") in revision.editable_files
+    assert Path("tools/worker.go") in revision.editable_files
+    assert Path("connectors/mcp.go") in revision.editable_files
+    assert Path("connectors/otel.ts") in revision.frozen_files
+
+
+def test_component_fingerprint_localizes_a_tool_change(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    tool = root / "tool.ts"
+    tool.write_text("export const run = () => 1;\n", encoding="utf-8")
+    first_harness = _configured_harness(root)
+    first_harness.connect_tools(ofw.editable(Path("tool.ts")))
+    first = first_harness.process()
+
+    tool.write_text("export const run = () => 2;\n", encoding="utf-8")
+    second_harness = _configured_harness(root)
+    second_harness.connect_tools(ofw.editable(Path("tool.ts")))
+    second = second_harness.process()
+
+    assert (
+        _required_component(first, ComponentKind.TOOLING).digest
+        != _required_component(second, ComponentKind.TOOLING).digest
+    )
+    assert (
+        _required_component(first, ComponentKind.CONTEXT).digest
+        == _required_component(second, ComponentKind.CONTEXT).digest
+    )
+    assert (
+        _required_component(first, ComponentKind.LIFECYCLE).digest
+        == _required_component(second, ComponentKind.LIFECYCLE).digest
+    )
+
+
+def test_adding_middleware_does_not_change_context_component(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    middleware = root / "middleware.ts"
+    middleware.write_text("export const beforeCall = () => {};\n", encoding="utf-8")
+    first = _configured_harness(root).process()
+
+    second_harness = Harness("fixtureco-research-agent", root=root)
+    second_harness.connect_context(Path("policy.md"), ofw.editable(Path("prompt.md")))
+    second_harness.connect_lifecycle(Path("agent.py"), ofw.editable(Path("middleware.ts")))
+    second = second_harness.process()
+
+    assert (
+        _required_component(first, ComponentKind.CONTEXT).digest
+        == _required_component(second, ComponentKind.CONTEXT).digest
+    )
+    assert (
+        _required_component(first, ComponentKind.LIFECYCLE).digest
+        != _required_component(second, ComponentKind.LIFECYCLE).digest
+    )
+
+
+def test_file_cannot_be_owned_by_two_components(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    harness = Harness("fixtureco-agent", root=root)
+    harness.connect_context(Path("prompt.md"))
+    harness.connect_tools(ofw.editable(Path("prompt.md")))
+    harness.connect_lifecycle(Path("agent.py"))
+
+    with pytest.raises(HarnessValidationError) as raised:
+        harness.process()
+
+    assert raised.value.code is HarnessErrorCode.COMPONENT_OVERLAP
 
 
 @pytest.mark.parametrize(
-    "connector",
+    "component",
     (
-        AssetKind.EXECUTION,
-        AssetKind.OBSERVABILITY,
-        AssetKind.VERIFIER,
-        AssetKind.GOVERNANCE,
+        ComponentKind.EXECUTION,
+        ComponentKind.OBSERVABILITY,
+        ComponentKind.VERIFIER,
+        ComponentKind.GOVERNANCE,
     ),
 )
 def test_governed_components_reject_fit_edit_authority(
-    connector: AssetKind,
+    component: ComponentKind,
     tmp_path: Path,
 ) -> None:
-    root, _ = _repository(tmp_path)
+    root = _repository(tmp_path)
     editable_source = ofw.editable(Path("prompt.md"))
     harness = Harness("fixtureco-agent", root=root)
 
     with pytest.raises(HarnessValidationError) as raised:
-        match connector:
-            case AssetKind.EXECUTION:
+        match component:
+            case ComponentKind.EXECUTION:
                 harness.connect_execute(cast(Path, editable_source))
-            case AssetKind.OBSERVABILITY:
+            case ComponentKind.OBSERVABILITY:
                 harness.connect_observability(cast(Path, editable_source))
-            case AssetKind.VERIFIER:
+            case ComponentKind.VERIFIER:
                 harness.connect_verifiers(cast(Path, editable_source))
-            case AssetKind.GOVERNANCE:
+            case ComponentKind.GOVERNANCE:
                 harness.connect_governance(cast(Path, editable_source))
             case _:
-                pytest.fail(f"unexpected governed component: {connector}")
+                pytest.fail(f"unexpected governed component: {component}")
 
     assert raised.value.code is HarnessErrorCode.ACCESS_NOT_ALLOWED
 
 
 def test_environment_secret_file_is_never_fingerprinted(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
+    root = _repository(tmp_path)
     (root / ".env").write_text("SECRET=do-not-read\n", encoding="utf-8")
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(Path("prompt.md"), Path(".env"))
-    harness.connect_lifecycle(loop)
+    harness = _configured_harness(root)
+    harness.connect_context(Path(".env"))
 
     with pytest.raises(HarnessValidationError) as raised:
         harness.process()
@@ -215,21 +248,15 @@ def test_environment_secret_file_is_never_fingerprinted(tmp_path: Path) -> None:
 
 
 def test_same_inputs_produce_same_revision(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-
-    first = _configured_harness(root, loop).process()
-    second = _configured_harness(root, loop).process()
-
-    assert second.id == first.id
-    assert second == first
+    root = _repository(tmp_path)
+    assert _configured_harness(root).process() == _configured_harness(root).process()
 
 
 def test_file_change_produces_new_revision(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    first = _configured_harness(root, loop).process()
-
+    root = _repository(tmp_path)
+    first = _configured_harness(root).process()
     (root / "prompt.md").write_text("Be accurate and concise.\n", encoding="utf-8")
-    second = _configured_harness(root, loop).process()
+    second = _configured_harness(root).process()
 
     assert second.id != first.id
     assert second.repository.is_dirty
@@ -237,115 +264,94 @@ def test_file_change_produces_new_revision(tmp_path: Path) -> None:
 
 
 def test_new_git_commit_produces_new_revision(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    first = _configured_harness(root, loop).process()
+    root = _repository(tmp_path)
+    first = _configured_harness(root).process()
     (root / "README.md").write_text("Fixture repository.\n", encoding="utf-8")
     _run_git(root, "add", "README.md")
     _run_git(root, "commit", "-qm", "document fixture")
-
-    second = _configured_harness(root, loop).process()
+    second = _configured_harness(root).process()
 
     assert second.id != first.id
     assert second.repository.commit != first.repository.commit
     assert not second.repository.is_dirty
 
 
-@pytest.mark.parametrize(
-    ("name", "code"),
-    (
-        ("", HarnessErrorCode.INVALID_NAME),
-        ("contains spaces", HarnessErrorCode.INVALID_NAME),
-        ("UPPERCASE", HarnessErrorCode.INVALID_NAME),
-    ),
-)
-def test_invalid_harness_name_fails(name: str, code: HarnessErrorCode, tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ("", "contains spaces", "UPPERCASE"))
+def test_invalid_harness_name_fails(name: str, tmp_path: Path) -> None:
     with pytest.raises(HarnessValidationError) as raised:
         Harness(name, root=tmp_path)
+    assert raised.value.code is HarnessErrorCode.INVALID_NAME
+
+
+@pytest.mark.parametrize(
+    ("source", "code"),
+    (
+        (Path("missing.md"), HarnessErrorCode.MISSING_ASSET),
+        (Path("folder"), HarnessErrorCode.NOT_A_FILE),
+    ),
+)
+def test_invalid_workspace_file_fails(
+    source: Path,
+    code: HarnessErrorCode,
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
+    (root / "folder").mkdir()
+    harness = _configured_harness(root)
+    harness.connect_context(source)
+
+    with pytest.raises(HarnessValidationError) as raised:
+        harness.process()
     assert raised.value.code is code
 
 
-def test_missing_context_fails(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(Path("missing.md"))
-    harness.connect_lifecycle(loop)
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.MISSING_ASSET
-
-
-def test_path_outside_root_fails(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    outside = tmp_path / "outside.md"
-    outside.write_text("outside", encoding="utf-8")
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(outside)
-    harness.connect_lifecycle(loop)
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.PATH_OUTSIDE_ROOT
-
-
-def test_symlink_escape_fails(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
+def test_path_and_symlink_escape_fail(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
     outside = tmp_path / "outside.md"
     outside.write_text("outside", encoding="utf-8")
     (root / "linked.md").symlink_to(outside)
+
+    for source in (outside, Path("linked.md")):
+        harness = _configured_harness(root)
+        harness.connect_context(source)
+        with pytest.raises(HarnessValidationError) as raised:
+            harness.process()
+        assert raised.value.code is HarnessErrorCode.PATH_OUTSIDE_ROOT
+
+
+@pytest.mark.parametrize(
+    ("sources", "code"),
+    (
+        (
+            (Path("prompt.md"), Path("prompt.md")),
+            HarnessErrorCode.DUPLICATE_ASSET,
+        ),
+        (
+            (Path("prompt.md"), ofw.editable(Path("prompt.md"))),
+            HarnessErrorCode.CONFLICTING_ACCESS,
+        ),
+    ),
+)
+def test_duplicate_component_asset_fails(
+    sources: tuple[Path | EditableFile, ...],
+    code: HarnessErrorCode,
+    tmp_path: Path,
+) -> None:
+    root = _repository(tmp_path)
     harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(Path("linked.md"))
-    harness.connect_lifecycle(loop)
+    first, second = sources
+    harness.connect_context(first, second)
+    harness.connect_lifecycle(Path("agent.py"))
 
     with pytest.raises(HarnessValidationError) as raised:
         harness.process()
-
-    assert raised.value.code is HarnessErrorCode.PATH_OUTSIDE_ROOT
-
-
-def test_file_asset_must_be_regular_file(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    (root / "folder").mkdir()
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(Path("folder"))
-    harness.connect_lifecycle(loop)
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.NOT_A_FILE
-
-
-def test_duplicate_asset_with_conflicting_access_fails(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(Path("prompt.md"), ofw.editable(Path("prompt.md")))
-    harness.connect_lifecycle(loop)
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.CONFLICTING_ACCESS
-
-
-def test_duplicate_asset_with_same_access_fails(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_context(Path("prompt.md"), Path("prompt.md"))
-    harness.connect_lifecycle(loop)
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.DUPLICATE_ASSET
+    assert raised.value.code is code
 
 
 def test_process_requires_context_and_lifecycle(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
+    root = _repository(tmp_path)
     without_context = Harness("fixtureco-agent", root=root)
-    without_context.connect_lifecycle(loop)
+    without_context.connect_lifecycle(Path("agent.py"))
     without_lifecycle = Harness("fixtureco-agent", root=root)
     without_lifecycle.connect_context(Path("prompt.md"))
 
@@ -353,57 +359,20 @@ def test_process_requires_context_and_lifecycle(tmp_path: Path) -> None:
         without_context.process()
     with pytest.raises(HarnessValidationError) as missing_lifecycle:
         without_lifecycle.process()
-
     assert missing_context.value.code is HarnessErrorCode.CONTEXT_REQUIRED
     assert missing_lifecycle.value.code is HarnessErrorCode.LIFECYCLE_REQUIRED
 
 
-def test_only_one_lifecycle_can_be_connected(tmp_path: Path) -> None:
-    root, loop = _repository(tmp_path)
-    harness = Harness("fixtureco-agent", root=root)
-    harness.connect_lifecycle(loop)
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.connect_lifecycle(loop)
-
-    assert raised.value.code is HarnessErrorCode.LIFECYCLE_ALREADY_CONNECTED
-
-
-def test_local_and_builtin_lifecycle_classes_fail(tmp_path: Path) -> None:
-    root, _ = _repository(tmp_path)
-
-    class LocalLoop(Lifecycle):
-        pass
-
-    for lifecycle in (LocalLoop, list):
-        harness = Harness("fixtureco-agent", root=root)
-        with pytest.raises(HarnessValidationError) as raised:
-            harness.connect_lifecycle(lifecycle)
-        assert raised.value.code is HarnessErrorCode.UNINSPECTABLE_LIFECYCLE
-
-
-def test_non_class_lifecycle_fails_with_domain_error(tmp_path: Path) -> None:
-    root, _ = _repository(tmp_path)
-
-    def not_a_class() -> None:
-        return None
-
-    harness = Harness("fixtureco-agent", root=root)
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.connect_lifecycle(cast(type[Lifecycle], not_a_class))
-
-    assert raised.value.code is HarnessErrorCode.UNINSPECTABLE_LIFECYCLE
-
-
 def test_lifecycle_source_outside_root_fails(tmp_path: Path) -> None:
-    root, _ = _repository(tmp_path)
+    root = _repository(tmp_path)
+    outside = tmp_path / "agent.ts"
+    outside.write_text("export class AgentLoop {}\n", encoding="utf-8")
     harness = Harness("fixtureco-agent", root=root)
     harness.connect_context(Path("prompt.md"))
-    harness.connect_lifecycle(FixtureLoopShape)
+    harness.connect_lifecycle(outside)
 
     with pytest.raises(HarnessValidationError) as raised:
         harness.process()
-
     assert raised.value.code is HarnessErrorCode.PATH_OUTSIDE_ROOT
 
 
@@ -411,12 +380,11 @@ def test_root_must_be_git_repository(tmp_path: Path) -> None:
     root = tmp_path / "not-git"
     root.mkdir()
     (root / "prompt.md").write_text("hello", encoding="utf-8")
-    loop = _load_loop(root)
+    (root / "agent.go").write_text("package agent\n", encoding="utf-8")
     harness = Harness("fixtureco-agent", root=root)
     harness.connect_context(Path("prompt.md"))
-    harness.connect_lifecycle(loop)
+    harness.connect_lifecycle(Path("agent.go"))
 
     with pytest.raises(HarnessValidationError) as raised:
         harness.process()
-
     assert raised.value.code is HarnessErrorCode.GIT_REPOSITORY_REQUIRED

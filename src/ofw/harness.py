@@ -1,9 +1,8 @@
-"""Compile a declared production harness into an immutable revision."""
+"""Compile a file-level harness workspace into an immutable revision."""
 
 from __future__ import annotations
 
 import hashlib
-import inspect
 import logging
 import os
 import re
@@ -14,28 +13,24 @@ from pathlib import Path
 
 from ofw.contracts import (
     AssetAccess,
-    AssetKind,
-    FileAssetSource,
+    ComponentKind,
     GitCommit,
     HarnessAsset,
+    HarnessComponent,
     HarnessErrorCode,
     HarnessRevision,
     HarnessRevisionContent,
     HarnessRevisionId,
     HarnessSchemaVersion,
     HarnessValidationError,
-    PythonClassAssetSource,
     RepositorySnapshot,
     Sha256Digest,
+    WorkspaceFile,
 )
 
 logger = logging.getLogger(__name__)
 
 _NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-
-
-class Lifecycle:
-    """Typed marker base for a user-defined lifecycle class."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,20 +45,19 @@ class MineManagedFile:
 
 @dataclass(frozen=True, slots=True)
 class _FileRegistration:
-    kind: AssetKind
+    component: ComponentKind
     path: Path
     access: AssetAccess
 
 
 @dataclass(frozen=True, slots=True)
-class _LifecycleRegistration:
-    module: str
-    qualified_name: str
-    source_path: Path
+class _CompiledAsset:
+    component: ComponentKind
+    asset: HarnessAsset
 
 
 def editable(path: Path) -> EditableFile:
-    """Grant Fit authority to edit one file."""
+    """Grant Fit authority to edit one workspace file."""
     if not isinstance(path, Path):
         raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(path))
     return EditableFile(path=path)
@@ -78,12 +72,11 @@ def mine_managed(path: Path) -> MineManagedFile:
 
 @dataclass(slots=True)
 class Harness:
-    """Mutable declaration builder; ``process`` returns an immutable revision."""
+    """Mutable component registry; ``process`` returns an immutable revision."""
 
     name: str
     root: Path
     _files: list[_FileRegistration] = field(default_factory=list, init=False, repr=False)
-    _lifecycle: _LifecycleRegistration | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if _NAME_PATTERN.fullmatch(self.name) is None:
@@ -93,126 +86,93 @@ class Harness:
 
     def connect_context(self, *sources: Path | EditableFile) -> Harness:
         self._register_files(
-            AssetKind.CONTEXT,
+            ComponentKind.CONTEXT,
             sources,
             (AssetAccess.FROZEN, AssetAccess.FIT_EDITABLE),
         )
         return self
 
     def connect_execute(self, *sources: Path) -> Harness:
-        self._register_files(AssetKind.EXECUTION, sources, (AssetAccess.FROZEN,))
+        self._register_files(ComponentKind.EXECUTION, sources, (AssetAccess.FROZEN,))
         return self
 
     def connect_tools(self, *sources: Path | EditableFile) -> Harness:
         self._register_files(
-            AssetKind.TOOLING,
+            ComponentKind.TOOLING,
             sources,
             (AssetAccess.FROZEN, AssetAccess.FIT_EDITABLE),
         )
         return self
 
     def connect_observability(self, *sources: Path) -> Harness:
-        self._register_files(AssetKind.OBSERVABILITY, sources, (AssetAccess.FROZEN,))
+        self._register_files(ComponentKind.OBSERVABILITY, sources, (AssetAccess.FROZEN,))
         return self
 
     def connect_verifiers(self, *sources: Path | MineManagedFile) -> Harness:
         self._register_files(
-            AssetKind.VERIFIER,
+            ComponentKind.VERIFIER,
             sources,
             (AssetAccess.FROZEN, AssetAccess.MINE_MANAGED),
         )
         return self
 
-    def connect_governance(self, *sources: Path) -> Harness:
-        self._register_files(AssetKind.GOVERNANCE, sources, (AssetAccess.FROZEN,))
-        return self
-
-    def connect_lifecycle(
-        self,
-        lifecycle: type[Lifecycle],
-        *middleware: Path | EditableFile,
-    ) -> Harness:
-        if self._lifecycle is not None:
-            raise HarnessValidationError(
-                HarnessErrorCode.LIFECYCLE_ALREADY_CONNECTED,
-                self.name,
-            )
-        try:
-            supported_lifecycle = issubclass(lifecycle, Lifecycle)
-        except TypeError as error:
-            raise HarnessValidationError(
-                HarnessErrorCode.UNINSPECTABLE_LIFECYCLE,
-                repr(lifecycle),
-            ) from error
-        if not supported_lifecycle or "<locals>" in lifecycle.__qualname__:
-            raise HarnessValidationError(
-                HarnessErrorCode.UNINSPECTABLE_LIFECYCLE,
-                repr(lifecycle),
-            )
-        try:
-            source_file = inspect.getsourcefile(lifecycle)
-        except TypeError as error:
-            raise HarnessValidationError(
-                HarnessErrorCode.UNINSPECTABLE_LIFECYCLE,
-                lifecycle.__qualname__,
-            ) from error
-        if source_file is None:
-            raise HarnessValidationError(
-                HarnessErrorCode.UNINSPECTABLE_LIFECYCLE,
-                lifecycle.__qualname__,
-            )
-        self._lifecycle = _LifecycleRegistration(
-            module=lifecycle.__module__,
-            qualified_name=lifecycle.__qualname__,
-            source_path=Path(source_file),
-        )
+    def connect_lifecycle(self, *sources: Path | EditableFile) -> Harness:
         self._register_files(
-            AssetKind.LIFECYCLE,
-            middleware,
+            ComponentKind.LIFECYCLE,
+            sources,
             (AssetAccess.FROZEN, AssetAccess.FIT_EDITABLE),
         )
         return self
 
+    def connect_governance(self, *sources: Path) -> Harness:
+        self._register_files(ComponentKind.GOVERNANCE, sources, (AssetAccess.FROZEN,))
+        return self
+
     def _register_files(
         self,
-        kind: AssetKind,
+        component: ComponentKind,
         sources: tuple[Path | EditableFile | MineManagedFile, ...],
         allowed_access: tuple[AssetAccess, ...],
     ) -> None:
         for source in sources:
             if isinstance(source, EditableFile):
-                registration = _FileRegistration(kind, source.path, AssetAccess.FIT_EDITABLE)
+                registration = _FileRegistration(
+                    component,
+                    source.path,
+                    AssetAccess.FIT_EDITABLE,
+                )
             elif isinstance(source, MineManagedFile):
-                registration = _FileRegistration(kind, source.path, AssetAccess.MINE_MANAGED)
+                registration = _FileRegistration(
+                    component,
+                    source.path,
+                    AssetAccess.MINE_MANAGED,
+                )
             elif isinstance(source, Path):
-                registration = _FileRegistration(kind, source, AssetAccess.FROZEN)
+                registration = _FileRegistration(component, source, AssetAccess.FROZEN)
             else:
                 raise HarnessValidationError(HarnessErrorCode.INVALID_SOURCE, repr(source))
             if registration.access not in allowed_access:
                 raise HarnessValidationError(
                     HarnessErrorCode.ACCESS_NOT_ALLOWED,
-                    f"{kind.value}:{registration.access.value}:{registration.path}",
+                    f"{component.value}:{registration.access.value}:{registration.path}",
                 )
             self._files.append(registration)
 
     def process(self) -> HarnessRevision:
         logger.debug("Compiling harness revision: %s", self.name)
         root = _resolve_root(self.root)
-        if not any(registration.kind is AssetKind.CONTEXT for registration in self._files):
+        if not _has_component(self._files, ComponentKind.CONTEXT):
             raise HarnessValidationError(HarnessErrorCode.CONTEXT_REQUIRED, self.name)
-        if self._lifecycle is None:
+        if not _has_component(self._files, ComponentKind.LIFECYCLE):
             raise HarnessValidationError(HarnessErrorCode.LIFECYCLE_REQUIRED, self.name)
 
-        assets = _compile_file_assets(root, self._files)
-        assets.append(_compile_lifecycle_asset(root, self._lifecycle))
-        _validate_unique_assets(assets)
-        assets.sort(key=_asset_sort_key)
+        components = _compile_components(root, self._files)
         repository = _snapshot_repository(root)
         content = HarnessRevisionContent(
             schema_version=HarnessSchemaVersion.V1,
             harness_name=self.name,
             repository=repository,
-            assets=tuple(assets),
+            components=components,
         )
         content_digest = _digest_text(content.canonical_json())
         revision = HarnessRevision(
@@ -221,11 +181,15 @@ class Harness:
             harness_name=content.harness_name,
             root=root,
             repository=content.repository,
-            assets=content.assets,
+            components=content.components,
         )
         _write_manifest(revision)
         logger.debug("Compiled harness revision %s", revision.id)
         return revision
+
+
+def _has_component(registrations: list[_FileRegistration], kind: ComponentKind) -> bool:
+    return any(registration.component is kind for registration in registrations)
 
 
 def _resolve_root(root: Path) -> Path:
@@ -238,51 +202,80 @@ def _resolve_root(root: Path) -> Path:
     return resolved
 
 
-def _compile_file_assets(
+def _compile_components(
     root: Path,
     registrations: list[_FileRegistration],
-) -> list[HarnessAsset]:
-    assets: list[HarnessAsset] = []
+) -> tuple[HarnessComponent, ...]:
+    compiled: list[_CompiledAsset] = []
     for registration in registrations:
         resolved, relative = _resolve_file(root, registration.path)
-        assets.append(
-            HarnessAsset(
-                kind=registration.kind,
-                access=registration.access,
-                source=FileAssetSource(relative_path=relative),
-                digest=_digest_file(resolved),
+        compiled.append(
+            _CompiledAsset(
+                component=registration.component,
+                asset=HarnessAsset(
+                    access=registration.access,
+                    source=WorkspaceFile(relative_path=relative),
+                    digest=_digest_file(resolved),
+                ),
             )
         )
-    return assets
+    compiled.sort(key=_compiled_asset_sort_key)
+    _validate_component_boundaries(compiled)
+
+    components: list[HarnessComponent] = []
+    for kind in ComponentKind:
+        assets = tuple(item.asset for item in compiled if item.component is kind)
+        if not assets:
+            continue
+        components.append(
+            HarnessComponent(
+                kind=kind,
+                assets=assets,
+                digest=_component_digest(kind, assets),
+            )
+        )
+    return tuple(components)
 
 
-def _validate_unique_assets(assets: list[HarnessAsset]) -> None:
-    for index, asset in enumerate(assets):
-        for existing in assets[:index]:
-            if existing.source.relative_path != asset.source.relative_path:
+def _validate_component_boundaries(compiled: list[_CompiledAsset]) -> None:
+    for index, item in enumerate(compiled):
+        for existing in compiled[:index]:
+            if existing.asset.source.relative_path != item.asset.source.relative_path:
                 continue
+            if existing.component is not item.component:
+                raise HarnessValidationError(
+                    HarnessErrorCode.COMPONENT_OVERLAP,
+                    item.asset.source.relative_path.as_posix(),
+                )
             code = (
                 HarnessErrorCode.DUPLICATE_ASSET
-                if existing.access is asset.access
+                if existing.asset.access is item.asset.access
                 else HarnessErrorCode.CONFLICTING_ACCESS
             )
-            raise HarnessValidationError(code, asset.source.relative_path.as_posix())
+            raise HarnessValidationError(code, item.asset.source.relative_path.as_posix())
 
 
-def _compile_lifecycle_asset(
-    root: Path,
-    registration: _LifecycleRegistration,
-) -> HarnessAsset:
-    resolved, relative = _resolve_file(root, registration.source_path)
-    return HarnessAsset(
-        kind=AssetKind.LIFECYCLE,
-        access=AssetAccess.FROZEN,
-        source=PythonClassAssetSource(
-            module=registration.module,
-            qualified_name=registration.qualified_name,
-            relative_path=relative,
-        ),
-        digest=_digest_file(resolved),
+def _component_digest(
+    kind: ComponentKind,
+    assets: tuple[HarnessAsset, ...],
+) -> Sha256Digest:
+    fields = [kind.value]
+    for asset in assets:
+        fields.extend(
+            (
+                asset.access.value,
+                asset.source.relative_path.as_posix(),
+                str(asset.digest),
+            )
+        )
+    return _digest_text("\0".join(fields))
+
+
+def _compiled_asset_sort_key(item: _CompiledAsset) -> tuple[str, str, str]:
+    return (
+        item.component.value,
+        item.asset.source.relative_path.as_posix(),
+        item.asset.access.value,
     )
 
 
@@ -361,11 +354,6 @@ def _run_git(
         )
         raise HarnessValidationError(code, arguments[0])
     return result.stdout
-
-
-def _asset_sort_key(asset: HarnessAsset) -> tuple[str, str, str]:
-    source = asset.source.relative_path.as_posix()
-    return asset.kind.value, source, asset.access.value
 
 
 def _digest_file(path: Path) -> Sha256Digest:

@@ -1,9 +1,9 @@
-"""Immutable harness revision contracts."""
+"""Immutable, language-neutral harness component contracts."""
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
@@ -12,7 +12,7 @@ class HarnessSchemaVersion(IntEnum):
     V1 = 1
 
 
-class AssetKind(StrEnum):
+class ComponentKind(StrEnum):
     CONTEXT = "context"
     EXECUTION = "execution"
     TOOLING = "tooling"
@@ -28,11 +28,6 @@ class AssetAccess(StrEnum):
     MINE_MANAGED = "mine_managed"
 
 
-class AssetSourceKind(StrEnum):
-    FILE = "file"
-    PYTHON_CLASS = "python_class"
-
-
 class HarnessErrorCode(StrEnum):
     INVALID_NAME = "invalid_name"
     INVALID_SOURCE = "invalid_source"
@@ -40,13 +35,12 @@ class HarnessErrorCode(StrEnum):
     ROOT_NOT_DIRECTORY = "root_not_directory"
     CONTEXT_REQUIRED = "context_required"
     LIFECYCLE_REQUIRED = "lifecycle_required"
-    LIFECYCLE_ALREADY_CONNECTED = "lifecycle_already_connected"
-    UNINSPECTABLE_LIFECYCLE = "uninspectable_lifecycle"
     MISSING_ASSET = "missing_asset"
     PATH_OUTSIDE_ROOT = "path_outside_root"
     NOT_A_FILE = "not_a_file"
     DUPLICATE_ASSET = "duplicate_asset"
     CONFLICTING_ACCESS = "conflicting_access"
+    COMPONENT_OVERLAP = "component_overlap"
     GIT_REPOSITORY_REQUIRED = "git_repository_required"
     GIT_COMMAND_FAILED = "git_command_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"
@@ -90,27 +84,21 @@ class GitCommit:
 
 
 @dataclass(frozen=True, slots=True)
-class FileAssetSource:
+class WorkspaceFile:
     relative_path: Path
-    kind: AssetSourceKind = field(default=AssetSourceKind.FILE, init=False)
-
-
-@dataclass(frozen=True, slots=True)
-class PythonClassAssetSource:
-    module: str
-    qualified_name: str
-    relative_path: Path
-    kind: AssetSourceKind = field(default=AssetSourceKind.PYTHON_CLASS, init=False)
-
-
-AssetSource = FileAssetSource | PythonClassAssetSource
 
 
 @dataclass(frozen=True, slots=True)
 class HarnessAsset:
-    kind: AssetKind
     access: AssetAccess
-    source: AssetSource
+    source: WorkspaceFile
+    digest: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessComponent:
+    kind: ComponentKind
+    assets: tuple[HarnessAsset, ...]
     digest: Sha256Digest
 
 
@@ -126,7 +114,7 @@ class HarnessRevisionContent:
     schema_version: HarnessSchemaVersion
     harness_name: str
     repository: RepositorySnapshot
-    assets: tuple[HarnessAsset, ...]
+    components: tuple[HarnessComponent, ...]
 
     def canonical_json(self) -> str:
         return _render_content(self)
@@ -139,11 +127,15 @@ class HarnessRevision:
     harness_name: str
     root: Path
     repository: RepositorySnapshot
-    assets: tuple[HarnessAsset, ...]
+    components: tuple[HarnessComponent, ...]
 
     @property
     def manifest_path(self) -> Path:
         return self.root / ".ofw" / "revisions" / str(self.id) / "manifest.json"
+
+    @property
+    def assets(self) -> tuple[HarnessAsset, ...]:
+        return tuple(asset for component in self.components for asset in component.assets)
 
     @property
     def editable_files(self) -> tuple[Path, ...]:
@@ -151,7 +143,6 @@ class HarnessRevision:
             asset.source.relative_path
             for asset in self.assets
             if asset.access is AssetAccess.FIT_EDITABLE
-            and isinstance(asset.source, FileAssetSource)
         )
 
     @property
@@ -159,7 +150,7 @@ class HarnessRevision:
         return tuple(
             asset.source.relative_path
             for asset in self.assets
-            if asset.access is AssetAccess.FROZEN and isinstance(asset.source, FileAssetSource)
+            if asset.access is AssetAccess.FROZEN
         )
 
     @property
@@ -168,11 +159,16 @@ class HarnessRevision:
             asset.source.relative_path
             for asset in self.assets
             if asset.access is AssetAccess.MINE_MANAGED
-            and isinstance(asset.source, FileAssetSource)
         )
 
+    def component(self, kind: ComponentKind) -> HarnessComponent | None:
+        for component in self.components:
+            if component.kind is kind:
+                return component
+        return None
+
     def to_json(self) -> str:
-        assets = ",".join(_render_asset(asset) for asset in self.assets)
+        components = ",".join(_render_component(component) for component in self.components)
         return (
             "{"
             f'"schema_version":{int(self.schema_version)},'
@@ -180,19 +176,19 @@ class HarnessRevision:
             f'"harness_name":{_quote(self.harness_name)},'
             f'"root":{_quote(self.root.as_posix())},'
             f'"repository":{_render_repository(self.repository)},'
-            f'"assets":[{assets}]'
+            f'"components":[{components}]'
             "}"
         )
 
 
 def _render_content(content: HarnessRevisionContent) -> str:
-    assets = ",".join(_render_asset(asset) for asset in content.assets)
+    components = ",".join(_render_component(component) for component in content.components)
     return (
         "{"
         f'"schema_version":{int(content.schema_version)},'
         f'"harness_name":{_quote(content.harness_name)},'
         f'"repository":{_render_repository(content.repository)},'
-        f'"assets":[{assets}]'
+        f'"components":[{components}]'
         "}"
     )
 
@@ -211,31 +207,23 @@ def _render_repository(repository: RepositorySnapshot) -> str:
     )
 
 
-def _render_asset(asset: HarnessAsset) -> str:
+def _render_component(component: HarnessComponent) -> str:
+    assets = ",".join(_render_asset(asset) for asset in component.assets)
     return (
         "{"
-        f'"kind":{_quote(asset.kind.value)},'
-        f'"access":{_quote(asset.access.value)},'
-        f'"source":{_render_source(asset.source)},'
-        f'"digest":{_quote(str(asset.digest))}'
+        f'"kind":{_quote(component.kind.value)},'
+        f'"digest":{_quote(str(component.digest))},'
+        f'"assets":[{assets}]'
         "}"
     )
 
 
-def _render_source(source: AssetSource) -> str:
-    if isinstance(source, FileAssetSource):
-        return (
-            "{"
-            f'"kind":{_quote(source.kind.value)},'
-            f'"relative_path":{_quote(source.relative_path.as_posix())}'
-            "}"
-        )
+def _render_asset(asset: HarnessAsset) -> str:
     return (
         "{"
-        f'"kind":{_quote(source.kind.value)},'
-        f'"module":{_quote(source.module)},'
-        f'"qualified_name":{_quote(source.qualified_name)},'
-        f'"relative_path":{_quote(source.relative_path.as_posix())}'
+        f'"access":{_quote(asset.access.value)},'
+        f'"source":{{"relative_path":{_quote(asset.source.relative_path.as_posix())}}},'
+        f'"digest":{_quote(str(asset.digest))}'
         "}"
     )
 
