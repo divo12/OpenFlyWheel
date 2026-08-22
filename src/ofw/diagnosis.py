@@ -201,9 +201,16 @@ class ClusterId:
 
 
 @dataclass(frozen=True, slots=True)
+class ClusterRevisionRef:
+    id: ClusterId
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
 class FailureCluster:
     id: ClusterId
     revision: int
+    content_digest: Sha256Digest
     mechanism: MechanismKey
     title: str
     description: str
@@ -215,7 +222,7 @@ class FailureCluster:
     confidence: float
     resolution_rate: float
     state: ClusterState
-    parents: tuple[ClusterId, ...] = ()
+    parents: tuple[ClusterRevisionRef, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +270,7 @@ class DiagnosisRun:
     source: Harness | HarnessRevision
     mine: MineResult
     diagnoser: PythonDiagnoser
+    previous: DiagnosisResult | None = None
 
     def run(self) -> DiagnosisResult:
         revision = _resolve_revision(self.source)
@@ -290,10 +298,11 @@ class DiagnosisRun:
             "diagnosis_"
             + hashlib.sha256(
                 f"{self.mine.id}\0{diagnoser_digest}\0{diagnoses_digest}\0"
+                f"{'' if self.previous is None else self.previous.id}\0"
                 f"{int(DiagnosisSchemaVersion.V1)}".encode()
             ).hexdigest()
         )
-        clusters = _clusters(diagnoses, diagnoser_digest)
+        clusters = _clusters(diagnoses, diagnoser_digest, self.previous)
         result = DiagnosisResult(
             DiagnosisSchemaVersion.V1,
             run_id,
@@ -326,32 +335,38 @@ class DiagnosisRun:
 def _clusters(
     diagnoses: tuple[TraceDiagnosis, ...],
     diagnoser_digest: Sha256Digest,
+    previous: DiagnosisResult | None,
 ) -> tuple[FailureCluster, ...]:
-    mechanisms = tuple(
-        sorted(
-            {
-                diagnosis.mechanism
-                for diagnosis in diagnoses
-                if diagnosis.status is DiagnosisStatus.PROPOSED and diagnosis.mechanism is not None
-            },
-            key=_mechanism_sort_key,
-        )
+    current_mechanisms = {
+        diagnosis.mechanism
+        for diagnosis in diagnoses
+        if diagnosis.status is DiagnosisStatus.PROPOSED and diagnosis.mechanism is not None
+    }
+    previous_mechanisms = (
+        set() if previous is None else {cluster.mechanism for cluster in previous.clusters}
     )
+    mechanisms = tuple(sorted(current_mechanisms | previous_mechanisms, key=_mechanism_sort_key))
     return tuple(
-        _cluster(
+        _cluster_revision(
             mechanism,
             tuple(diagnosis for diagnosis in diagnoses if diagnosis.mechanism == mechanism),
             diagnoser_digest,
+            _previous_cluster(previous, mechanism),
         )
         for mechanism in mechanisms
     )
 
 
-def _cluster(
+def _cluster_revision(
     mechanism: MechanismKey,
     diagnoses: tuple[TraceDiagnosis, ...],
     diagnoser_digest: Sha256Digest,
+    previous: FailureCluster | None,
 ) -> FailureCluster:
+    if not diagnoses:
+        if previous is None:
+            raise ValueError("cluster requires diagnosis or prior revision")
+        return _resolved_cluster(previous)
     first = diagnoses[0]
     evidence = tuple(anchor for diagnosis in diagnoses for anchor in diagnosis.evidence)
     components = tuple(
@@ -367,22 +382,31 @@ def _cluster(
     confidence = sum(diagnosis.confidence or 0 for diagnosis in diagnoses) / len(diagnoses)
     trace_ids = tuple(diagnosis.trace_id for diagnosis in diagnoses)
     diagnoses_digest = digest_bytes(_DIAGNOSES_ADAPTER.dump_json(diagnoses))
-    cluster_id = ClusterId(
-        "cluster_"
-        + hashlib.sha256(
-            "\0".join(
-                (
-                    mechanism.value,
-                    str(diagnoser_digest),
-                    str(diagnoses_digest),
-                    *(trace_id.value for trace_id in trace_ids),
-                )
-            ).encode()
-        ).hexdigest()
+    content_digest = _digest_text(
+        f"{diagnoser_digest}\0{diagnoses_digest}\0"
+        + "\0".join(trace_id.value for trace_id in trace_ids)
+    )
+    if previous is not None and previous.content_digest == content_digest:
+        return previous
+    revision = 1 if previous is None else previous.revision + 1
+    parents = () if previous is None else (ClusterRevisionRef(previous.id, previous.revision),)
+    removed = (
+        0
+        if previous is None
+        else sum(trace_id not in trace_ids for trace_id in previous.source_trace_ids)
+    )
+    resolution_rate = (
+        0.0 if previous is None or not previous.source_trace_ids else removed / previous.recurrence
+    )
+    state = (
+        ClusterState.PROPOSED
+        if previous is None
+        else (ClusterState.REOPENED if previous.state is ClusterState.RESOLVED else previous.state)
     )
     return FailureCluster(
-        cluster_id,
-        1,
+        _cluster_id(mechanism),
+        revision,
+        content_digest,
         mechanism,
         first.title,
         first.description,
@@ -392,8 +416,47 @@ def _cluster(
         len(diagnoses),
         severity,
         confidence,
-        0.0,
-        ClusterState.PROPOSED,
+        resolution_rate,
+        state,
+        parents,
+    )
+
+
+def _resolved_cluster(previous: FailureCluster) -> FailureCluster:
+    if previous.state is ClusterState.RESOLVED:
+        return previous
+    return FailureCluster(
+        previous.id,
+        previous.revision + 1,
+        _digest_text(f"resolved\0{previous.content_digest}"),
+        previous.mechanism,
+        previous.title,
+        previous.description,
+        (),
+        (),
+        previous.components,
+        0,
+        previous.severity,
+        previous.confidence,
+        1.0,
+        ClusterState.RESOLVED,
+        (ClusterRevisionRef(previous.id, previous.revision),),
+    )
+
+
+def _cluster_id(mechanism: MechanismKey) -> ClusterId:
+    return ClusterId("cluster_" + hashlib.sha256(mechanism.value.encode()).hexdigest())
+
+
+def _previous_cluster(
+    previous: DiagnosisResult | None,
+    mechanism: MechanismKey,
+) -> FailureCluster | None:
+    if previous is None:
+        return None
+    return next(
+        (cluster for cluster in previous.clusters if cluster.mechanism == mechanism),
+        None,
     )
 
 
@@ -439,7 +502,14 @@ def _read_snapshot(admission: TraceAdmission, mine: MineResult) -> TraceSnapshot
         payload = resolved.read_bytes()
         if digest_bytes(payload) != digest:
             raise DiagnosisError(DiagnosisErrorCode.ARTIFACT_INVALID, str(path))
-        return _SNAPSHOT_ADAPTER.validate_json(payload)
+        snapshot = _SNAPSHOT_ADAPTER.validate_json(payload)
+        if (
+            snapshot.trace.id != admission.trace_id
+            or snapshot.revision_id != mine.revision_id
+            or snapshot.collection_digest != mine.collection_digest
+        ):
+            raise DiagnosisError(DiagnosisErrorCode.ARTIFACT_INVALID, str(path))
+        return snapshot
     except (OSError, ValueError, ValidationError) as error:
         raise DiagnosisError(DiagnosisErrorCode.ARTIFACT_INVALID, str(path)) from error
 

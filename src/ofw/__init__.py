@@ -27,6 +27,7 @@ from ofw.contracts import (
     WorkspaceFile,
 )
 from ofw.diagnosis import (
+    ClusterRevisionRef,
     ClusterState,
     DiagnosisError,
     DiagnosisErrorCode,
@@ -124,6 +125,7 @@ __all__ = [
     "CanaryCase",
     "CaseId",
     "ClusterState",
+    "ClusterRevisionRef",
     "ComponentKind",
     "CollectionError",
     "CollectionErrorCode",

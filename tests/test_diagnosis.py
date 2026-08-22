@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import subprocess
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from ofw import (
+    ClusterRevisionRef,
     ClusterState,
     DiagnosisError,
     DiagnosisErrorCode,
@@ -264,3 +266,72 @@ def test_tampered_snapshot_is_rejected_before_diagnosis(tmp_path: Path) -> None:
         DiagnosisRun(harness, mine, _diagnoser("diagnose")).run()
 
     assert raised.value.code is DiagnosisErrorCode.ARTIFACT_INVALID
+
+
+def test_snapshot_lineage_must_match_admission_revision_and_collection(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    admission = mine.admissions[0]
+    path = admission.snapshot_path
+    assert path is not None
+    original = _SNAPSHOT_ADAPTER.validate_json(path.read_bytes())
+    mismatches = (
+        replace(original, trace=replace(original.trace, id=TraceId("swapped"))),
+        replace(original, revision_id=HarnessRevisionId("other-revision")),
+        replace(original, collection_digest=Sha256Digest("sha256:other-collection")),
+    )
+
+    for snapshot in mismatches:
+        payload = _SNAPSHOT_ADAPTER.dump_json(snapshot)
+        digest = Sha256Digest(f"sha256:{hashlib.sha256(payload).hexdigest()}")
+        path.write_bytes(payload)
+        changed_admission = replace(admission, snapshot_digest=digest)
+        changed_mine = replace(mine, admissions=(changed_admission, *mine.admissions[1:]))
+        with pytest.raises(DiagnosisError) as raised:
+            DiagnosisRun(harness, changed_mine, _diagnoser("diagnose")).run()
+        assert raised.value.code is DiagnosisErrorCode.ARTIFACT_INVALID
+
+
+def test_cluster_identity_is_stable_across_revisions_and_tracks_parent(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    first_mine = replace(
+        mine,
+        admissions=tuple(
+            admission for admission in mine.admissions if admission.trace_id != TraceId("tool-two")
+        ),
+    )
+    first = DiagnosisRun(harness, first_mine, _diagnoser("diagnose")).run()
+    second = DiagnosisRun(harness, mine, _diagnoser("diagnose"), previous=first).run()
+    first_tool = next(
+        cluster for cluster in first.clusters if cluster.mechanism == MechanismKey("tool-schema")
+    )
+    second_tool = next(
+        cluster for cluster in second.clusters if cluster.mechanism == MechanismKey("tool-schema")
+    )
+
+    assert second_tool.id == first_tool.id
+    assert second_tool.revision == 2
+    assert second_tool.parents == (ClusterRevisionRef(first_tool.id, first_tool.revision),)
+    assert second_tool.recurrence == 2
+
+
+def test_cluster_without_current_failures_is_revisioned_as_resolved(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    diagnoser = _diagnoser("diagnose")
+    first = DiagnosisRun(harness, mine, diagnoser).run()
+    without_tools = replace(
+        mine,
+        admissions=tuple(
+            admission
+            for admission in mine.admissions
+            if admission.trace_id not in (TraceId("tool-one"), TraceId("tool-two"))
+        ),
+    )
+
+    second = DiagnosisRun(harness, without_tools, diagnoser, previous=first).run()
+    resolved = next(
+        cluster for cluster in second.clusters if cluster.mechanism == MechanismKey("tool-schema")
+    )
+
+    assert resolved.state is ClusterState.RESOLVED
+    assert resolved.revision == 2
+    assert resolved.resolution_rate == 1.0
