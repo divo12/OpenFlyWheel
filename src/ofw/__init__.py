@@ -41,6 +41,19 @@ from ofw.diagnosis import (
     Severity,
     TraceDiagnosis,
 )
+from ofw.exports import (
+    ClusterFamilyId,
+    ClusterPartitionRule,
+    ConsentStatus,
+    DataLicense,
+    ExportBundle,
+    ExportPartition,
+    ExportPolicy,
+    LeakageError,
+    LeakageErrorCode,
+    MineExports,
+    PrivacyTransform,
+)
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.mine import (
     Mine,
@@ -104,6 +117,7 @@ class _OfwNamespace:
     MiningPolicy = MiningPolicy
     ScoreName = ScoreName
     PythonDiagnoser = PythonDiagnoser
+    ExportPolicy = ExportPolicy
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -124,7 +138,10 @@ __all__ = [
     "AssetAccess",
     "CanaryCase",
     "CaseId",
+    "ClusterPartitionRule",
+    "ClusterFamilyId",
     "ClusterState",
+    "ConsentStatus",
     "ClusterRevisionRef",
     "ComponentKind",
     "CollectionError",
@@ -135,11 +152,15 @@ __all__ = [
     "DockerCompose",
     "DiagnosisResult",
     "DiagnosisRun",
+    "DataLicense",
     "DiagnosisError",
     "DiagnosisErrorCode",
     "EditableFile",
     "EvidenceAnchor",
     "EvidenceAnchorKind",
+    "ExportBundle",
+    "ExportPartition",
+    "ExportPolicy",
     "FailureCluster",
     "GitCommit",
     "Harness",
@@ -154,17 +175,21 @@ __all__ = [
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
     "LangfuseSpan",
+    "LeakageError",
+    "LeakageErrorCode",
     "LocalProcess",
     "ModelFingerprint",
     "ModuleName",
     "Mine",
     "MineError",
     "MineErrorCode",
+    "MineExports",
     "MiningPolicy",
     "MechanismKey",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
+    "PrivacyTransform",
     "PythonEntrypoint",
     "PythonLoop",
     "PythonDiagnoser",
