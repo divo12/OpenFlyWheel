@@ -395,7 +395,7 @@ def test_expired_lease_retries_and_rejects_late_completion(tmp_path: Path) -> No
     scheduler.close()
 
 
-def test_expired_lease_cannot_commit_before_reconcile_and_releases_budget(
+def test_expired_lease_cannot_commit_before_reconcile_and_charges_reserved_cap(
     tmp_path: Path,
 ) -> None:
     scheduler = _scheduler(tmp_path, policy=_policy(daily_budget=Money(100_000)))
@@ -425,8 +425,8 @@ def test_expired_lease_cannot_commit_before_reconcile_and_releases_budget(
 
     assert scheduler.job(job.id).state is JobState.READY
     assert scheduler.budget(_NOW.date()).reserved == Money(0)
-    assert scheduler.budget(_NOW.date()).spent == Money(0)
-    assert scheduler.claim(WorkerId("worker-2"), expired + timedelta(seconds=5)) is not None
+    assert scheduler.budget(_NOW.date()).spent == Money(60_000)
+    assert scheduler.claim(WorkerId("worker-2"), expired + timedelta(seconds=5)) is None
     scheduler.close()
 
 
@@ -655,6 +655,25 @@ class _TraceHandler:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _OverspendHandler:
+    kind: JobKind = JobKind.TRACE_SYNC
+
+    def execute(self, job: JobSpec, context: JobContext) -> JobExecution:
+        assert context.lease.job.spec == job
+        return JobExecution(
+            JobResult(
+                ResultId(f"result-{job.source.value}"),
+                job.kind,
+                job.revision_id,
+                None,
+                job.fit_policy_digest,
+                True,
+            ),
+            Money(20_000),
+        )
+
+
 def test_worker_dispatches_typed_handler_and_commits_once(tmp_path: Path) -> None:
     scheduler = _scheduler(tmp_path)
     job = scheduler.enqueue(_spec(JobKind.TRACE_SYNC, "worker"), (), _NOW)
@@ -667,6 +686,29 @@ def test_worker_dispatches_typed_handler_and_commits_once(tmp_path: Path) -> Non
     assert completed.id == job.id
     assert scheduler.job(job.id).state is JobState.SUCCEEDED
     assert worker.run_once(_NOW) is None
+    scheduler.close()
+
+
+def test_worker_fails_over_budget_handler_result_without_leaking_reservation(
+    tmp_path: Path,
+) -> None:
+    scheduler = _scheduler(tmp_path)
+    job = scheduler.enqueue(
+        _spec(JobKind.TRACE_SYNC, "overspend", cost=Money(10_000)),
+        (),
+        _NOW,
+    )
+    handler: JobHandler = _OverspendHandler()
+    worker = Worker(scheduler, WorkerId("worker"), (handler,))
+
+    completed = worker.run_once(_NOW)
+
+    assert completed is not None
+    assert completed.id == job.id
+    assert completed.state is JobState.FAILED
+    assert completed.error_code is SchedulerErrorCode.BUDGET_EXHAUSTED
+    assert scheduler.budget(_NOW.date()).reserved == Money(0)
+    assert scheduler.budget(_NOW.date()).spent == Money(10_000)
     scheduler.close()
 
 

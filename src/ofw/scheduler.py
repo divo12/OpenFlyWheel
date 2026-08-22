@@ -1129,7 +1129,7 @@ class LocalScheduler:
     def _expire(self, job: ScheduledJob, now: datetime) -> ScheduledJob:
         if job.lease_token is None:
             raise SchedulerError(SchedulerErrorCode.INVALID_TRANSITION, job.id.value)
-        self._settle_budget(job, Money(0))
+        self._settle_budget(job, job.reserved_cost)
         state = JobState.READY if job.attempt_count < job.maximum_attempts else JobState.FAILED
         available_at = now + _backoff(self.policy.retry_backoff, job.attempt_count)
         expired = replace(
@@ -1151,7 +1151,7 @@ class LocalScheduler:
                 attempt,
                 state=JobState.FAILED,
                 finished_at=now,
-                spent=Money(0),
+                spent=job.reserved_cost,
                 error_code=SchedulerErrorCode.LEASE_EXPIRED,
             )
         )
@@ -1577,7 +1577,7 @@ class Worker:
             None,
         )
         if handler is None:
-            return self.scheduler.fail(
+            return self._fail_lease(
                 lease,
                 FailureDisposition.TERMINAL,
                 SchedulerErrorCode.HANDLER_MISSING,
@@ -1590,7 +1590,7 @@ class Worker:
                 JobContext(self.scheduler, lease),
             )
         except JobExecutionError as error:
-            return self.scheduler.fail(
+            return self._fail_lease(
                 lease,
                 error.disposition,
                 error.code,
@@ -1598,14 +1598,53 @@ class Worker:
                 now,
             )
         except Exception:
-            return self.scheduler.fail(
+            return self._fail_lease(
                 lease,
                 FailureDisposition.TERMINAL,
                 SchedulerErrorCode.HANDLER_FAILED,
                 Money(0),
                 now,
             )
-        return self.scheduler.succeed(lease, execution.result, execution.spent, now)
+        try:
+            return self.scheduler.succeed(lease, execution.result, execution.spent, now)
+        except SchedulerError as error:
+            if error.code in (
+                SchedulerErrorCode.BUDGET_EXHAUSTED,
+                SchedulerErrorCode.RESULT_INVALID,
+            ):
+                return self._fail_lease(
+                    lease,
+                    FailureDisposition.TERMINAL,
+                    error.code,
+                    (
+                        execution.spent
+                        if execution.spent <= lease.job.spec.maximum_cost
+                        else lease.job.spec.maximum_cost
+                    ),
+                    now,
+                )
+            raise
+
+    def _fail_lease(
+        self,
+        lease: JobLease,
+        disposition: FailureDisposition,
+        code: SchedulerErrorCode,
+        spent: Money,
+        now: datetime,
+    ) -> ScheduledJob:
+        try:
+            return self.scheduler.fail(lease, disposition, code, spent, now)
+        except SchedulerError as error:
+            if error.code is SchedulerErrorCode.BUDGET_EXHAUSTED:
+                return self.scheduler.fail(
+                    lease,
+                    FailureDisposition.TERMINAL,
+                    SchedulerErrorCode.BUDGET_EXHAUSTED,
+                    lease.job.spec.maximum_cost,
+                    now,
+                )
+            raise
 
     def serve(self, stop: Event, poll_interval: timedelta) -> None:
         if poll_interval <= timedelta(0):
