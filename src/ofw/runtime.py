@@ -253,14 +253,14 @@ class DockerCompose:
 
     def prepare(self, revision: HarnessRevision, case: CanaryCase) -> PreparedEnvironment:
         del case
-        prepared = _prepare_workspace(
-            revision.root,
-            self.limits,
+        workspace = _prepare_workspace(revision.root, self.limits)
+        prepared = PreparedEnvironment(
+            workspace.root,
+            workspace.source_root,
+            workspace.temporary,
+            workspace.limits,
             (
-                str(self.executable),
-                "compose",
-                "-f",
-                self.compose_file.as_posix(),
+                *_compose_prefix(self, workspace),
                 "exec",
                 "-T",
                 self.service.value,
@@ -517,10 +517,7 @@ def _compose_control(
 ) -> ProcessResult:
     command = ProcessCommand(
         (
-            str(adapter.executable),
-            "compose",
-            "-f",
-            adapter.compose_file.as_posix(),
+            *_compose_prefix(adapter, prepared),
             *arguments,
         )
     )
@@ -531,6 +528,21 @@ def _compose_control(
         prepared.limits,
     )
     return local.run(command, "")
+
+
+def _compose_prefix(
+    adapter: DockerCompose,
+    prepared: PreparedEnvironment,
+) -> tuple[str, ...]:
+    project = hashlib.sha256(prepared.temporary.name.encode()).hexdigest()[:16]
+    return (
+        str(adapter.executable),
+        "compose",
+        "-f",
+        adapter.compose_file.as_posix(),
+        "-p",
+        f"ofw-{project}",
+    )
 
 
 def _run_result(case_id: CaseId, process: ProcessResult) -> RunResult:

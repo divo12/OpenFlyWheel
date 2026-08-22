@@ -232,6 +232,25 @@ def test_docker_compose_adapter_uses_disposable_native_lifecycle(tmp_path: Path)
     assert not prepared.root.exists()
 
 
+def test_parallel_docker_environments_have_distinct_projects(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    revision = _revision(root)
+    environment = DockerCompose(
+        compose_file=Path("compose.yaml"),
+        service=ServiceName("agent"),
+        executable=Path("/usr/bin/true"),
+        limits=ProcessLimits(timedelta(seconds=1)),
+    )
+    case = CanaryCase(CaseId("parallel"), "input")
+    first = environment.prepare(revision, case)
+    second = environment.prepare(revision, case)
+    try:
+        assert first.command_prefix != second.command_prefix
+    finally:
+        environment.destroy(first)
+        environment.destroy(second)
+
+
 def test_runtime_fingerprint_changes_without_changing_assets(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     first = Harness("runtime-agent", root=root)
