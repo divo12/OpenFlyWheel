@@ -521,11 +521,16 @@ def test_offline_trace_to_review_release(
         )
 
         completed = worker.run_once(_NOW)
-        promotion = PromotionService(publisher, None).run(promotion_request, _NOW)
 
         assert completed is not None
         assert completed.id == promotion_job.id
         assert completed.state is JobState.SUCCEEDED
+        stored_promotion = scheduler.job(promotion_job.id).result
+        assert stored_promotion is not None
+        assert len(publisher.opened) == 1
+        promotion = PromotionService(publisher, None).run(promotion_request, _NOW)
+        assert stored_promotion.id == ResultId(promotion.id)
+        assert len(publisher.opened) == 1
         assert collection.capability is CollectionCapabilityReason.READY
         assert collection.observation_count == 5
         assert mine.verified_failure_count == 4
