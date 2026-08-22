@@ -523,36 +523,13 @@ def validate_candidate_revision(
     candidate: CandidateRevision,
     champion: HarnessRevision,
 ) -> None:
-    manifest = read_candidate_manifest(candidate.manifest_path)
-    if (
-        candidate.base_revision_id != champion.id
-        or manifest.candidate_id != candidate.id
-        or manifest.base_revision_id != champion.id
-        or _candidate_id(
-            manifest.base_revision_id,
-            manifest.evidence_digest,
-            manifest.policy_digest,
-            ChangePrediction(
-                manifest.hypothesis,
-                manifest.target_clusters,
-                manifest.at_risk_cases,
-                manifest.affected_components,
-                manifest.memory_candidates,
-                manifest.expected_quality_delta,
-                manifest.expected_cost_delta,
-                manifest.expected_latency_delta,
-            ),
-            manifest.edits,
-        )
-        != candidate.id
-    ):
-        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
+    validate_candidate_artifacts(candidate, champion)
+    current = _git_bytes(candidate.root, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
     try:
         patch = candidate.diff_path.read_bytes()
     except OSError as error:
         raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value) from error
-    current = _git_bytes(candidate.root, "diff", "--binary", "--no-ext-diff", "HEAD", "--")
-    if patch != current or _digest_bytes(patch) != candidate.diff_digest:
+    if patch != current:
         raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
     changed = _git_bytes(candidate.root, "diff", "--name-only", "-z", "HEAD", "--")
     try:
@@ -575,6 +552,59 @@ def validate_candidate_revision(
                 CandidateErrorCode.FROZEN_ASSET_CHANGED,
                 asset.source.relative_path.as_posix(),
             )
+
+
+def validate_candidate_artifacts(
+    candidate: CandidateRevision,
+    champion: HarnessRevision,
+) -> Sha256Digest:
+    try:
+        manifest_payload = candidate.manifest_path.read_bytes()
+        manifest = _MANIFEST_ADAPTER.validate_json(manifest_payload)
+        patch = candidate.diff_path.read_bytes()
+    except (OSError, ValidationError) as error:
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value) from error
+    if (
+        candidate.base_revision_id != champion.id
+        or manifest.candidate_id != candidate.id
+        or manifest.base_revision_id != champion.id
+        or _candidate_id(
+            manifest.base_revision_id,
+            manifest.evidence_digest,
+            manifest.policy_digest,
+            ChangePrediction(
+                manifest.hypothesis,
+                manifest.target_clusters,
+                manifest.at_risk_cases,
+                manifest.affected_components,
+                manifest.memory_candidates,
+                manifest.expected_quality_delta,
+                manifest.expected_cost_delta,
+                manifest.expected_latency_delta,
+            ),
+            manifest.edits,
+        )
+        != candidate.id
+        or tuple(sorted(intent.path for intent in manifest.edits))
+        != tuple(sorted(candidate.changed_files))
+        or tuple(sorted(state.path for state in candidate.changed_file_states))
+        != tuple(sorted(candidate.changed_files))
+    ):
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
+    if _digest_bytes(patch) != candidate.diff_digest:
+        raise CandidateError(CandidateErrorCode.REVISION_STALE, candidate.id.value)
+    identity = "\0".join(
+        (
+            candidate.id.value,
+            str(candidate.base_revision_id),
+            *(path.as_posix() for path in candidate.changed_files),
+            *(state.path.as_posix() for state in candidate.changed_file_states),
+            *(str(state.digest) for state in candidate.changed_file_states),
+            *(component.value for component in candidate.changed_components),
+            str(candidate.diff_digest),
+        )
+    ).encode()
+    return _digest_bytes(identity + b"\0" + manifest_payload + b"\0" + patch)
 
 
 def _edit_sort_key(edit: FileEdit) -> str:

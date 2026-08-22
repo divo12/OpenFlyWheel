@@ -330,6 +330,62 @@ def test_admission_failure_returns_no_winner_and_discards_finalist(tmp_path: Pat
     assert raised.value.code is FitErrorCode.RESULT_INVALID
 
 
+def test_no_winner_cache_rejects_candidate_artifact_drift(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    candidate = _candidate(
+        revision,
+        "def run(value: str) -> str:\n"
+        "    return value + (' FIXED' if 'frontier' in value else '')\n",
+        "Fix frontier but not admission.",
+    )
+    campaign = FitCampaign(
+        harness,
+        _bundle(revision),
+        BenchmarkPolicy(1, 10, 0, 0.25),
+        _fit_policy(),
+        (candidate,),
+    )
+    result = campaign.run()
+    assert result.winner_id is None
+    assert campaign.run() == result
+
+    candidate.candidate.diff_path.write_bytes(candidate.candidate.diff_path.read_bytes() + b"\n")
+
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+    assert raised.value.code is FitErrorCode.CANDIDATE_DRIFT
+
+
+def test_no_winner_cache_rejects_export_snapshot_drift(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    bundle = _bundle(revision)
+    candidate = _candidate(
+        revision,
+        "def run(value: str) -> str:\n"
+        "    return value + (' FIXED' if 'frontier' in value else '')\n",
+        "Fix frontier but not admission.",
+    )
+    campaign = FitCampaign(
+        harness,
+        bundle,
+        BenchmarkPolicy(1, 10, 0, 0.25),
+        _fit_policy(),
+        (candidate,),
+    )
+    result = campaign.run()
+    assert result.winner_id is None
+
+    bundle.developer_evals.cases[0].snapshot.path.write_text("drifted", encoding="utf-8")
+
+    with pytest.raises(FitError) as raised:
+        campaign.run()
+    assert raised.value.code is FitErrorCode.RESULT_INVALID
+
+
 def test_candidate_drift_is_rejected_before_baseline_or_holdouts(tmp_path: Path) -> None:
     harness = _harness(tmp_path)
     revision = harness.current_revision

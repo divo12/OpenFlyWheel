@@ -23,9 +23,10 @@ from ofw.candidate import (
     CandidateError,
     CandidateId,
     read_candidate_manifest,
+    validate_candidate_artifacts,
     validate_candidate_revision,
 )
-from ofw.contracts import Sha256Digest
+from ofw.contracts import HarnessRevision, Sha256Digest
 from ofw.exports import ExportBundle, ExportPartition
 from ofw.harness import Harness
 from ofw.mine import digest_bytes, write_artifact
@@ -167,6 +168,7 @@ class FitResult:
     id: str
     benchmark_id: str
     policy_digest: Sha256Digest
+    input_digest: Sha256Digest
     baseline: Baseline
     outcomes: tuple[CandidateOutcome, ...]
     winner_id: CandidateId | None
@@ -202,9 +204,37 @@ class AdmissionRecord:
         return _ADMISSION_ADAPTER.dump_json(self).decode()
 
 
+@dataclass(frozen=True, slots=True)
+class CandidateInputFingerprint:
+    candidate_id: CandidateId
+    artifact_digest: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotInputFingerprint:
+    case_id: str
+    digest: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class FitInputFingerprint:
+    revision_id: str
+    revision_manifest_digest: Sha256Digest
+    bundle_digest: Sha256Digest
+    benchmark_policy_digest: Sha256Digest
+    fit_policy_digest: Sha256Digest
+    candidates: tuple[CandidateInputFingerprint, ...]
+    snapshots: tuple[SnapshotInputFingerprint, ...]
+
+    @property
+    def digest(self) -> Sha256Digest:
+        return digest_bytes(_INPUT_ADAPTER.dump_json(self))
+
+
 _FIT_ADAPTER: TypeAdapter[FitResult] = TypeAdapter(FitResult)
 _ADMISSION_ADAPTER: TypeAdapter[AdmissionRecord] = TypeAdapter(AdmissionRecord)
 _DIGEST_ADAPTER: TypeAdapter[Sha256Digest] = TypeAdapter(Sha256Digest)
+_INPUT_ADAPTER: TypeAdapter[FitInputFingerprint] = TypeAdapter(FitInputFingerprint)
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,11 +262,7 @@ class FitCampaign:
         champion_revision = self.harness.current_revision
         if champion_revision is None:
             raise FitError(FitErrorCode.CANDIDATE_DRIFT, self.harness.name)
-        try:
-            for candidate in self.candidates:
-                validate_candidate_revision(candidate.candidate, champion_revision)
-        except CandidateError as error:
-            raise FitError(FitErrorCode.CANDIDATE_DRIFT, error.subject) from error
+        input_digest = self._validate_inputs(champion_revision)
         runner = BenchmarkRunner(self.harness, self.bundle, self.benchmark_policy)
         baseline = runner.establish_baseline()
         champion = runner.verify_baseline(baseline)
@@ -336,6 +362,7 @@ class FitCampaign:
             self._campaign_id(),
             baseline.benchmark_id,
             self.fit_policy.digest,
+            input_digest,
             baseline,
             outcomes,
             winner_id,
@@ -383,28 +410,74 @@ class FitCampaign:
         if digest_bytes(payload) != expected:
             raise FitError(FitErrorCode.RESULT_INVALID, str(path))
         candidate_ids = tuple(candidate.candidate.id for candidate in self.candidates)
+        champion_revision = self.harness.current_revision
+        if champion_revision is None:
+            raise FitError(FitErrorCode.CANDIDATE_DRIFT, self.harness.name)
+        input_digest = self._validate_inputs(champion_revision)
         if (
             result.id != self._campaign_id()
             or result.benchmark_id != self.bundle.benchmark.id
             or result.policy_digest != self.fit_policy.digest
+            or result.input_digest != input_digest
             or tuple(outcome.candidate_id for outcome in result.outcomes) != candidate_ids
             or (result.winner_id is not None and result.winner_id not in candidate_ids)
         ):
             raise FitError(FitErrorCode.RESULT_INVALID, str(path))
         if result.winner_id is not None:
-            champion_revision = self.harness.current_revision
             winner = next(
                 candidate
                 for candidate in self.candidates
                 if candidate.candidate.id == result.winner_id
             )
-            if champion_revision is None:
-                raise FitError(FitErrorCode.CANDIDATE_DRIFT, self.harness.name)
-            try:
-                validate_candidate_revision(winner.candidate, champion_revision)
-            except CandidateError as error:
-                raise FitError(FitErrorCode.CANDIDATE_DRIFT, error.subject) from error
+            if not winner.workspace.root.exists():
+                raise FitError(FitErrorCode.CANDIDATE_DRIFT, winner.candidate.id.value)
         return result
+
+    def _validate_inputs(self, champion_revision: HarnessRevision) -> Sha256Digest:
+        try:
+            revision_manifest_digest = digest_bytes(
+                champion_revision.manifest_path.read_bytes()
+            )
+            candidate_fingerprints = tuple(
+                CandidateInputFingerprint(
+                    build.candidate.id,
+                    validate_candidate_artifacts(build.candidate, champion_revision),
+                )
+                for build in self.candidates
+            )
+            for build in self.candidates:
+                if build.workspace.root.exists():
+                    validate_candidate_revision(build.candidate, champion_revision)
+        except CandidateError as error:
+            raise FitError(FitErrorCode.CANDIDATE_DRIFT, error.subject) from error
+        except OSError as error:
+            raise FitError(
+                FitErrorCode.RESULT_INVALID,
+                str(champion_revision.manifest_path),
+            ) from error
+        snapshot_fingerprints = tuple(
+            _snapshot_fingerprint(
+                case.id,
+                case.snapshot.path,
+                case.snapshot.digest,
+                champion_revision,
+            )
+            for suite in (
+                self.bundle.developer_evals,
+                self.bundle.selection_holdout,
+                self.bundle.admission_holdout,
+            )
+            for case in suite.cases
+        )
+        return FitInputFingerprint(
+            str(champion_revision.id),
+            revision_manifest_digest,
+            digest_bytes(self.bundle.to_json().encode()),
+            self.benchmark_policy.digest,
+            self.fit_policy.digest,
+            candidate_fingerprints,
+            snapshot_fingerprints,
+        ).digest
 
 
 def read_admission_record(path: Path) -> AdmissionRecord:
@@ -412,6 +485,24 @@ def read_admission_record(path: Path) -> AdmissionRecord:
         return _ADMISSION_ADAPTER.validate_json(path.read_bytes())
     except (OSError, ValidationError) as error:
         raise FitError(FitErrorCode.RESULT_INVALID, str(path)) from error
+
+
+def _snapshot_fingerprint(
+    case_id: str,
+    path: Path,
+    expected: Sha256Digest,
+    revision: HarnessRevision,
+) -> SnapshotInputFingerprint:
+    try:
+        allowed = (revision.root / ".ofw").resolve(strict=True)
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(allowed)
+        actual = digest_bytes(resolved.read_bytes())
+    except (OSError, ValueError) as error:
+        raise FitError(FitErrorCode.RESULT_INVALID, case_id) from error
+    if actual != expected:
+        raise FitError(FitErrorCode.RESULT_INVALID, case_id)
+    return SnapshotInputFingerprint(case_id, actual)
 
 
 def _developer_outcome(
