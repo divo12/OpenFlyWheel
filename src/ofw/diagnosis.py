@@ -53,14 +53,6 @@ class Severity(StrEnum):
     CRITICAL = "critical"
 
 
-class ClusterState(StrEnum):
-    PROPOSED = "proposed"
-    CONFIRMED = "confirmed"
-    TARGETED = "targeted"
-    RESOLVED = "resolved"
-    REOPENED = "reopened"
-
-
 class DiagnosisStatus(StrEnum):
     PROPOSED = "proposed"
     ABSTAINED = "abstained"
@@ -203,7 +195,6 @@ class ClusterId:
 @dataclass(frozen=True, slots=True)
 class FailureCluster:
     id: ClusterId
-    revision: int
     mechanism: MechanismKey
     title: str
     description: str
@@ -213,9 +204,6 @@ class FailureCluster:
     recurrence: int
     severity: Severity
     confidence: float
-    resolution_rate: float
-    state: ClusterState
-    parents: tuple[ClusterId, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -384,7 +372,6 @@ def _cluster(
     )
     return FailureCluster(
         cluster_id,
-        1,
         mechanism,
         first.title,
         first.description,
@@ -394,8 +381,6 @@ def _cluster(
         len(diagnoses),
         severity,
         confidence,
-        0.0,
-        ClusterState.PROPOSED,
     )
 
 

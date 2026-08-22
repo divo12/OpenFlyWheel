@@ -12,7 +12,6 @@ import pytest
 from pydantic import TypeAdapter
 
 from ofw import (
-    ClusterState,
     DiagnosisError,
     DiagnosisErrorCode,
     DiagnosisRun,
@@ -218,7 +217,6 @@ def test_verified_failures_form_evidence_bound_mechanism_clusters(tmp_path: Path
         MechanismKey("tool-schema"),
     )
     assert tuple(cluster.recurrence for cluster in result.clusters) == (1, 2)
-    assert all(cluster.state is ClusterState.PROPOSED for cluster in result.clusters)
     assert all(cluster.evidence for cluster in result.clusters)
     assert result.abstained_count == 1
     assert TraceId("good") not in tuple(diagnosis.trace_id for diagnosis in result.diagnoses)
