@@ -322,7 +322,7 @@ class PythonLoop:
     models: tuple[ModelFingerprint, ...] = ()
 
     def fingerprint(self, root: Path) -> Sha256Digest:
-        module_path = _python_source(root, self.entrypoint)
+        module_path = resolve_python_source(root, self.entrypoint)
         return _digest_text(
             f"python-loop\0{self.entrypoint.module.value}\0"
             f"{self.entrypoint.function.value}\0{_digest_file(module_path)}\0"
@@ -361,7 +361,7 @@ class PythonVerifier:
             raise ValueError("invalid verifier name")
 
     def fingerprint(self, root: Path) -> Sha256Digest:
-        source = _python_source(root, self.entrypoint)
+        source = resolve_python_source(root, self.entrypoint)
         return _digest_text(
             f"python-verifier\0{self.name}\0{self.entrypoint.module.value}\0"
             f"{self.entrypoint.function.value}\0{_digest_file(source)}"
@@ -594,7 +594,7 @@ def _command_fingerprint(
     return _digest_text("\0".join((kind, *command.arguments, *sources, _models_text(models))))
 
 
-def _python_source(root: Path, entrypoint: PythonEntrypoint) -> Path:
+def resolve_python_source(root: Path, entrypoint: PythonEntrypoint) -> Path:
     path = root / Path(*entrypoint.module.value.split(".")).with_suffix(".py")
     if not path.is_file():
         raise ValueError("python module is missing")

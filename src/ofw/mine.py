@@ -293,7 +293,7 @@ class Mine:
             admissions,
             revision.root,
         )
-        _write_artifact(result.manifest_path, f"{result.to_json()}\n".encode())
+        write_artifact(result.manifest_path, f"{result.to_json()}\n".encode())
         return result
 
     def _admit(
@@ -330,9 +330,9 @@ class Mine:
             tuple(_snapshot_score(score) for score in snapshot_scores),
         )
         payload = _SNAPSHOT_ADAPTER.dump_json(snapshot)
-        digest = _digest_bytes(payload)
+        digest = digest_bytes(payload)
         path = revision.root / ".ofw" / "mine" / str(run_id) / "traces" / f"{digest.value[7:]}.json"
-        _write_artifact(path, payload + b"\n")
+        write_artifact(path, payload + b"\n")
         return TraceAdmission(trace.id, partition, reason, evidence, digest, path)
 
     def _snapshot_observation(
@@ -369,7 +369,7 @@ class Mine:
             / "content"
             / f"{reference.digest.value[7:]}.txt"
         )
-        _write_artifact(path, content.text.encode())
+        write_artifact(path, content.text.encode())
         return SnapshotContentReference(reference, path)
 
     def _classify(
@@ -517,7 +517,7 @@ def _resolve_revision(source: Harness | HarnessRevision) -> HarnessRevision:
     return revision
 
 
-def _write_artifact(path: Path, payload: bytes) -> None:
+def write_artifact(path: Path, payload: bytes) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -540,10 +540,10 @@ def _write_artifact(path: Path, payload: bytes) -> None:
 
 
 def _digest_text(value: str) -> Sha256Digest:
-    return _digest_bytes(value.encode())
+    return digest_bytes(value.encode())
 
 
-def _digest_bytes(value: bytes) -> Sha256Digest:
+def digest_bytes(value: bytes) -> Sha256Digest:
     return Sha256Digest(f"sha256:{hashlib.sha256(value).hexdigest()}")
 
 
