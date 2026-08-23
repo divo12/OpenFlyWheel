@@ -1,6 +1,7 @@
 """Public OpenFlyWheel harness API."""
 
 from pathlib import Path
+from threading import Event
 
 from langfuse import (
     Langfuse,
@@ -147,6 +148,50 @@ from ofw.runtime import (
     VerifierResult,
     VerifierVerdict,
 )
+from ofw.scheduler import (
+    AutomationPolicy as SchedulerAutomationPolicy,
+)
+from ofw.scheduler import (
+    BlockerCode,
+    BudgetStatus,
+    Dependency,
+    DependencyMode,
+    EvidenceOrigin,
+    EvidenceReader,
+    FailureDisposition,
+    Heartbeat,
+    HeartbeatEvidence,
+    HeartbeatOwner,
+    HeartbeatReport,
+    JobContext,
+    JobExecution,
+    JobExecutionError,
+    JobHandler,
+    JobId,
+    JobKind,
+    JobLease,
+    JobResult,
+    JobSpec,
+    JobState,
+    Money,
+    QuietHours,
+    ReconcileReport,
+    ResultId,
+    ScheduledJob,
+    SchedulerDaemon,
+    SchedulerError,
+    SchedulerErrorCode,
+    SourceWindowId,
+    StageBudgets,
+    Worker,
+    WorkerId,
+)
+from ofw.scheduler import (
+    LocalScheduler as SQLiteScheduler,
+)
+
+AutomationPolicy = SchedulerAutomationPolicy
+LocalScheduler = SQLiteScheduler
 
 
 class _OfwNamespace:
@@ -176,6 +221,11 @@ class _OfwNamespace:
     CandidatePolicy = CandidatePolicy
     CandidateBuilder = CandidateBuilder
     FitPolicy = FitPolicy
+    AutomationPolicy = SchedulerAutomationPolicy
+    LocalScheduler = SQLiteScheduler
+    Money = Money
+    QuietHours = QuietHours
+    StageBudgets = StageBudgets
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -188,6 +238,28 @@ class _OfwNamespace:
         store_path: Path | None = None,
     ) -> CollectionResult:
         return collect(revision, window=window, store_path=store_path)
+
+    def serve(
+        self,
+        harnesses: tuple[Harness, ...],
+        policy: SchedulerAutomationPolicy,
+        evidence: EvidenceReader,
+        stop: Event,
+        *,
+        store_path: Path,
+        owner: HeartbeatOwner,
+    ) -> None:
+        revisions: tuple[HarnessRevisionId, ...] = ()
+        for harness in harnesses:
+            revision = harness.current_revision
+            if revision is None:
+                raise SchedulerError(SchedulerErrorCode.STALE_HARNESS, harness.name)
+            revisions = (*revisions, revision.id)
+        scheduler = SQLiteScheduler(store_path, policy)
+        try:
+            SchedulerDaemon(scheduler, owner, revisions, evidence).serve(stop)
+        finally:
+            scheduler.close()
 
     def search_observation_content(
         self,
@@ -223,6 +295,7 @@ ofw = _OfwNamespace()
 
 __all__ = [
     "AssetAccess",
+    "AutomationPolicy",
     "Baseline",
     "BenchmarkError",
     "BenchmarkErrorCode",
@@ -230,6 +303,8 @@ __all__ = [
     "BenchmarkResult",
     "BenchmarkRunner",
     "BenchmarkStatus",
+    "BlockerCode",
+    "BudgetStatus",
     "CandidateBuilder",
     "CandidateError",
     "CandidateErrorCode",
@@ -260,13 +335,18 @@ __all__ = [
     "DataLicense",
     "DiagnosisError",
     "DiagnosisErrorCode",
+    "Dependency",
+    "DependencyMode",
     "EditableFile",
     "EvidenceAnchor",
     "EvidenceAnchorKind",
+    "EvidenceOrigin",
+    "EvidenceReader",
     "ExportBundle",
     "ExportPartition",
     "ExportPolicy",
     "FailureCluster",
+    "FailureDisposition",
     "FileEdit",
     "FitCampaign",
     "FitError",
@@ -281,6 +361,10 @@ __all__ = [
     "HarnessRevision",
     "HarnessRevisionId",
     "HarnessValidationError",
+    "Heartbeat",
+    "HeartbeatEvidence",
+    "HeartbeatOwner",
+    "HeartbeatReport",
     "FunctionName",
     "GateReason",
     "Langfuse",
@@ -291,6 +375,7 @@ __all__ = [
     "LeakageErrorCode",
     "LineRange",
     "LocalProcess",
+    "LocalScheduler",
     "ModelFingerprint",
     "ModuleName",
     "Mine",
@@ -300,6 +385,7 @@ __all__ = [
     "MiningPolicy",
     "MechanismKey",
     "MetricKind",
+    "Money",
     "ObservationContent",
     "ObservationContentField",
     "ObservationContentHit",
@@ -315,13 +401,22 @@ __all__ = [
     "PythonLoop",
     "PythonDiagnoser",
     "PythonVerifier",
+    "QuietHours",
+    "ReconcileReport",
+    "ResultId",
     "RunErrorCode",
     "RunResult",
     "RunStatus",
+    "ScheduledJob",
+    "SchedulerDaemon",
+    "SchedulerError",
+    "SchedulerErrorCode",
     "ScoreName",
     "Sha256Digest",
     "ServiceName",
     "Severity",
+    "SourceWindowId",
+    "StageBudgets",
     "SecretEnvironmentVariable",
     "SnapshotContentReference",
     "Subagent",
@@ -330,9 +425,21 @@ __all__ = [
     "TracePartition",
     "TraceQualityThreshold",
     "TraceDiagnosis",
+    "JobContext",
+    "JobExecution",
+    "JobExecutionError",
+    "JobHandler",
+    "JobId",
+    "JobKind",
+    "JobLease",
+    "JobResult",
+    "JobSpec",
+    "JobState",
     "VerifierResult",
     "VerifierVerdict",
     "WorkspaceFile",
+    "Worker",
+    "WorkerId",
     "collect",
     "editable",
     "get_client",
