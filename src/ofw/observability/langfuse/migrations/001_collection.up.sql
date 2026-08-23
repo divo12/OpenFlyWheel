@@ -1,13 +1,32 @@
 BEGIN IMMEDIATE;
 
+CREATE TABLE observation_content (
+    content_digest TEXT PRIMARY KEY,
+    content_text TEXT NOT NULL,
+    byte_count INTEGER NOT NULL CHECK (byte_count >= 0),
+    truncated INTEGER NOT NULL CHECK (truncated IN (0, 1))
+);
+
+CREATE VIRTUAL TABLE observation_content_fts USING fts5(
+    content_digest UNINDEXED,
+    content_text,
+    tokenize = 'unicode61'
+);
+
 CREATE TABLE langfuse_observations (
     connection_id TEXT NOT NULL,
     observation_id TEXT NOT NULL,
     trace_id TEXT,
     start_time TEXT NOT NULL,
+    input_content_digest TEXT,
+    output_content_digest TEXT,
     content_digest TEXT NOT NULL,
     record_json TEXT NOT NULL,
-    PRIMARY KEY (connection_id, observation_id, content_digest)
+    PRIMARY KEY (connection_id, observation_id, content_digest),
+    FOREIGN KEY (input_content_digest)
+        REFERENCES observation_content (content_digest),
+    FOREIGN KEY (output_content_digest)
+        REFERENCES observation_content (content_digest)
 );
 
 CREATE INDEX langfuse_observations_trace_time
