@@ -111,7 +111,8 @@ def test_process_records_five_file_level_components_for_polyglot_agent(tmp_path:
             source=ofw.editable(Path("subagents/reviewer.yaml")),
         )
     )
-    harness.connect_middleware(ofw.editable(Path("middleware/retry.ts")))
+    assert Harness.connect_middle is Harness.connect_middleware
+    harness.connect_middle(ofw.editable(Path("middleware/retry.ts")))
 
     revision = harness.process()
 

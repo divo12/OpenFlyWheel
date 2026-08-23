@@ -245,6 +245,9 @@ class FitCampaign:
     fit_policy: FitPolicy
     candidates: tuple[CandidateBuild, ...]
 
+    def wait(self) -> FitResult:
+        return self.run()
+
     def run(self) -> FitResult:
         existing = self._read_existing()
         if existing is not None:

@@ -148,6 +148,8 @@ class Harness:
         self._register_files(ComponentKind.MIDDLEWARE, sources)
         return self
 
+    connect_middle = connect_middleware
+
     def connect_observability(self, project: LangfuseProject) -> Harness:
         self._current_revision = None
         self._observability = project
