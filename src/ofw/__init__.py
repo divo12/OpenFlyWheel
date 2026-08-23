@@ -21,6 +21,16 @@ from ofw.benchmarking import (
     BenchmarkRunner,
     BenchmarkStatus,
 )
+from ofw.candidate import (
+    CandidateBuilder,
+    CandidateError,
+    CandidateErrorCode,
+    CandidateEvidence,
+    CandidatePolicy,
+    ChangePrediction,
+    FileEdit,
+    LineRange,
+)
 from ofw.contracts import (
     AssetAccess,
     ComponentKind,
@@ -36,6 +46,7 @@ from ofw.contracts import (
     WorkspaceFile,
 )
 from ofw.diagnosis import (
+    ClusterId,
     ClusterRevisionRef,
     ClusterState,
     DiagnosisError,
@@ -150,6 +161,8 @@ class _OfwNamespace:
     ExportPolicy = ExportPolicy
     BenchmarkPolicy = BenchmarkPolicy
     BenchmarkRunner = BenchmarkRunner
+    CandidatePolicy = CandidatePolicy
+    CandidateBuilder = CandidateBuilder
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -204,11 +217,18 @@ __all__ = [
     "BenchmarkResult",
     "BenchmarkRunner",
     "BenchmarkStatus",
+    "CandidateBuilder",
+    "CandidateError",
+    "CandidateErrorCode",
+    "CandidateEvidence",
+    "CandidatePolicy",
     "CanaryCase",
     "CaseId",
     "ClusterPartitionRule",
     "ClusterFamilyId",
+    "ClusterId",
     "ClusterState",
+    "ChangePrediction",
     "ConsentStatus",
     "ClusterRevisionRef",
     "ComponentKind",
@@ -231,6 +251,7 @@ __all__ = [
     "ExportPartition",
     "ExportPolicy",
     "FailureCluster",
+    "FileEdit",
     "GitCommit",
     "Harness",
     "HarnessAsset",
@@ -246,6 +267,7 @@ __all__ = [
     "LangfuseSpan",
     "LeakageError",
     "LeakageErrorCode",
+    "LineRange",
     "LocalProcess",
     "ModelFingerprint",
     "ModuleName",
