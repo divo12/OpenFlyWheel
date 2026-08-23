@@ -11,9 +11,17 @@ from typing import cast
 
 from pydantic import TypeAdapter
 
+from ofw.contracts import Sha256Digest
 from ofw.observability.langfuse.contracts import CollectionError, CollectionErrorCode
 from ofw.observability.langfuse.domain import (
     CollectionSyncId,
+    ObservationContent,
+    ObservationContentField,
+    ObservationContentHit,
+    ObservationContentMatch,
+    ObservationContentQuery,
+    ObservationContentReference,
+    ObservationId,
     ObservationPage,
     ObservationRecord,
     PageCursor,
@@ -21,6 +29,7 @@ from ofw.observability.langfuse.domain import (
     ScoreRecord,
     SyncCheckpoint,
     SyncStream,
+    TraceId,
 )
 
 _OBSERVATION_ADAPTER: TypeAdapter[ObservationRecord] = TypeAdapter(ObservationRecord)
@@ -28,8 +37,9 @@ _SCORE_ADAPTER: TypeAdapter[ScoreRecord] = TypeAdapter(ScoreRecord)
 
 _OBSERVATION_UPSERT = """
 INSERT INTO langfuse_observations (
-    connection_id, observation_id, trace_id, start_time, content_digest, record_json
-) VALUES (?, ?, ?, ?, ?, ?)
+    connection_id, observation_id, trace_id, start_time,
+    input_content_digest, output_content_digest, content_digest, record_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (connection_id, observation_id, content_digest) DO NOTHING
 """
 
@@ -90,6 +100,8 @@ class CollectionStore:
     ) -> None:
         try:
             with self._connection:
+                for content in page.contents:
+                    self._commit_content(content)
                 for record in page.records:
                     self._connection.execute(
                         _OBSERVATION_UPSERT,
@@ -98,6 +110,16 @@ class CollectionStore:
                             record.id.value,
                             None if record.trace_id is None else record.trace_id.value,
                             record.start_time.isoformat(),
+                            (
+                                None
+                                if record.input_content is None
+                                else str(record.input_content.digest)
+                            ),
+                            (
+                                None
+                                if record.output_content is None
+                                else str(record.output_content.digest)
+                            ),
                             str(record.digest),
                             _OBSERVATION_ADAPTER.dump_json(record).decode(),
                         ),
@@ -198,6 +220,147 @@ class CollectionStore:
         rows = cast(Iterable[tuple[str]], cursor)
         return tuple(_OBSERVATION_ADAPTER.validate_json(row[0]) for row in rows)
 
+    def trace_observations(
+        self,
+        sync_id: CollectionSyncId,
+        trace_id: TraceId,
+        limit: int,
+    ) -> tuple[ObservationRecord, ...]:
+        if not 1 <= limit <= 1000:
+            raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, str(limit))
+        cursor = self._connection.execute(
+            """
+            SELECT observation.record_json
+            FROM collection_observations AS membership
+            JOIN langfuse_observations AS observation
+             ON observation.connection_id = membership.connection_id
+             AND observation.observation_id = membership.observation_id
+             AND observation.content_digest = membership.content_digest
+            WHERE membership.sync_id = ? AND observation.trace_id = ?
+            ORDER BY observation.start_time, observation.observation_id
+            LIMIT ?
+            """,
+            (sync_id.value, trace_id.value, limit),
+        )
+        rows = cast(Iterable[tuple[str]], cursor)
+        return tuple(_OBSERVATION_ADAPTER.validate_json(row[0]) for row in rows)
+
+    def read_content(
+        self,
+        sync_id: CollectionSyncId,
+        reference: ObservationContentReference,
+    ) -> ObservationContent:
+        row = cast(
+            tuple[str, int, int] | None,
+            self._connection.execute(
+                """
+                SELECT content.content_text, content.byte_count, content.truncated
+                FROM observation_content AS content
+                WHERE content.content_digest = ?
+                  AND EXISTS (
+                    SELECT 1
+                    FROM collection_observations AS membership
+                    JOIN langfuse_observations AS observation
+                     ON observation.connection_id = membership.connection_id
+                     AND observation.observation_id = membership.observation_id
+                     AND observation.content_digest = membership.content_digest
+                    WHERE membership.sync_id = ?
+                      AND (
+                        observation.input_content_digest = content.content_digest
+                        OR observation.output_content_digest = content.content_digest
+                      )
+                  )
+                """,
+                (str(reference.digest), sync_id.value),
+            ).fetchone(),
+        )
+        if row is None:
+            raise CollectionError(
+                CollectionErrorCode.CONTENT_NOT_CAPTURED,
+                str(reference.digest),
+            )
+        text, byte_count, truncated = row
+        stored_reference = ObservationContentReference(
+            reference.digest,
+            byte_count,
+            bool(truncated),
+        )
+        if stored_reference != reference:
+            raise CollectionError(
+                CollectionErrorCode.DATABASE_ERROR,
+                str(reference.digest),
+            )
+        return ObservationContent(stored_reference, text)
+
+    def search_content(
+        self,
+        sync_id: CollectionSyncId,
+        query: ObservationContentQuery,
+    ) -> tuple[ObservationContentHit, ...]:
+        match_clause = (
+            "content.content_text = ?"
+            if query.match is ObservationContentMatch.EXACT
+            else (
+                "content.content_digest IN ("
+                "SELECT content_digest FROM observation_content_fts "
+                "WHERE content_text MATCH ?"
+                ")"
+            )
+        )
+        match_value = query.text if query.match is ObservationContentMatch.EXACT else _fts_phrase(
+            query.text
+        )
+        cursor = self._connection.execute(
+            f"""
+            WITH reference AS (
+                SELECT observation.connection_id, observation.observation_id,
+                       observation.trace_id, 'input' AS field,
+                       observation.input_content_digest AS content_digest
+                FROM collection_observations AS membership
+                JOIN langfuse_observations AS observation
+                 ON observation.connection_id = membership.connection_id
+                 AND observation.observation_id = membership.observation_id
+                 AND observation.content_digest = membership.content_digest
+                WHERE membership.sync_id = ?
+                UNION ALL
+                SELECT observation.connection_id, observation.observation_id,
+                       observation.trace_id, 'output' AS field,
+                       observation.output_content_digest AS content_digest
+                FROM collection_observations AS membership
+                JOIN langfuse_observations AS observation
+                 ON observation.connection_id = membership.connection_id
+                 AND observation.observation_id = membership.observation_id
+                 AND observation.content_digest = membership.content_digest
+                WHERE membership.sync_id = ?
+            )
+            SELECT reference.observation_id, reference.trace_id, reference.field,
+                   content.content_digest, content.byte_count, content.truncated,
+                   substr(content.content_text, 1, ?)
+            FROM reference
+            JOIN observation_content AS content
+              ON content.content_digest = reference.content_digest
+            WHERE reference.content_digest IS NOT NULL
+              AND (? = 'any' OR reference.field = ?)
+              AND (? IS NULL OR reference.trace_id = ?)
+              AND {match_clause}
+            ORDER BY reference.observation_id, reference.field
+            LIMIT ?
+            """,  # nosec B608
+            (
+                sync_id.value,
+                sync_id.value,
+                query.maximum_excerpt_characters,
+                query.field.value,
+                query.field.value,
+                None if query.trace_id is None else query.trace_id.value,
+                None if query.trace_id is None else query.trace_id.value,
+                match_value,
+                query.limit,
+            ),
+        )
+        rows = cast(Iterable[tuple[str, str | None, str, str, int, int, str]], cursor)
+        return tuple(_content_hit(row) for row in rows)
+
     def scores(self, sync_id: CollectionSyncId) -> tuple[ScoreRecord, ...]:
         cursor = self._connection.execute(
             """
@@ -231,6 +394,30 @@ class CollectionStore:
             ),
         )
 
+    def _commit_content(self, content: ObservationContent) -> None:
+        inserted = self._connection.execute(
+            """
+            INSERT INTO observation_content (
+                content_digest, content_text, byte_count, truncated
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT (content_digest) DO NOTHING
+            """,
+            (
+                str(content.reference.digest),
+                content.text,
+                content.reference.byte_count,
+                int(content.reference.truncated),
+            ),
+        )
+        if inserted.rowcount == 1:
+            self._connection.execute(
+                """
+                INSERT INTO observation_content_fts (content_digest, content_text)
+                VALUES (?, ?)
+                """,
+                (str(content.reference.digest), content.text),
+            )
+
     def _restrict_sidecar_permissions(self) -> None:
         for suffix in ("-wal", "-shm"):
             sidecar = self._path.with_name(f"{self._path.name}{suffix}")
@@ -251,3 +438,24 @@ class CollectionStore:
             .read_text(encoding="utf-8")
         )
         self._connection.executescript(migration)
+
+
+def _fts_phrase(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _content_hit(
+    row: tuple[str, str | None, str, str, int, int, str],
+) -> ObservationContentHit:
+    observation_id, trace_id, field, digest, byte_count, truncated, excerpt = row
+    return ObservationContentHit(
+        ObservationId(observation_id),
+        None if trace_id is None else TraceId(trace_id),
+        ObservationContentField(field),
+        ObservationContentReference(
+            Sha256Digest(digest),
+            byte_count,
+            bool(truncated),
+        ),
+        excerpt,
+    )
