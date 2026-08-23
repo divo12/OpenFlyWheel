@@ -13,10 +13,14 @@ import pytest
 from pydantic import TypeAdapter
 
 from ofw import (
+    ClusterReview,
+    ClusterReviewDecision,
+    ClusterReviewerId,
     ClusterRevisionRef,
     ClusterState,
     DiagnosisError,
     DiagnosisErrorCode,
+    DiagnosisReview,
     DiagnosisRun,
     FunctionName,
     Harness,
@@ -78,6 +82,17 @@ def _repository(tmp_path: Path) -> tuple[Path, HarnessRevisionId]:
         "    )\n"
         "    return TraceDiagnosis.proposed(\n"
         "        snapshot.trace.id, MechanismKey(mechanism), mechanism, 'fixture diagnosis',\n"
+        "        (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, observation.id.value),),\n"
+        "        (component,), Severity.HIGH, 0.9,\n"
+        "    )\n"
+        "def diagnose_changed(snapshot: TraceSnapshot) -> TraceDiagnosis:\n"
+        "    observation = snapshot.observations[0]\n"
+        "    mechanism = 'tool-schema' if observation.name == 'tool' else 'prompt-gap'\n"
+        "    component = (\n"
+        "        ComponentKind.TOOL if observation.name == 'tool' else ComponentKind.PROMPT\n"
+        "    )\n"
+        "    return TraceDiagnosis.proposed(\n"
+        "        snapshot.trace.id, MechanismKey(mechanism), mechanism, 'changed diagnosis',\n"
         "        (EvidenceAnchor(EvidenceAnchorKind.OBSERVATION, observation.id.value),),\n"
         "        (component,), Severity.HIGH, 0.9,\n"
         "    )\n"
@@ -224,6 +239,99 @@ def test_verified_failures_form_evidence_bound_mechanism_clusters(tmp_path: Path
     assert all(cluster.evidence for cluster in result.clusters)
     assert result.abstained_count == 1
     assert TraceId("good") not in tuple(diagnosis.trace_id for diagnosis in result.diagnoses)
+
+
+def test_cluster_review_is_content_bound_and_deterministic(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    diagnosis = DiagnosisRun(harness, mine, _diagnoser("diagnose")).run()
+    cluster = diagnosis.clusters[0]
+    review = ClusterReview(
+        cluster.id,
+        cluster.revision,
+        cluster.content_digest,
+        ClusterReviewerId("reviewer-1"),
+        ClusterReviewDecision.CONFIRM,
+        datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+    operation = DiagnosisReview(diagnosis, (review,))
+
+    first = operation.run()
+    second = operation.run()
+
+    reviewed = next(item for item in first.clusters if item.id == cluster.id)
+    assert first == second
+    assert reviewed.state is ClusterState.CONFIRMED
+    assert first.reviews == (review,)
+    assert first.id != diagnosis.id
+
+
+def test_stale_cluster_review_is_rejected(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    diagnosis = DiagnosisRun(harness, mine, _diagnoser("diagnose")).run()
+    cluster = diagnosis.clusters[0]
+    stale = ClusterReview(
+        cluster.id,
+        cluster.revision,
+        Sha256Digest("sha256:stale"),
+        ClusterReviewerId("reviewer-1"),
+        ClusterReviewDecision.CONFIRM,
+        datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+
+    with pytest.raises(DiagnosisError) as raised:
+        DiagnosisReview(diagnosis, (stale,)).run()
+
+    assert raised.value.code is DiagnosisErrorCode.REVIEW_INVALID
+
+
+def test_rejected_cluster_remains_a_review_artifact(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    diagnosis = DiagnosisRun(harness, mine, _diagnoser("diagnose")).run()
+    cluster = diagnosis.clusters[0]
+    rejection = ClusterReview(
+        cluster.id,
+        cluster.revision,
+        cluster.content_digest,
+        ClusterReviewerId("reviewer-1"),
+        ClusterReviewDecision.REJECT,
+        datetime(2026, 8, 22, 1, tzinfo=UTC),
+    )
+
+    result = DiagnosisReview(diagnosis, (rejection,)).run()
+
+    reviewed = next(item for item in result.clusters if item.id == cluster.id)
+    assert reviewed.state is ClusterState.REJECTED
+
+
+def test_changed_confirmed_cluster_requires_a_new_review(tmp_path: Path) -> None:
+    mine, harness = _mine_result(tmp_path)
+    diagnosis = DiagnosisRun(harness, mine, _diagnoser("diagnose")).run()
+    cluster = diagnosis.clusters[0]
+    confirmed = DiagnosisReview(
+        diagnosis,
+        (
+            ClusterReview(
+                cluster.id,
+                cluster.revision,
+                cluster.content_digest,
+                ClusterReviewerId("reviewer-1"),
+                ClusterReviewDecision.CONFIRM,
+                datetime(2026, 8, 22, 1, tzinfo=UTC),
+            ),
+        ),
+    ).run()
+
+    changed = DiagnosisRun(
+        harness,
+        mine,
+        _diagnoser("diagnose_changed"),
+        previous=confirmed,
+    ).run()
+
+    changed_cluster = next(item for item in changed.clusters if item.id == cluster.id)
+    assert changed_cluster.revision == cluster.revision + 1
+    assert changed_cluster.content_digest != cluster.content_digest
+    assert changed_cluster.state is ClusterState.REOPENED
 
 
 def test_invalid_evidence_anchor_becomes_abstention(tmp_path: Path) -> None:

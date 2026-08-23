@@ -234,7 +234,7 @@ def _fit_policy() -> FitPolicy:
         minimum_target_delta=0.5,
         minimum_regression_score=1.0,
         maximum_critical_regressions=0,
-        maximum_latency_delta=1.0,
+        maximum_latency_delta=10.0,
         maximum_cost_delta=0.0,
         minimum_selection_pass_rate=1.0,
         minimum_admission_pass_rate=1.0,

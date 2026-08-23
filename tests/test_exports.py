@@ -263,6 +263,60 @@ def test_holdout_artifacts_are_separate_from_developer_suite(tmp_path: Path) -> 
     )
 
 
+def test_unconfirmed_failure_clusters_stay_in_review(tmp_path: Path) -> None:
+    revision, mine, diagnosis = _inputs(tmp_path)
+    proposed = replace(
+        diagnosis,
+        clusters=tuple(
+            replace(cluster, state=ClusterState.PROPOSED) for cluster in diagnosis.clusters
+        ),
+    )
+
+    bundle = MineExports(revision, mine, proposed, _policy()).run()
+
+    failure_entries = tuple(
+        entry for entry in bundle.ledger.entries if entry.cluster_family_id is not None
+    )
+    assert failure_entries
+    assert all(entry.partition is ExportPartition.REVIEW for entry in failure_entries)
+    assert not bundle.developer_evals.cases
+    assert not bundle.selection_holdout.cases
+    assert not bundle.admission_holdout.cases
+
+
+def test_confirmed_cluster_can_graduate_from_previous_review_partition(tmp_path: Path) -> None:
+    revision, mine, diagnosis = _inputs(tmp_path)
+    proposed = replace(
+        diagnosis,
+        clusters=tuple(
+            replace(cluster, state=ClusterState.PROPOSED) for cluster in diagnosis.clusters
+        ),
+    )
+    review_bundle = MineExports(revision, mine, proposed, _policy()).run()
+    confirmed = replace(
+        diagnosis,
+        clusters=tuple(
+            replace(cluster, state=ClusterState.CONFIRMED) for cluster in diagnosis.clusters
+        ),
+    )
+
+    graduated = MineExports(
+        revision,
+        mine,
+        confirmed,
+        _policy(),
+        previous=review_bundle,
+    ).run()
+
+    failure_entries = tuple(
+        entry for entry in graduated.ledger.entries if entry.cluster_family_id is not None
+    )
+    assert failure_entries
+    assert all(entry.partition is not ExportPartition.REVIEW for entry in failure_entries)
+    assert graduated.developer_evals.cases
+    assert graduated.admission_holdout.cases
+
+
 def test_export_bundle_is_idempotent_and_content_addressed(tmp_path: Path) -> None:
     revision, mine, diagnosis = _inputs(tmp_path)
     exports = MineExports(revision, mine, diagnosis, _policy())

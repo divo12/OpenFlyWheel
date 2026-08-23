@@ -11,7 +11,7 @@ from pathlib import Path
 from pydantic import TypeAdapter
 
 from ofw.contracts import ComponentKind, HarnessRevision, HarnessRevisionId, Sha256Digest
-from ofw.diagnosis import DiagnosisResult, FailureCluster, read_snapshot
+from ofw.diagnosis import ClusterState, DiagnosisResult, FailureCluster, read_snapshot
 from ofw.mine import (
     MineResult,
     SnapshotObservation,
@@ -385,7 +385,25 @@ class MineExports:
     def _ledger_entry(self, admission: TraceAdmission) -> LedgerEntry:
         snapshot = read_snapshot(admission, self.mine)
         family_id = _trace_family(snapshot)
+        cluster = _cluster_for_trace(self.diagnosis, admission.trace_id)
+        if admission.partition is TracePartition.VERIFIED_FAILURE and (
+            cluster is None or cluster.state not in (ClusterState.CONFIRMED, ClusterState.TARGETED)
+        ):
+            return LedgerEntry(
+                admission.trace_id,
+                family_id,
+                None if cluster is None else ClusterFamilyId(cluster.id.value),
+                ExportPartition.REVIEW,
+                _snapshot_reference(admission),
+            )
         previous = self._previous_partition(family_id, admission.trace_id)
+        if (
+            previous is ExportPartition.REVIEW
+            and admission.partition is TracePartition.VERIFIED_FAILURE
+            and cluster is not None
+            and cluster.state in (ClusterState.CONFIRMED, ClusterState.TARGETED)
+        ):
+            previous = None
         if previous is not None:
             is_good = admission.partition is TracePartition.VERIFIED_GOOD
             if is_good != (previous is ExportPartition.TRAINING):
@@ -393,7 +411,6 @@ class MineExports:
                     LeakageErrorCode.FAMILY_CONFLICT,
                     family_id.value,
                 )
-            cluster = _cluster_for_trace(self.diagnosis, admission.trace_id)
             cluster_family = None if cluster is None else ClusterFamilyId(cluster.id.value)
             return LedgerEntry(
                 admission.trace_id,
@@ -410,7 +427,6 @@ class MineExports:
                 ExportPartition.TRAINING,
                 _snapshot_reference(admission),
             )
-        cluster = _cluster_for_trace(self.diagnosis, admission.trace_id)
         if cluster is None:
             return LedgerEntry(
                 admission.trace_id,
