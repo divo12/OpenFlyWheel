@@ -98,17 +98,35 @@ from ofw.mine import (
     MineErrorCode,
     MiningPolicy,
     ScoreName,
+    SnapshotContentReference,
     TracePartition,
     TraceQualityThreshold,
+    read_snapshot_content,
 )
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
+    ContentCaptureMode,
     LangfuseProject,
+    ObservationContentPolicy,
+    SecretEnvironmentVariable,
     TraceWindow,
 )
-from ofw.observability.langfuse.domain import CollectionResult
-from ofw.observability.langfuse.service import collect
+from ofw.observability.langfuse.domain import (
+    CollectionResult,
+    ObservationContent,
+    ObservationContentField,
+    ObservationContentHit,
+    ObservationContentMatch,
+    ObservationContentQuery,
+    ObservationContentReference,
+)
+from ofw.observability.langfuse.service import (
+    collect,
+    read_observation_content,
+    read_trace_observations,
+    search_observation_content,
+)
 from ofw.promotion import (
     ApprovalDecision,
     ApprovalRecord,
@@ -220,7 +238,6 @@ def fit(
     """Create a side-effect-free durable Fit campaign handle."""
     return FitCampaign(harness, bundle, benchmark_policy, policy, candidates)
 
-
 def serve(
     harnesses: Sequence[Harness],
     policy: SchedulerAutomationPolicy,
@@ -297,6 +314,7 @@ __all__ = [
     "CollectionResult",
     "CommandLoop",
     "CommandVerifier",
+    "ContentCaptureMode",
     "DockerCompose",
     "DiagnosisResult",
     "DiagnosisRun",
@@ -359,6 +377,13 @@ __all__ = [
     "MechanismKey",
     "MetricKind",
     "Money",
+    "ObservationContent",
+    "ObservationContentField",
+    "ObservationContentHit",
+    "ObservationContentMatch",
+    "ObservationContentPolicy",
+    "ObservationContentQuery",
+    "ObservationContentReference",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
@@ -401,6 +426,8 @@ __all__ = [
     "Severity",
     "SourceWindowId",
     "StageBudgets",
+    "SecretEnvironmentVariable",
+    "SnapshotContentReference",
     "Subagent",
     "Tool",
     "TraceWindow",
@@ -431,5 +458,9 @@ __all__ = [
     "ofw",
     "promote",
     "propagate_attributes",
+    "read_observation_content",
+    "read_snapshot_content",
+    "read_trace_observations",
+    "search_observation_content",
     "serve",
 ]

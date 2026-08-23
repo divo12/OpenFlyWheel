@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 _NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 _ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"[A-Z_][A-Z0-9_]*")
-LANGFUSE_CONNECTION_SCHEMA_VERSION = 1
+LANGFUSE_CONNECTION_SCHEMA_VERSION = 2
 
 
 class CollectionErrorCode(StrEnum):
@@ -35,6 +35,10 @@ class CollectionErrorCode(StrEnum):
     UNSUPPORTED_SCHEMA = "unsupported_schema"
     CURSOR_LOOP = "cursor_loop"
     UNSUPPORTED_LANGFUSE_VERSION = "unsupported_langfuse_version"
+    INVALID_CONTENT_POLICY = "invalid_content_policy"
+    INVALID_CONTENT_QUERY = "invalid_content_query"
+    CONTENT_NOT_CAPTURED = "content_not_captured"
+    MISSING_REDACTION_VALUE = "missing_redaction_value"
 
 
 class CollectionError(Exception):
@@ -57,6 +61,11 @@ class EnvironmentName:
             raise CollectionError(CollectionErrorCode.INVALID_ENVIRONMENT, self.value)
 
 
+class ContentCaptureMode(StrEnum):
+    METADATA_ONLY = "metadata_only"
+    REDACTED = "redacted"
+
+
 @dataclass(frozen=True, slots=True)
 class SecretEnvironmentVariable:
     value: str
@@ -64,6 +73,68 @@ class SecretEnvironmentVariable:
     def __post_init__(self) -> None:
         if _ENVIRONMENT_VARIABLE_PATTERN.fullmatch(self.value) is None:
             raise CollectionError(CollectionErrorCode.INVALID_ENVIRONMENT_VARIABLE, self.value)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationContentPolicy:
+    mode: ContentCaptureMode
+    maximum_bytes_per_field: int
+    secret_environment_variables: tuple[SecretEnvironmentVariable, ...]
+
+    def __post_init__(self) -> None:
+        typed_variables = all(
+            isinstance(variable, SecretEnvironmentVariable)
+            for variable in self.secret_environment_variables
+        )
+        if (
+            not isinstance(self.mode, ContentCaptureMode)
+            or not 16 <= self.maximum_bytes_per_field <= 1_048_576
+            or not typed_variables
+            or len(set(self.secret_environment_variables))
+            != len(self.secret_environment_variables)
+            or (
+                self.mode is ContentCaptureMode.METADATA_ONLY
+                and self.secret_environment_variables
+            )
+        ):
+            subject = (
+                self.mode.value
+                if isinstance(self.mode, ContentCaptureMode)
+                else repr(self.mode)
+            )
+            raise CollectionError(
+                CollectionErrorCode.INVALID_CONTENT_POLICY,
+                subject,
+            )
+
+    @classmethod
+    def metadata_only(cls) -> ObservationContentPolicy:
+        return cls(ContentCaptureMode.METADATA_ONLY, 16, ())
+
+    @classmethod
+    def redacted(
+        cls,
+        *,
+        maximum_bytes_per_field: int,
+        secret_environment_variables: tuple[SecretEnvironmentVariable, ...],
+    ) -> ObservationContentPolicy:
+        return cls(
+            ContentCaptureMode.REDACTED,
+            maximum_bytes_per_field,
+            secret_environment_variables,
+        )
+
+    def canonical_json(self) -> str:
+        variables = ",".join(
+            _quote(variable.value) for variable in self.secret_environment_variables
+        )
+        return (
+            "{"
+            f'"mode":{_quote(self.mode.value)},'
+            f'"maximum_bytes_per_field":{self.maximum_bytes_per_field},'
+            f'"secret_environment_variables":[{variables}]'
+            "}"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +175,7 @@ class LangfuseConnectionManifest:
     public_key_environment: SecretEnvironmentVariable
     secret_key_environment: SecretEnvironmentVariable
     allow_private_network: bool
+    content_policy: ObservationContentPolicy
 
     def canonical_json(self) -> str:
         return (
@@ -113,7 +185,8 @@ class LangfuseConnectionManifest:
             f'"environment":{_quote(self.environment.value)},'
             f'"public_key_environment":{_quote(self.public_key_environment.value)},'
             f'"secret_key_environment":{_quote(self.secret_key_environment.value)},'
-            f'"allow_private_network":{_boolean(self.allow_private_network)}'
+            f'"allow_private_network":{_boolean(self.allow_private_network)},'
+            f'"content_policy":{self.content_policy.canonical_json()}'
             "}"
         )
 
@@ -136,6 +209,7 @@ class LangfuseProject:
         public_key_environment: str = "LANGFUSE_PUBLIC_KEY",
         secret_key_environment: str = "LANGFUSE_SECRET_KEY",
         allow_private_network: bool = False,
+        content_policy: ObservationContentPolicy | None = None,
     ) -> LangfuseProject:
         selected_base_url = (
             base_url
@@ -149,10 +223,12 @@ class LangfuseProject:
         environment_name = EnvironmentName(environment)
         public_ref = SecretEnvironmentVariable(public_key_environment)
         secret_ref = SecretEnvironmentVariable(secret_key_environment)
+        selected_content_policy = content_policy or ObservationContentPolicy.metadata_only()
         payload = (
             f"{LANGFUSE_CONNECTION_SCHEMA_VERSION}\0{url.value}\0"
             f"{environment_name.value}\0"
-            f"{public_ref.value}\0{secret_ref.value}\0{allow_private_network}"
+            f"{public_ref.value}\0{secret_ref.value}\0{allow_private_network}\0"
+            f"{selected_content_policy.canonical_json()}"
         )
         connection_id = LangfuseConnectionId(f"lf_{hashlib.sha256(payload.encode()).hexdigest()}")
         return cls(
@@ -163,6 +239,7 @@ class LangfuseProject:
                 public_key_environment=public_ref,
                 secret_key_environment=secret_ref,
                 allow_private_network=allow_private_network,
+                content_policy=selected_content_policy,
             )
         )
 
@@ -187,6 +264,27 @@ class LangfuseProject:
                 self._manifest.secret_key_environment.value,
             )
         return BasicCredentials(public_key=public_key, secret_key=secret_key)
+
+    def redaction_values(self) -> tuple[str, ...]:
+        credential_variables = (
+            self._manifest.public_key_environment,
+            self._manifest.secret_key_environment,
+        )
+        values: list[str] = []
+        for variable in credential_variables:
+            value = os.environ.get(variable.value)
+            if value and value not in values:
+                values.append(value)
+        for variable in self._manifest.content_policy.secret_environment_variables:
+            value = os.environ.get(variable.value)
+            if not value:
+                raise CollectionError(
+                    CollectionErrorCode.MISSING_REDACTION_VALUE,
+                    variable.value,
+                )
+            if value not in values:
+                values.append(value)
+        return tuple(values)
 
 
 @dataclass(frozen=True, slots=True)
