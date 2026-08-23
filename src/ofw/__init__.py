@@ -94,6 +94,11 @@ from ofw.fit import (
     FitPolicy,
     FitResult,
     GateReason,
+    PairedEvidence,
+    PairedEvidencePolicy,
+    StatisticalGateMode,
+    paired_evidence,
+    paired_evidence_passes,
 )
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.mine import (
@@ -366,6 +371,8 @@ __all__ = [
     "HeartbeatReport",
     "FunctionName",
     "GateReason",
+    "PairedEvidence",
+    "PairedEvidencePolicy",
     "Langfuse",
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
@@ -434,6 +441,7 @@ __all__ = [
     "Severity",
     "SourceWindowId",
     "StageBudgets",
+    "StatisticalGateMode",
     "SecretEnvironmentVariable",
     "SnapshotContentReference",
     "Subagent",
@@ -464,6 +472,8 @@ __all__ = [
     "is_default_export_span",
     "observe",
     "ofw",
+    "paired_evidence",
+    "paired_evidence_passes",
     "promote",
     "propagate_attributes",
     "read_observation_content",

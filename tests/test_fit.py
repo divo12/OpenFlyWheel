@@ -6,6 +6,7 @@ import hashlib
 import subprocess
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,6 +15,7 @@ from ofw import (
     CandidateBuilder,
     CandidateEvidence,
     CandidatePolicy,
+    CaseDelta,
     ChangePrediction,
     ClusterId,
     ComponentKind,
@@ -26,10 +28,12 @@ from ofw import (
     Harness,
     LocalProcess,
     ModuleName,
+    PairedEvidencePolicy,
     ProcessLimits,
     PythonEntrypoint,
     PythonLoop,
     PythonVerifier,
+    StatisticalGateMode,
     Tool,
     ofw,
 )
@@ -52,7 +56,12 @@ from ofw.exports import (
     SnapshotReference,
     TraceFamilyId,
 )
-from ofw.fit import AdmissionState, read_admission_record
+from ofw.fit import (
+    AdmissionState,
+    paired_evidence,
+    paired_evidence_passes,
+    read_admission_record,
+)
 from ofw.observability.langfuse.domain import TraceId
 
 
@@ -238,7 +247,109 @@ def _fit_policy() -> FitPolicy:
         maximum_cost_delta=0.0,
         minimum_selection_pass_rate=1.0,
         minimum_admission_pass_rate=1.0,
+        paired_evidence_policy=PairedEvidencePolicy(
+            StatisticalGateMode.EFFECT_SIZE_ONLY,
+            0,
+            1.0,
+        ),
     )
+
+
+def _exact_fit_policy() -> FitPolicy:
+    return FitPolicy(
+        minimum_target_delta=0.5,
+        minimum_regression_score=1.0,
+        maximum_critical_regressions=0,
+        maximum_latency_delta=10.0,
+        maximum_cost_delta=0.0,
+        minimum_selection_pass_rate=1.0,
+        minimum_admission_pass_rate=1.0,
+        paired_evidence_policy=PairedEvidencePolicy(
+            StatisticalGateMode.EXACT_SIGN_TEST,
+            5,
+            0.05,
+        ),
+    )
+
+
+def _pass_delta(
+    index: int,
+    baseline: bool,
+    candidate: bool,
+    *,
+    synthetic: bool = False,
+) -> CaseDelta:
+    return CaseDelta(
+        f"case-{index}",
+        ExportPartition.FRONTIER,
+        False,
+        synthetic,
+        1.0,
+        baseline,
+        candidate,
+        int(candidate) - int(baseline),
+        float(candidate) - float(baseline),
+        0.0,
+        0.0,
+    )
+
+
+def test_exact_paired_evidence_uses_discordant_real_trials() -> None:
+    evidence = paired_evidence(
+        (
+            *(_pass_delta(index, False, True) for index in range(5)),
+            _pass_delta(5, True, True),
+            _pass_delta(6, False, True, synthetic=True),
+        )
+    )[0]
+    policy = PairedEvidencePolicy(StatisticalGateMode.EXACT_SIGN_TEST, 5, 0.05)
+
+    assert evidence.wins == 5
+    assert evidence.losses == 0
+    assert evidence.ties == 1
+    assert evidence.discordant_pairs == 5
+    assert evidence.exact_one_sided_probability == pytest.approx(0.03125)
+    assert paired_evidence_passes(evidence, 1, policy)
+    assert not paired_evidence_passes(evidence, 2, policy)
+    ties = paired_evidence((_pass_delta(7, True, True),))[0]
+    assert ties.exact_one_sided_probability == 1.0
+    assert not paired_evidence_passes(ties, 1, policy)
+
+
+def test_paired_evidence_policy_rejects_a_raw_string_mode() -> None:
+    raw_mode = cast(StatisticalGateMode, "exact_sign_test")
+
+    with pytest.raises(ValueError):
+        PairedEvidencePolicy(raw_mode, 0, 1.0)
+
+
+def test_exact_paired_gate_admits_repeated_target_wins(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    revision = harness.current_revision
+    assert revision is not None
+    candidate = _candidate(
+        revision,
+        "def run(value: str) -> str:\n"
+        "    return value + (' FIXED' if 'regression' not in value else '')\n",
+        "Repeated target fix.",
+    )
+
+    result = FitCampaign(
+        harness,
+        _bundle(revision),
+        BenchmarkPolicy(5, 12, 0, 0.25),
+        _exact_fit_policy(),
+        (candidate,),
+    ).run()
+
+    outcome = result.outcomes[0]
+    frontier = next(
+        item for item in outcome.paired_evidence if item.partition is ExportPartition.FRONTIER
+    )
+    assert result.winner_id == candidate.candidate.id
+    assert frontier.wins == 5
+    assert frontier.exact_one_sided_probability == pytest.approx(0.03125)
+    candidate.workspace.close()
 
 
 def test_paired_gates_reject_regression_and_admit_one_winner(tmp_path: Path) -> None:

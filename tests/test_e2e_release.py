@@ -49,6 +49,7 @@ from ofw import (
     MiningPolicy,
     ModuleName,
     Money,
+    PairedEvidencePolicy,
     ProcessLimits,
     PromotionJobHandler,
     PromotionMode,
@@ -65,6 +66,7 @@ from ofw import (
     ScoreName,
     SourceWindowId,
     StageBudgets,
+    StatisticalGateMode,
     Tool,
     TraceQualityThreshold,
     TraceWindow,
@@ -414,7 +416,16 @@ def test_offline_trace_to_review_release(
                 0.0,
             ),
         )
-        fit_policy = FitPolicy(0.5, 1.0, 0, 10.0, 0.0, 1.0, 1.0)
+        fit_policy = FitPolicy(
+            0.5,
+            1.0,
+            0,
+            10.0,
+            0.0,
+            1.0,
+            1.0,
+            PairedEvidencePolicy(StatisticalGateMode.EFFECT_SIZE_ONLY, 0, 1.0),
+        )
         campaign = ofw.fit(
             harness,
             bundle,

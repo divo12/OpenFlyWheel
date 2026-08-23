@@ -65,12 +65,42 @@ class GateReason(StrEnum):
     ADMISSION = "admission"
     PARETO = "pareto"
     COST = "cost"
+    STATISTICAL_EVIDENCE = "statistical_evidence"
+
+
+class StatisticalGateMode(StrEnum):
+    EFFECT_SIZE_ONLY = "effect_size_only"
+    EXACT_SIGN_TEST = "exact_sign_test"
 
 
 class AdmissionState(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class PairedEvidencePolicy:
+    mode: StatisticalGateMode
+    minimum_discordant_pairs: int
+    maximum_probability: float
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.mode, StatisticalGateMode)
+            or self.minimum_discordant_pairs < 0
+            or not math.isfinite(self.maximum_probability)
+            or not 0 < self.maximum_probability <= 1
+            or (
+                self.mode is StatisticalGateMode.EFFECT_SIZE_ONLY
+                and (self.minimum_discordant_pairs != 0 or self.maximum_probability != 1.0)
+            )
+            or (
+                self.mode is StatisticalGateMode.EXACT_SIGN_TEST
+                and self.minimum_discordant_pairs < 1
+            )
+        ):
+            raise ValueError("invalid paired evidence policy")
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +112,7 @@ class FitPolicy:
     maximum_cost_delta: float
     minimum_selection_pass_rate: float
     minimum_admission_pass_rate: float
+    paired_evidence_policy: PairedEvidencePolicy
 
     def __post_init__(self) -> None:
         values = (
@@ -112,6 +143,9 @@ class FitPolicy:
                         str(self.maximum_cost_delta),
                         str(self.minimum_selection_pass_rate),
                         str(self.minimum_admission_pass_rate),
+                        self.paired_evidence_policy.mode.value,
+                        str(self.paired_evidence_policy.minimum_discordant_pairs),
+                        str(self.paired_evidence_policy.maximum_probability),
                     )
                 ).encode()
             ).hexdigest()
@@ -134,6 +168,18 @@ class CaseDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class PairedEvidence:
+    partition: ExportPartition
+    wins: int
+    losses: int
+    ties: int
+    discordant_pairs: int
+    net_pass_delta: float
+    candidate_win_rate: float
+    exact_one_sided_probability: float
+
+
+@dataclass(frozen=True, slots=True)
 class ManifestAttribution:
     predicted_quality_delta: float
     actual_quality_delta: float
@@ -153,6 +199,7 @@ class CandidateOutcome:
     reason: GateReason
     developer_result: BenchmarkResult
     deltas: tuple[CaseDelta, ...]
+    paired_evidence: tuple[PairedEvidence, ...]
     critical_regressions: int
     target_delta: float
     regression_score: float
@@ -278,6 +325,7 @@ class FitCampaign:
                 champion,
                 candidate_result,
                 self.fit_policy,
+                len(self.candidates),
             )
             outcomes = (*outcomes, outcome)
             if outcome.status is CandidateStatus.SURVIVED:
@@ -438,9 +486,7 @@ class FitCampaign:
 
     def _validate_inputs(self, champion_revision: HarnessRevision) -> Sha256Digest:
         try:
-            revision_manifest_digest = digest_bytes(
-                champion_revision.manifest_path.read_bytes()
-            )
+            revision_manifest_digest = digest_bytes(champion_revision.manifest_path.read_bytes())
             candidate_fingerprints = tuple(
                 CandidateInputFingerprint(
                     build.candidate.id,
@@ -513,8 +559,10 @@ def _developer_outcome(
     baseline: BenchmarkResult,
     candidate: BenchmarkResult,
     policy: FitPolicy,
+    comparison_count: int,
 ) -> CandidateOutcome:
     deltas = _case_deltas(baseline, candidate)
+    evidence = paired_evidence(deltas)
     critical_regressions = sum(
         delta.critical
         and not delta.synthetic
@@ -557,6 +605,8 @@ def _developer_outcome(
         regression,
         latency,
         cost,
+        evidence,
+        comparison_count,
         policy,
     )
     status = CandidateStatus.SURVIVED if reason is GateReason.PASSED else CandidateStatus.REJECTED
@@ -566,6 +616,7 @@ def _developer_outcome(
         reason,
         candidate,
         deltas,
+        evidence,
         critical_regressions,
         target,
         regression,
@@ -582,6 +633,8 @@ def _developer_gate(
     regression_score: float,
     latency_delta: float,
     cost_delta: float,
+    evidence: tuple[PairedEvidence, ...],
+    comparison_count: int,
     policy: FitPolicy,
 ) -> GateReason:
     if result.status is not BenchmarkStatus.COMPLETE:
@@ -592,11 +645,81 @@ def _developer_gate(
         return GateReason.REGRESSION_SCORE
     if target_delta < policy.minimum_target_delta:
         return GateReason.TARGET_DELTA
+    frontier = next(
+        (item for item in evidence if item.partition is ExportPartition.FRONTIER),
+        None,
+    )
+    if policy.paired_evidence_policy.mode is StatisticalGateMode.EXACT_SIGN_TEST and (
+        frontier is None
+        or not paired_evidence_passes(
+            frontier,
+            comparison_count,
+            policy.paired_evidence_policy,
+        )
+    ):
+        return GateReason.STATISTICAL_EVIDENCE
     if latency_delta > policy.maximum_latency_delta:
         return GateReason.LATENCY
     if cost_delta > policy.maximum_cost_delta:
         return GateReason.COST
     return GateReason.PASSED
+
+
+def paired_evidence(deltas: tuple[CaseDelta, ...]) -> tuple[PairedEvidence, ...]:
+    real = tuple(delta for delta in deltas if not delta.synthetic)
+    partitions = tuple(
+        partition
+        for partition in ExportPartition
+        if any(delta.partition is partition for delta in real)
+    )
+    return tuple(_partition_evidence(partition, real) for partition in partitions)
+
+
+def paired_evidence_passes(
+    evidence: PairedEvidence,
+    comparison_count: int,
+    policy: PairedEvidencePolicy,
+) -> bool:
+    if comparison_count < 1:
+        raise ValueError("comparison count must be positive")
+    if policy.mode is StatisticalGateMode.EFFECT_SIZE_ONLY:
+        return True
+    return (
+        evidence.discordant_pairs >= policy.minimum_discordant_pairs
+        and evidence.wins > evidence.losses
+        and evidence.exact_one_sided_probability <= policy.maximum_probability / comparison_count
+    )
+
+
+def _partition_evidence(
+    partition: ExportPartition,
+    deltas: tuple[CaseDelta, ...],
+) -> PairedEvidence:
+    selected = tuple(delta for delta in deltas if delta.partition is partition)
+    wins = sum(delta.candidate_passed and not delta.baseline_passed for delta in selected)
+    losses = sum(delta.baseline_passed and not delta.candidate_passed for delta in selected)
+    ties = len(selected) - wins - losses
+    discordant = wins + losses
+    probability = _exact_one_sided_probability(wins, discordant)
+    return PairedEvidence(
+        partition,
+        wins,
+        losses,
+        ties,
+        discordant,
+        0.0 if not selected else (wins - losses) / len(selected),
+        0.5 if discordant == 0 else wins / discordant,
+        probability,
+    )
+
+
+def _exact_one_sided_probability(wins: int, discordant_pairs: int) -> float:
+    if discordant_pairs == 0:
+        return 1.0
+    numerator = sum(
+        math.comb(discordant_pairs, successes) for successes in range(wins, discordant_pairs + 1)
+    )
+    return numerator / (1 << discordant_pairs)
 
 
 def _case_deltas(
