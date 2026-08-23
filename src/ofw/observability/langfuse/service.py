@@ -13,6 +13,7 @@ from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
+    ContentCaptureMode,
     LangfuseProject,
     TraceWindow,
 )
@@ -21,6 +22,10 @@ from ofw.observability.langfuse.domain import (
     CollectionCapabilityReason,
     CollectionResult,
     CollectionSyncId,
+    ObservationContent,
+    ObservationContentHit,
+    ObservationContentQuery,
+    ObservationContentReference,
     ObservationId,
     ObservationRecord,
     PageCursor,
@@ -109,6 +114,7 @@ def collect(
             snapshot_digest=snapshot_digest,
             capability=capability,
             store_path=selected_store_path,
+            content_policy=revision.observability.content_policy,
         )
     finally:
         store.close()
@@ -326,3 +332,49 @@ def _snapshot_digest(
         )
     )
     return Sha256Digest(f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}")
+
+
+def search_observation_content(
+    collection: CollectionResult,
+    query: ObservationContentQuery,
+) -> tuple[ObservationContentHit, ...]:
+    _require_captured_content(collection)
+    store = CollectionStore(collection.store_path)
+    try:
+        return store.search_content(collection.observation_sync_id, query)
+    finally:
+        store.close()
+
+
+def read_trace_observations(
+    collection: CollectionResult,
+    trace_id: TraceId,
+    limit: int,
+) -> tuple[ObservationRecord, ...]:
+    if not 1 <= limit <= 1000:
+        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, str(limit))
+    store = CollectionStore(collection.store_path)
+    try:
+        return store.trace_observations(collection.observation_sync_id, trace_id, limit)
+    finally:
+        store.close()
+
+
+def read_observation_content(
+    collection: CollectionResult,
+    reference: ObservationContentReference,
+) -> ObservationContent:
+    _require_captured_content(collection)
+    store = CollectionStore(collection.store_path)
+    try:
+        return store.read_content(collection.observation_sync_id, reference)
+    finally:
+        store.close()
+
+
+def _require_captured_content(collection: CollectionResult) -> None:
+    if collection.content_policy.mode is ContentCaptureMode.METADATA_ONLY:
+        raise CollectionError(
+            CollectionErrorCode.CONTENT_NOT_CAPTURED,
+            str(collection.observation_sync_id.value),
+        )

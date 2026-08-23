@@ -5,14 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
 from ofw.contracts import Sha256Digest
-from ofw.observability.langfuse.contracts import CollectionError, CollectionErrorCode
+from ofw.observability.langfuse.contracts import (
+    CollectionError,
+    CollectionErrorCode,
+    ContentCaptureMode,
+    ObservationContentPolicy,
+)
 from ofw.observability.langfuse.domain import (
     JsonDocument,
+    ObservationContent,
+    ObservationContentReference,
     ObservationId,
     ObservationLevel,
     ObservationPage,
@@ -31,6 +39,12 @@ from ofw.observability.langfuse.domain import (
 )
 
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+_EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
+_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
+_REDACTED_EMAIL = "[REDACTED_EMAIL]"
+_REDACTED_BEARER = "Bearer [REDACTED_TOKEN]"
+_REDACTED_SECRET = "[REDACTED_SECRET]"  # nosec B105
+_TRUNCATED = "[TRUNCATED]"
 
 
 class HealthWire(BaseModel):
@@ -85,6 +99,8 @@ class ObservationWire(BaseModel):
     tags: tuple[str, ...] | None = None
     release: str | None = None
     trace_name: str | None = Field(default=None, alias="traceName")
+    input: str | None = None
+    output: str | None = None
 
 
 class ObservationMetaWire(BaseModel):
@@ -99,10 +115,27 @@ class ObservationResponseWire(BaseModel):
     data: tuple[ObservationWire, ...]
     meta: ObservationMetaWire
 
-    def normalize(self) -> ObservationPage:
+    def normalize(
+        self,
+        policy: ObservationContentPolicy | None = None,
+        redaction_values: tuple[str, ...] = (),
+    ) -> ObservationPage:
+        selected = policy or ObservationContentPolicy.metadata_only()
+        normalized = tuple(
+            _normalize_observation_with_content(record, selected, redaction_values)
+            for record in self.data
+        )
         return ObservationPage(
-            records=tuple(_normalize_observation(record) for record in self.data),
+            records=tuple(item.record for item in normalized),
             cursor=None if self.meta.cursor is None else PageCursor(self.meta.cursor),
+            contents=_unique_contents(
+                tuple(
+                    content
+                    for item in normalized
+                    for content in (item.input_content, item.output_content)
+                    if content is not None
+                )
+            ),
         )
 
 
@@ -161,7 +194,36 @@ class ScoreResponseWire(BaseModel):
         )
 
 
-def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
+@dataclass(frozen=True, slots=True)
+class _NormalizedObservation:
+    record: ObservationRecord
+    input_content: ObservationContent | None
+    output_content: ObservationContent | None
+
+
+def _normalize_observation_with_content(
+    wire: ObservationWire,
+    policy: ObservationContentPolicy,
+    redaction_values: tuple[str, ...],
+) -> _NormalizedObservation:
+    input_content = _observation_content(wire.input, policy, redaction_values)
+    output_content = _observation_content(wire.output, policy, redaction_values)
+    return _NormalizedObservation(
+        _normalize_observation(
+            wire,
+            None if input_content is None else input_content.reference,
+            None if output_content is None else output_content.reference,
+        ),
+        input_content,
+        output_content,
+    )
+
+
+def _normalize_observation(
+    wire: ObservationWire,
+    input_content: ObservationContentReference | None,
+    output_content: ObservationContentReference | None,
+) -> ObservationRecord:
     metadata = _revision_document(wire.metadata)
     usage = _json_document(wire.usage_details)
     costs = _json_document(wire.cost_details)
@@ -203,6 +265,8 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
             wire.tags,
             wire.release,
             wire.trace_name,
+            None if input_content is None else str(input_content.digest),
+            None if output_content is None else str(output_content.digest),
         ),
         ensure_ascii=False,
         separators=(",", ":"),
@@ -245,7 +309,44 @@ def _normalize_observation(wire: ObservationWire) -> ObservationRecord:
         input_price=wire.input_price,
         output_price=wire.output_price,
         total_price=wire.total_price,
+        input_content=input_content,
+        output_content=output_content,
     )
+
+
+def _observation_content(
+    value: str | None,
+    policy: ObservationContentPolicy,
+    redaction_values: tuple[str, ...],
+) -> ObservationContent | None:
+    if value is None or policy.mode is ContentCaptureMode.METADATA_ONLY:
+        return None
+    redacted = value
+    for secret in sorted(redaction_values, key=len, reverse=True):
+        if secret:
+            redacted = redacted.replace(secret, _REDACTED_SECRET)
+    redacted = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, redacted)
+    redacted = _BEARER_PATTERN.sub(_REDACTED_BEARER, redacted)
+    bounded, truncated = _bounded_utf8(redacted, policy.maximum_bytes_per_field)
+    reference = ObservationContentReference.for_text(bounded, truncated=truncated)
+    return ObservationContent(reference, bounded)
+
+
+def _bounded_utf8(value: str, maximum_bytes: int) -> tuple[str, bool]:
+    encoded = value.encode()
+    if len(encoded) <= maximum_bytes:
+        return value, False
+    marker = _TRUNCATED.encode()
+    prefix = encoded[: maximum_bytes - len(marker)].decode(errors="ignore")
+    return prefix + _TRUNCATED, True
+
+
+def _unique_contents(contents: tuple[ObservationContent, ...]) -> tuple[ObservationContent, ...]:
+    unique: list[ObservationContent] = []
+    for content in contents:
+        if all(existing.reference.digest != content.reference.digest for existing in unique):
+            unique.append(content)
+    return tuple(unique)
 
 
 def _normalize_score(wire: ScoreWire) -> ScoreRecord:
