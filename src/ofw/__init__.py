@@ -66,10 +66,13 @@ from ofw.diagnosis import (
     EvidenceAnchor,
     EvidenceAnchorKind,
     FailureCluster,
+    HermesAgentVersion,
+    HermesDiagnoser,
     MechanismKey,
     PythonDiagnoser,
     Severity,
     TraceDiagnosis,
+    hermes_python_command,
 )
 from ofw.exports import (
     ClusterFamilyId,
@@ -369,6 +372,9 @@ __all__ = [
     "HeartbeatEvidence",
     "HeartbeatOwner",
     "HeartbeatReport",
+    "HermesAgentVersion",
+    "HermesDiagnoser",
+    "hermes_python_command",
     "FunctionName",
     "GateReason",
     "PairedEvidence",

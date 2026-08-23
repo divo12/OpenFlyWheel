@@ -91,6 +91,32 @@ AHE’s ablations attribute gains to tools, middleware, and long-term memory rat
 
 **OFW decision:** retain file-level editable components and frozen verifier/runtime/model boundaries. The new work will not add a prompt-only optimizer or weight fine-tuning.
 
+### 3.3 Judgment Labs: search, verify, adapt
+
+Judgment Labs presents a production workflow centered on behavior rather than isolated traces: start from a reported incident, search for similar trajectories, quantify recurrence and affected cohorts, narrow a root cause, turn the behavior into an agent test, compare runs, and continuously monitor recurrence. Its public site also exposes the agent through Slack and MCP rather than requiring users to operate a separate dashboard. These are vendor product claims, not independently reproduced results, but the workflow is concrete and maps closely to OFW’s control-plane goal. [Judgment Labs](https://www.judgmentlabs.ai/)
+
+Its Agent Judge article argues that a long-horizon evaluator needs three capabilities: targeted search over queryable trajectories, verification against durable environment state, and adaptation of versioned rubrics from human feedback and judge disagreement. Judgment reports that its refined internal agentic judge improved from 0.76 to 0.86 accuracy over five rubric refinements on an internal production-traffic hallucination dataset. Because the dataset and implementation are not public, OFW treats the numbers as directional vendor evidence rather than a benchmark claim. [Judgment Labs Agent Judge](https://www.judgmentlabs.ai/blogs/agent-judge-solving-long-context-evaluations)
+
+Judgment’s ABM perspective adds four operational stages: capture permissioned production trajectories, bucket recurring behavior/failure modes, mine preferences into small operational rubrics, and only then turn validated scores into rewards. It explicitly warns that generic judges and static rubrics drift away from production behavior. [Judgment Labs, “Climbing the Hills That Matter”](https://www.judgmentlabs.ai/blogs/climbing-the-hills-that-matter)
+
+**OFW decision:** adopt the workflow, not the product surface. Failure clusters remain behavior objects with recurrence and evidence. Agent-generated diagnoses remain proposals. Environment verification will require explicit read-only source-of-truth connectors. Rubric evolution is deferred until OFW has human labels and disagreement data to validate it.
+
+### 3.4 Using Hermes effectively as a mining agent
+
+Hermes provides non-interactive one-shot execution, explicit model/provider selection, toolset restriction, isolated worktrees, skills, subagents, batch trajectory generation, and an Azure Foundry provider. Its own architecture guidance recommends capabilities at the edge and warns against third-party integrations in the core. [Hermes CLI documentation](https://hermes-agent.nousresearch.com/docs/user-guide/cli), [Hermes providers](https://hermes-agent.nousresearch.com/docs/integrations/providers), [Hermes source](https://github.com/NousResearch/hermes-agent)
+
+The installed Chorus environment exposes `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`, and `AZURE_OPENAI_DEPLOYMENT`; Hermes’s bundled Azure Foundry profile expects the equivalent Foundry key/base URL plus an explicit model. OFW must not read, copy, persist, or log these secret values. The operator may map them in the parent process before launching OFW/Hermes.
+
+The safe integration is a narrow diagnoser adapter:
+
+1. OFW validates registered asset content against the immutable harness revision, then builds an in-memory evidence packet with the trace snapshot and those assets.
+2. OFW embeds the snapshot and registered component contents into one bounded evidence prompt and sends it over stdin to an audited Hermes 0.20.0 Python bridge. A disposable `HERMES_HOME`, safe mode, the built-in compressor, and the restricted context-engine toolset leave the model with no filesystem, terminal, browser, web, memory, skill, plugin, or subagent tools.
+3. Provider, model, reasoning level, Hermes version, prompt version, timeout, and prompt budget are fingerprinted.
+4. Hermes returns one `TraceDiagnosis` JSON proposal. Invalid output, timeout, nonexistent evidence anchors, or component mismatch becomes an abstention.
+5. Hermes never confirms a cluster, creates an eval, sees holdout payloads, edits the production repository, or promotes a candidate.
+
+This design gets Judgment-style targeted investigation and AHE-style component inspection without coupling OFW core to Hermes internals. A later batch coordinator can give Hermes a proposer-visible experience index and allow bounded subagents, but only after cost and information-flow controls are proven.
+
 ## 4. Paired offline comparison and online A/B testing
 
 ### 4.1 Offline replay is paired evaluation, not a production A/B test
@@ -123,7 +149,8 @@ LangSmith’s comparative evaluation API can randomize answer order to mitigate 
 | Failure attribution | Typed mechanisms, components, source traces, observation/score anchors, lineage | No human/independent confirmation transition | PR14 |
 | Dataset leakage | Family-level immutable ledger and one-shot admission | No change required | Preserve |
 | Trials | Repeat index and paired attempt identity exist | No uncertainty or discordant-pair report | PR15: exact paired evidence |
-| Candidate tuning | File allowlist, manifest, expected effects, full result manifests | No layered next-iteration index of feedback/raw evidence | PR16: experience index |
+| Candidate tuning | File allowlist, manifest, expected effects, full result manifests | No layered next-iteration index of feedback/raw evidence | PR17: experience index |
+| Agentic diagnosis | Python diagnoser over one immutable snapshot | No safe external agent adapter for targeted component inspection | PR16: sandboxed Hermes diagnoser |
 | Judge quality | Frozen Python/command verifiers | No calibrated model-judge adapter | Defer until a real adapter is requested |
 | Implicit dissatisfaction | Metadata/status/scores collected; content minimized | Corrections/rephrasing/abandonment unavailable and sensitive | Defer behind opt-in content policy |
 | Online A/B | Offline pairing, PR/deploy adapter, post-monitor job type | No random exposure or production outcome contract | Defer until deployment owner supplies traffic/outcomes |
@@ -144,14 +171,22 @@ LangSmith’s comparative evaluation API can randomize answer order to mitigate 
 - Require minimum discordant evidence and maximum probability only in exact mode; preserve critical-regression and cost/latency gates.
 - TDD: all ties, one-sided wins, symmetric evidence, insufficient evidence, repeated stochastic trials, and policy digest/cache binding.
 
-### PR16 — Drill-down optimization experience index
+### PR16 — Sandboxed Hermes diagnosis proposals
+
+- Add a typed `HermesDiagnoser` that invokes a pinned one-shot command through the existing execution boundary.
+- Validate and read only connected harness assets, then serialize them with the immutable trace snapshot into an in-memory evidence packet.
+- Force an isolated Hermes home and safe mode with an empty effective tool surface; pass the bounded prompt over stdin rather than CLI arguments, validate the final response as `TraceDiagnosis`, and fail closed to abstention.
+- Keep credentials inherited and out of manifests/logs; fingerprint command, provider, model, reasoning, Hermes version, timeout, prompt protocol, and prompt budget.
+- TDD: component-only visibility, no source mutation, typed proposal, invalid output/timeout abstention, fingerprint drift.
+
+### PR17 — Drill-down optimization experience index
 
 - Write one content-bound experience manifest per Fit campaign.
 - Index cluster/source trace/snapshot, case partition, baseline/candidate verdict, all verifier feedback, prediction error, and raw benchmark result paths.
 - Validate the index on cached Fit reads and expose a typed reader for provider-specific proposers.
 - TDD: feedback preserved byte-for-byte, source trace linkage, rejected/winner histories, artifact tamper rejection, no holdout payload copied into proposer-visible fields.
 
-### PR17 — Research-backed end-to-end release update
+### PR18 — Research-backed end-to-end release update
 
 - Update the offline trace-to-review fixture to confirm clusters, emit paired evidence, and validate the experience index.
 - Re-run full typing, security, package, and coverage gates.
@@ -193,9 +228,15 @@ LangSmith’s comparative evaluation API can randomize answer order to mitigate 
 24. [Judging the Judges](https://arxiv.org/abs/2406.07791)
 25. [Model evaluation and selection](https://arxiv.org/abs/1811.12808)
 26. [Trajectory-Aware Comprehensive Evaluation](https://arxiv.org/abs/2602.21230)
+27. [Judgment Labs](https://www.judgmentlabs.ai/)
+28. [Judgment Labs Agent Judge](https://www.judgmentlabs.ai/blogs/agent-judge-solving-long-context-evaluations)
+29. [Judgment Labs: Climbing the Hills That Matter](https://www.judgmentlabs.ai/blogs/climbing-the-hills-that-matter)
+30. [Hermes CLI documentation](https://hermes-agent.nousresearch.com/docs/user-guide/cli)
+31. [Hermes providers](https://hermes-agent.nousresearch.com/docs/integrations/providers)
+32. [Hermes Agent source](https://github.com/NousResearch/hermes-agent)
 
 ## Methodology and confidence
 
-The research used 12 search queries and deep-read 18 primary papers or official documentation pages. Product-documentation claims are treated as descriptions of product behavior, not independent empirical evidence. Empirical claims come from papers and are reported with their study scope. The design recommendations are OFW inferences, explicitly labeled as decisions above.
+The research used 16 search queries and deep-read 24 primary papers, official documentation pages, or requested vendor materials. Product-documentation claims are treated as descriptions of product behavior, not independent empirical evidence. Judgment Labs’s internal benchmark is explicitly labeled vendor-reported. Empirical claims from papers are reported with their study scope. The design recommendations are OFW inferences, explicitly labeled as decisions above.
 
 Confidence is high for the three immediate gaps because each is supported by multiple independent sources and directly observable in the current code. Confidence is medium for implicit dissatisfaction mining because the strongest recent evidence uses content that OFW intentionally does not collect. Confidence is low for a generic online A/B implementation without a concrete deployment/traffic owner; it is therefore deferred.
