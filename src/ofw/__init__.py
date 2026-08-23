@@ -27,6 +27,18 @@ from ofw.contracts import (
     WorkspaceFile,
 )
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
+from ofw.mine import (
+    Mine,
+    MineError,
+    MineErrorCode,
+    MineResult,
+    MiningPolicy,
+    ScoreName,
+    SnapshotContentReference,
+    TracePartition,
+    TraceQualityThreshold,
+    read_snapshot_content,
+)
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
@@ -95,6 +107,8 @@ class _OfwNamespace:
     CanaryCase = CanaryCase
     CaseId = CaseId
     ServiceName = ServiceName
+    MiningPolicy = MiningPolicy
+    ScoreName = ScoreName
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -130,6 +144,13 @@ class _OfwNamespace:
     ) -> ObservationContent:
         return read_observation_content(collection, reference)
 
+    def read_snapshot_content(
+        self,
+        result: MineResult,
+        reference: SnapshotContentReference,
+    ) -> ObservationContent:
+        return read_snapshot_content(result, reference)
+
 
 ofw = _OfwNamespace()
 
@@ -162,6 +183,10 @@ __all__ = [
     "LocalProcess",
     "ModelFingerprint",
     "ModuleName",
+    "Mine",
+    "MineError",
+    "MineErrorCode",
+    "MiningPolicy",
     "ObservationContent",
     "ObservationContentField",
     "ObservationContentHit",
@@ -178,12 +203,16 @@ __all__ = [
     "RunErrorCode",
     "RunResult",
     "RunStatus",
+    "ScoreName",
     "Sha256Digest",
     "ServiceName",
     "SecretEnvironmentVariable",
+    "SnapshotContentReference",
     "Subagent",
     "Tool",
     "TraceWindow",
+    "TracePartition",
+    "TraceQualityThreshold",
     "VerifierResult",
     "VerifierVerdict",
     "WorkspaceFile",
@@ -195,6 +224,7 @@ __all__ = [
     "ofw",
     "propagate_attributes",
     "read_observation_content",
+    "read_snapshot_content",
     "read_trace_observations",
     "search_observation_content",
 ]

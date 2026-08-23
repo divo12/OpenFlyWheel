@@ -100,6 +100,7 @@ class Harness:
     _execution: ExecutionEnvironment | None = field(default=None, init=False, repr=False)
     _lifecycle: LifecycleAdapter | None = field(default=None, init=False, repr=False)
     _verifiers: list[VerifierAdapter] = field(default_factory=list, init=False, repr=False)
+    _current_revision: HarnessRevision | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if _NAME_PATTERN.fullmatch(self.name) is None:
@@ -112,6 +113,7 @@ class Harness:
         return self
 
     def connect_tools(self, *tools: Tool) -> Harness:
+        self._current_revision = None
         for tool in tools:
             if any(
                 registration.component is ComponentKind.TOOL and registration.name == tool.name
@@ -126,6 +128,7 @@ class Harness:
         return self
 
     def connect_subagents(self, *subagents: Subagent) -> Harness:
+        self._current_revision = None
         for subagent in subagents:
             if any(
                 registration.component is ComponentKind.SUBAGENT
@@ -146,14 +149,17 @@ class Harness:
         return self
 
     def connect_observability(self, project: LangfuseProject) -> Harness:
+        self._current_revision = None
         self._observability = project
         return self
 
     def connect_execute(self, environment: ExecutionEnvironment) -> Harness:
+        self._current_revision = None
         self._execution = environment
         return self
 
     def connect_lifecycle(self, lifecycle: LifecycleAdapter) -> Harness:
+        self._current_revision = None
         self._lifecycle = lifecycle
         return self
 
@@ -161,14 +167,36 @@ class Harness:
         for verifier in verifiers:
             if any(existing.name == verifier.name for existing in self._verifiers):
                 raise HarnessValidationError(HarnessErrorCode.DUPLICATE_VERIFIER, verifier.name)
+            self._current_revision = None
             self._verifiers.append(verifier)
         return self
+
+    @property
+    def current_revision(self) -> HarnessRevision | None:
+        revision = self._current_revision
+        if revision is None:
+            return None
+        try:
+            root = _resolve_root(self.root)
+            components = _compile_components(root, self._files)
+            repository = _snapshot_repository(root)
+            runtime = self._runtime(root)
+        except HarnessValidationError:
+            return None
+        if (
+            components != revision.components
+            or repository != revision.repository
+            or runtime != revision.runtime
+        ):
+            return None
+        return revision
 
     def _register_files(
         self,
         component: ComponentKind,
         sources: tuple[Path | EditableFile, ...],
     ) -> None:
+        self._current_revision = None
         for source in sources:
             self._files.append(_registration(component, source, None))
 
@@ -208,6 +236,7 @@ class Harness:
         _write_manifest(revision)
         if report is not None:
             _write_canary(revision, report)
+        self._current_revision = revision
         logger.debug("Compiled harness revision %s", revision.id)
         return revision
 
