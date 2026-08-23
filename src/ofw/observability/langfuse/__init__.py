@@ -3,11 +3,13 @@
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
+    ContentCaptureMode,
     EnvironmentName,
     LangfuseBaseUrl,
     LangfuseConnectionId,
     LangfuseConnectionManifest,
     LangfuseProject,
+    ObservationContentPolicy,
     SecretEnvironmentVariable,
     TraceWindow,
 )
@@ -15,11 +17,13 @@ from ofw.observability.langfuse.contracts import (
 __all__ = [
     "CollectionError",
     "CollectionErrorCode",
+    "ContentCaptureMode",
     "EnvironmentName",
     "LangfuseBaseUrl",
     "LangfuseConnectionId",
     "LangfuseConnectionManifest",
     "LangfuseProject",
+    "ObservationContentPolicy",
     "SecretEnvironmentVariable",
     "TraceWindow",
 ]
