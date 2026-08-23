@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from ofw.candidate import CandidateRevision
 from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
-from ofw.exports import EvalCase, ExportBundle, ExportPartition
+from ofw.exports import EvalCase, EvalSuite, ExportBundle, ExportPartition
 from ofw.harness import Harness
 from ofw.mine import digest_bytes, write_artifact
 from ofw.runtime import (
@@ -78,6 +79,8 @@ class BenchmarkPolicy:
 @dataclass(frozen=True, slots=True)
 class CaseAttempt:
     case_id: str
+    partition: ExportPartition
+    critical: bool
     repeat: int
     synthetic: bool
     weight: float
@@ -95,6 +98,7 @@ class CaseAttempt:
 class BenchmarkResult:
     id: str
     benchmark_id: str
+    candidate_id: str | None
     revision_id: HarnessRevisionId
     policy_digest: Sha256Digest
     status: BenchmarkStatus
@@ -143,24 +147,75 @@ class BenchmarkRunner:
 
     def run(self) -> BenchmarkResult:
         revision = self._revision()
+        return self._run_suite(
+            revision,
+            self.bundle.developer_evals,
+            None,
+            (ExportPartition.FRONTIER, ExportPartition.REGRESSION),
+            self.policy.repeats,
+            self.policy.simulation_copies,
+        )
+
+    def run_candidate(self, candidate: CandidateRevision) -> BenchmarkResult:
+        revision = self._candidate_revision(candidate)
+        return self._run_suite(
+            revision,
+            self.bundle.developer_evals,
+            candidate.id.value,
+            (ExportPartition.FRONTIER, ExportPartition.REGRESSION),
+            self.policy.repeats,
+            self.policy.simulation_copies,
+        )
+
+    def run_selection(self, candidate: CandidateRevision) -> BenchmarkResult:
+        revision = self._candidate_revision(candidate)
+        return self._run_suite(
+            revision,
+            self.bundle.selection_holdout,
+            candidate.id.value,
+            (ExportPartition.SELECTION,),
+            self.policy.repeats,
+            0,
+        )
+
+    def run_admission(self, candidate: CandidateRevision) -> BenchmarkResult:
+        revision = self._candidate_revision(candidate)
+        return self._run_suite(
+            revision,
+            self.bundle.admission_holdout,
+            candidate.id.value,
+            (ExportPartition.ADMISSION,),
+            1,
+            0,
+        )
+
+    def _run_suite(
+        self,
+        execution_revision: HarnessRevision,
+        suite: EvalSuite,
+        candidate_id: str | None,
+        allowed_partitions: tuple[ExportPartition, ...],
+        repeats: int,
+        simulation_copies: int,
+    ) -> BenchmarkResult:
+        champion = self._revision()
         execution, lifecycle, verifiers = self.harness.runtime_adapters()
-        cases = self.bundle.developer_evals.cases
+        cases = suite.cases
         if any(
-            case.partition not in (ExportPartition.FRONTIER, ExportPartition.REGRESSION)
-            or not _ledger_authorizes(case, self.bundle)
+            case.partition not in allowed_partitions or not _ledger_authorizes(case, self.bundle)
             for case in cases
         ):
-            raise BenchmarkError(BenchmarkErrorCode.HOLDOUT_LEAK, self.bundle.developer_evals.id)
+            raise BenchmarkError(BenchmarkErrorCode.HOLDOUT_LEAK, suite.id)
         attempts: list[CaseAttempt] = []
         status = BenchmarkStatus.COMPLETE
         if cases:
             prepared = execution.prepare(
-                revision,
+                execution_revision,
                 CanaryCase(CaseId("benchmark"), ""),
             )
             try:
                 for case in cases:
-                    payload = _case_payload(case, revision.root)
+                    payload = _case_payload(case, champion.root)
                     variants = ((0, False, 1.0, payload),) + tuple(
                         (
                             copy + 1,
@@ -168,10 +223,10 @@ class BenchmarkRunner:
                             self.policy.synthetic_weight,
                             payload + "\n" * (copy + 1),
                         )
-                        for copy in range(self.policy.simulation_copies)
+                        for copy in range(simulation_copies)
                     )
                     for variant_index, synthetic, weight, variant in variants:
-                        for repeat in range(self.policy.repeats):
+                        for repeat in range(repeats):
                             if len(attempts) >= self.policy.max_attempts:
                                 status = BenchmarkStatus.BUDGET_EXHAUSTED
                                 break
@@ -179,13 +234,22 @@ class BenchmarkRunner:
                             run = lifecycle.invoke(
                                 CanaryCase(CaseId(case_id), variant),
                                 prepared,
-                                revision,
+                                execution_revision,
                             )
                             verified = tuple(
                                 verifier.verify(run, prepared) for verifier in verifiers
                             )
                             attempts.append(
-                                CaseAttempt(case_id, repeat, synthetic, weight, run, verified)
+                                CaseAttempt(
+                                    case_id,
+                                    case.partition,
+                                    case.critical,
+                                    repeat,
+                                    synthetic,
+                                    weight,
+                                    run,
+                                    verified,
+                                )
                             )
                             try:
                                 execution.reset(prepared)
@@ -206,21 +270,29 @@ class BenchmarkRunner:
         result_id = (
             "benchmark_result_"
             + hashlib.sha256(
-                f"{self.bundle.benchmark.id}\0{self.policy.digest}\0{semantic_digest}\0{status.value}".encode()
+                f"{self.bundle.benchmark.id}\0{suite.id}\0{candidate_id or 'champion'}\0"
+                f"{self.policy.digest}\0{semantic_digest}\0{status.value}".encode()
             ).hexdigest()
         )
         result = BenchmarkResult(
             result_id,
             self.bundle.benchmark.id,
-            revision.id,
+            candidate_id,
+            champion.id,
             self.policy.digest,
             status,
             frozen_attempts,
             semantic_digest,
-            revision.root,
+            champion.root,
         )
         write_artifact(result.manifest_path, f"{result.to_json()}\n".encode())
         return result
+
+    def _candidate_revision(self, candidate: CandidateRevision) -> HarnessRevision:
+        champion = self._revision()
+        if candidate.base_revision_id != champion.id:
+            raise BenchmarkError(BenchmarkErrorCode.REVISION_MISMATCH, candidate.id.value)
+        return replace(champion, root=candidate.root)
 
     def establish_baseline(self) -> Baseline:
         result = self.run()
@@ -293,6 +365,8 @@ def _semantic(attempts: tuple[CaseAttempt, ...]) -> tuple[CaseAttempt, ...]:
     return tuple(
         CaseAttempt(
             attempt.case_id,
+            attempt.partition,
+            attempt.critical,
             attempt.repeat,
             attempt.synthetic,
             attempt.weight,

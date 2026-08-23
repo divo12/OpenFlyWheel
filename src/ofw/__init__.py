@@ -74,6 +74,17 @@ from ofw.exports import (
     MineExports,
     PrivacyTransform,
 )
+from ofw.fit import (
+    CandidateOutcome,
+    CandidateStatus,
+    CaseDelta,
+    FitCampaign,
+    FitError,
+    FitErrorCode,
+    FitPolicy,
+    FitResult,
+    GateReason,
+)
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.mine import (
     Mine,
@@ -121,6 +132,7 @@ from ofw.runtime import (
     DockerCompose,
     FunctionName,
     LocalProcess,
+    MetricKind,
     ModelFingerprint,
     ModuleName,
     ProcessCommand,
@@ -163,6 +175,7 @@ class _OfwNamespace:
     BenchmarkRunner = BenchmarkRunner
     CandidatePolicy = CandidatePolicy
     CandidateBuilder = CandidateBuilder
+    FitPolicy = FitPolicy
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -222,6 +235,9 @@ __all__ = [
     "CandidateErrorCode",
     "CandidateEvidence",
     "CandidatePolicy",
+    "CandidateOutcome",
+    "CandidateStatus",
+    "CaseDelta",
     "CanaryCase",
     "CaseId",
     "ClusterPartitionRule",
@@ -252,6 +268,11 @@ __all__ = [
     "ExportPolicy",
     "FailureCluster",
     "FileEdit",
+    "FitCampaign",
+    "FitError",
+    "FitErrorCode",
+    "FitPolicy",
+    "FitResult",
     "GitCommit",
     "Harness",
     "HarnessAsset",
@@ -261,6 +282,7 @@ __all__ = [
     "HarnessRevisionId",
     "HarnessValidationError",
     "FunctionName",
+    "GateReason",
     "Langfuse",
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
@@ -277,6 +299,7 @@ __all__ = [
     "MineExports",
     "MiningPolicy",
     "MechanismKey",
+    "MetricKind",
     "ObservationContent",
     "ObservationContentField",
     "ObservationContentHit",

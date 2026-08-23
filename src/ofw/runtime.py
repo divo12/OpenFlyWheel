@@ -42,6 +42,12 @@ class VerifierVerdict(StrEnum):
     ERROR = "error"
 
 
+class MetricKind(StrEnum):
+    COST_USD = "cost_usd"
+    INPUT_TOKENS = "input_tokens"
+    OUTPUT_TOKENS = "output_tokens"
+
+
 class VerifierExitCode(IntEnum):
     PASS = 0
     FAIL = 1
@@ -148,7 +154,7 @@ class RunResult:
 
 @dataclass(frozen=True, slots=True)
 class Metric:
-    name: str
+    kind: MetricKind
     value: float
 
 
