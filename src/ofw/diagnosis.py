@@ -287,7 +287,7 @@ class DiagnosisRun:
         prepared = environment.prepare(revision, CanaryCase(CaseId("diagnosis"), ""))
         try:
             diagnoses = tuple(
-                self._diagnose(_read_snapshot(admission, self.mine), prepared)
+                self._diagnose(read_snapshot(admission, self.mine), prepared)
                 for admission in failures
                 if admission.snapshot_path is not None
             )
@@ -490,7 +490,7 @@ def _anchor_exists(anchor: EvidenceAnchor, snapshot: TraceSnapshot) -> bool:
     return any(score.id.value == anchor.id for score in snapshot.scores)
 
 
-def _read_snapshot(admission: TraceAdmission, mine: MineResult) -> TraceSnapshot:
+def read_snapshot(admission: TraceAdmission, mine: MineResult) -> TraceSnapshot:
     path = admission.snapshot_path
     digest = admission.snapshot_digest
     if path is None or digest is None:

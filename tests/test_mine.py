@@ -22,6 +22,7 @@ from ofw import (
     read_snapshot_content,
 )
 from ofw.contracts import HarnessRevision, Sha256Digest
+from ofw.diagnosis import read_snapshot
 from ofw.mine import TraceSnapshot
 from ofw.observability.langfuse.contracts import (
     LangfuseConnectionId,
@@ -327,6 +328,7 @@ def test_mine_is_content_addressed_and_idempotent(tmp_path: Path) -> None:
     snapshot = good.snapshot_path.read_text(encoding="utf-8")
     assert "token" not in snapshot
     assert "reviewed" not in snapshot
+    assert read_snapshot(good, first).trace.id == TraceId("good")
 
 
 def test_foreign_score_subject_cannot_label_trace(tmp_path: Path) -> None:

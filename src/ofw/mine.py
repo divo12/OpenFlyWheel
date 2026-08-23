@@ -332,7 +332,7 @@ class Mine:
         payload = _SNAPSHOT_ADAPTER.dump_json(snapshot)
         digest = digest_bytes(payload)
         path = revision.root / ".ofw" / "mine" / str(run_id) / "traces" / f"{digest.value[7:]}.json"
-        write_artifact(path, payload + b"\n")
+        write_artifact(path, payload)
         return TraceAdmission(trace.id, partition, reason, evidence, digest, path)
 
     def _snapshot_observation(
