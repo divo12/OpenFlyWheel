@@ -39,11 +39,29 @@ from ofw.mine import (
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
+    ContentCaptureMode,
     LangfuseProject,
+    ObservationContentPolicy,
+    SecretEnvironmentVariable,
     TraceWindow,
 )
-from ofw.observability.langfuse.domain import CollectionResult
-from ofw.observability.langfuse.service import collect
+from ofw.observability.langfuse.domain import (
+    CollectionResult,
+    ObservationContent,
+    ObservationContentField,
+    ObservationContentHit,
+    ObservationContentMatch,
+    ObservationContentQuery,
+    ObservationContentReference,
+    ObservationRecord,
+    TraceId,
+)
+from ofw.observability.langfuse.service import (
+    collect,
+    read_observation_content,
+    read_trace_observations,
+    search_observation_content,
+)
 from ofw.runtime import (
     CanaryCase,
     CaseId,
@@ -101,6 +119,28 @@ class _OfwNamespace:
     ) -> CollectionResult:
         return collect(revision, window=window, store_path=store_path)
 
+    def search_observation_content(
+        self,
+        collection: CollectionResult,
+        query: ObservationContentQuery,
+    ) -> tuple[ObservationContentHit, ...]:
+        return search_observation_content(collection, query)
+
+    def read_trace_observations(
+        self,
+        collection: CollectionResult,
+        trace_id: TraceId,
+        limit: int,
+    ) -> tuple[ObservationRecord, ...]:
+        return read_trace_observations(collection, trace_id, limit)
+
+    def read_observation_content(
+        self,
+        collection: CollectionResult,
+        reference: ObservationContentReference,
+    ) -> ObservationContent:
+        return read_observation_content(collection, reference)
+
 
 ofw = _OfwNamespace()
 
@@ -114,6 +154,7 @@ __all__ = [
     "CollectionResult",
     "CommandLoop",
     "CommandVerifier",
+    "ContentCaptureMode",
     "DockerCompose",
     "EditableFile",
     "GitCommit",
@@ -136,6 +177,13 @@ __all__ = [
     "MineError",
     "MineErrorCode",
     "MiningPolicy",
+    "ObservationContent",
+    "ObservationContentField",
+    "ObservationContentHit",
+    "ObservationContentMatch",
+    "ObservationContentPolicy",
+    "ObservationContentQuery",
+    "ObservationContentReference",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
@@ -148,6 +196,7 @@ __all__ = [
     "ScoreName",
     "Sha256Digest",
     "ServiceName",
+    "SecretEnvironmentVariable",
     "Subagent",
     "Tool",
     "TraceWindow",
@@ -163,4 +212,7 @@ __all__ = [
     "observe",
     "ofw",
     "propagate_attributes",
+    "read_observation_content",
+    "read_trace_observations",
+    "search_observation_content",
 ]

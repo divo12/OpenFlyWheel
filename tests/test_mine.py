@@ -20,7 +20,11 @@ from ofw import (
     TraceQualityThreshold,
 )
 from ofw.contracts import HarnessRevision, Sha256Digest
-from ofw.observability.langfuse.contracts import LangfuseConnectionId, TraceWindow
+from ofw.observability.langfuse.contracts import (
+    LangfuseConnectionId,
+    ObservationContentPolicy,
+    TraceWindow,
+)
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
     CollectionCapabilityReason,
@@ -203,6 +207,7 @@ def _collection(
         snapshot_digest=Sha256Digest("sha256:collection"),
         capability=CollectionCapabilityReason.READY,
         store_path=store_path,
+        content_policy=ObservationContentPolicy.metadata_only(),
     )
 
 

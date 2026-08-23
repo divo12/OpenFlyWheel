@@ -13,6 +13,7 @@ from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
     LangfuseConnectionId,
+    ObservationContentPolicy,
     TraceWindow,
 )
 
@@ -87,6 +88,17 @@ class CollectionCapabilityReason(StrEnum):
     INCOMPLETE_TRACE = "incomplete_trace"
 
 
+class ObservationContentField(StrEnum):
+    ANY = "any"
+    INPUT = "input"
+    OUTPUT = "output"
+
+
+class ObservationContentMatch(StrEnum):
+    EXACT = "exact"
+    TOKEN_PHRASE = "token_phrase"  # nosec B105
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationId:
     value: str
@@ -147,6 +159,67 @@ class JsonDocument:
 
 
 @dataclass(frozen=True, slots=True)
+class ObservationContentReference:
+    digest: Sha256Digest
+    byte_count: int
+    truncated: bool
+
+    @classmethod
+    def for_text(cls, text: str, *, truncated: bool) -> ObservationContentReference:
+        encoded = text.encode()
+        digest_payload = b"1\0" + encoded if truncated else b"0\0" + encoded
+        return cls(
+            Sha256Digest(f"sha256:{hashlib.sha256(digest_payload).hexdigest()}"),
+            len(encoded),
+            truncated,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationContent:
+    reference: ObservationContentReference
+    text: str
+
+    def __post_init__(self) -> None:
+        expected = ObservationContentReference.for_text(
+            self.text,
+            truncated=self.reference.truncated,
+        )
+        if self.reference != expected:
+            raise ValueError("observation content reference mismatch")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationContentQuery:
+    text: str
+    match: ObservationContentMatch
+    field: ObservationContentField
+    trace_id: TraceId | None
+    limit: int
+    maximum_excerpt_characters: int
+
+    def __post_init__(self) -> None:
+        if (
+            not self.text.strip()
+            or len(self.text) > 1024
+            or not isinstance(self.match, ObservationContentMatch)
+            or not isinstance(self.field, ObservationContentField)
+            or not 1 <= self.limit <= 100
+            or not 1 <= self.maximum_excerpt_characters <= 4096
+        ):
+            raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, self.text)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationContentHit:
+    observation_id: ObservationId
+    trace_id: TraceId | None
+    field: ObservationContentField
+    reference: ObservationContentReference
+    excerpt: str
+
+
+@dataclass(frozen=True, slots=True)
 class ObservationRecord:
     id: ObservationId
     trace_id: TraceId | None
@@ -181,6 +254,8 @@ class ObservationRecord:
     input_price: str | None = None
     output_price: str | None = None
     total_price: str | None = None
+    input_content: ObservationContentReference | None = None
+    output_content: ObservationContentReference | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +288,7 @@ class ScoreRecord:
 class ObservationPage:
     records: tuple[ObservationRecord, ...]
     cursor: PageCursor | None
+    contents: tuple[ObservationContent, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,3 +333,4 @@ class CollectionResult:
     snapshot_digest: Sha256Digest
     capability: CollectionCapabilityReason
     store_path: Path
+    content_policy: ObservationContentPolicy

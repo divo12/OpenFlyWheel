@@ -15,6 +15,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
+    ContentCaptureMode,
     LangfuseProject,
     TraceWindow,
 )
@@ -55,6 +56,8 @@ class LangfuseHttpClient:
             timeout=timeout_seconds,
         )
         self._environment = manifest.environment.value
+        self._content_policy = manifest.content_policy
+        self._redaction_values = project.redaction_values()
 
     def close(self) -> None:
         self._client.close()
@@ -72,8 +75,13 @@ class LangfuseHttpClient:
         window: TraceWindow,
         cursor: PageCursor | None = None,
     ) -> ObservationPage:
+        field_groups = (
+            "core,basic,time,metadata,usage,trace_context"
+            if self._content_policy.mode is ContentCaptureMode.METADATA_ONLY
+            else "core,basic,time,io,metadata,usage,trace_context"
+        )
         parameters = (
-            ("fields", "core,basic,time,metadata,usage,trace_context"),
+            ("fields", field_groups),
             ("expandMetadata", "ofw.harness.revision"),
             ("limit", "1000"),
             ("environment", self._environment),
@@ -85,7 +93,7 @@ class LangfuseHttpClient:
             parameters,
             TypeAdapter(ObservationResponseWire),
         )
-        return response.normalize()
+        return response.normalize(self._content_policy, self._redaction_values)
 
     def get_scores(
         self,
