@@ -31,10 +31,13 @@ from ofw.mine import (
     Mine,
     MineError,
     MineErrorCode,
+    MineResult,
     MiningPolicy,
     ScoreName,
+    SnapshotContentReference,
     TracePartition,
     TraceQualityThreshold,
+    read_snapshot_content,
 )
 from ofw.observability.langfuse import (
     CollectionError,
@@ -141,6 +144,13 @@ class _OfwNamespace:
     ) -> ObservationContent:
         return read_observation_content(collection, reference)
 
+    def read_snapshot_content(
+        self,
+        result: MineResult,
+        reference: SnapshotContentReference,
+    ) -> ObservationContent:
+        return read_snapshot_content(result, reference)
+
 
 ofw = _OfwNamespace()
 
@@ -197,6 +207,7 @@ __all__ = [
     "Sha256Digest",
     "ServiceName",
     "SecretEnvironmentVariable",
+    "SnapshotContentReference",
     "Subagent",
     "Tool",
     "TraceWindow",
@@ -213,6 +224,7 @@ __all__ = [
     "ofw",
     "propagate_attributes",
     "read_observation_content",
+    "read_snapshot_content",
     "read_trace_observations",
     "search_observation_content",
 ]
