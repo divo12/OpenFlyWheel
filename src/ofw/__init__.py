@@ -12,6 +12,15 @@ from langfuse import (
     propagate_attributes,
 )
 
+from ofw.benchmarking import (
+    Baseline,
+    BenchmarkError,
+    BenchmarkErrorCode,
+    BenchmarkPolicy,
+    BenchmarkResult,
+    BenchmarkRunner,
+    BenchmarkStatus,
+)
 from ofw.contracts import (
     AssetAccess,
     ComponentKind,
@@ -139,6 +148,8 @@ class _OfwNamespace:
     ScoreName = ScoreName
     PythonDiagnoser = PythonDiagnoser
     ExportPolicy = ExportPolicy
+    BenchmarkPolicy = BenchmarkPolicy
+    BenchmarkRunner = BenchmarkRunner
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -186,6 +197,13 @@ ofw = _OfwNamespace()
 
 __all__ = [
     "AssetAccess",
+    "Baseline",
+    "BenchmarkError",
+    "BenchmarkErrorCode",
+    "BenchmarkPolicy",
+    "BenchmarkResult",
+    "BenchmarkRunner",
+    "BenchmarkStatus",
     "CanaryCase",
     "CaseId",
     "ClusterPartitionRule",
