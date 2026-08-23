@@ -17,6 +17,8 @@ from ofw import (
     CollectionError,
     CollectionErrorCode,
     LangfuseProject,
+    ObservationContentPolicy,
+    SecretEnvironmentVariable,
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import ObservationType, ScoreDataType, ScoreSubjectKind
@@ -181,6 +183,7 @@ def langfuse_server() -> Iterator[FixtureServer]:
 def _project(
     server: FixtureServer,
     monkeypatch: pytest.MonkeyPatch,
+    content_policy: ObservationContentPolicy | None = None,
 ) -> LangfuseProject:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
@@ -188,6 +191,7 @@ def _project(
         environment="production",
         base_url=server.base_url,
         allow_private_network=True,
+        content_policy=content_policy,
     )
 
 
@@ -242,6 +246,57 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert ("fields", "details,subject") in score_query
     assert all(request.authorization == expected_auth for request in langfuse_server.state.requests)
     assert langfuse_server.state.writes == 0
+
+
+def test_opted_in_io_is_redacted_truncated_and_requested_explicitly(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRACE_SECRET", "ship")
+    policy = ObservationContentPolicy.redacted(
+        maximum_bytes_per_field=32,
+        secret_environment_variables=(SecretEnvironmentVariable("TRACE_SECRET"),),
+    )
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch, policy))
+    try:
+        page = client.get_observations(_window())
+    finally:
+        client.close()
+
+    observation = page.records[0]
+    assert observation.input_content is not None
+    assert observation.output_content is not None
+    assert len(page.contents) == 2
+    input_content = next(
+        content for content in page.contents if content.reference == observation.input_content
+    )
+    query = next(
+        request.query
+        for request in langfuse_server.state.requests
+        if request.path == "/api/public/v2/observations"
+    )
+    assert input_content.text == '{"task":"[REDACTED_SECRET]"}'
+    assert "ship" not in input_content.text
+    assert ("fields", "core,basic,time,io,metadata,usage,trace_context") in query
+
+
+def test_wire_redacts_common_identifiers_before_content_addressing() -> None:
+    response = OBSERVATIONS_RESPONSE.replace(
+        '"input": "{\\"task\\":\\"ship\\"}"',
+        '"input": "email dev@example.com Bearer abcdef123456"',
+    )
+    policy = ObservationContentPolicy.redacted(
+        maximum_bytes_per_field=24,
+        secret_environment_variables=(),
+    )
+
+    page = ObservationResponseWire.model_validate_json(response).normalize(policy, ())
+
+    content = page.contents[0]
+    assert "dev@example.com" not in content.text
+    assert "abcdef123456" not in content.text
+    assert content.reference.truncated
+    assert content.reference.byte_count == len(content.text.encode())
 
 
 def test_persisted_observation_and_score_changes_produce_new_digests() -> None:

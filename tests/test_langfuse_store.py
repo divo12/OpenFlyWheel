@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import sqlite3
 import stat
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from ofw import Sha256Digest
 from ofw.observability.langfuse.domain import (
     CollectionSyncId,
     JsonDocument,
+    ObservationContent,
+    ObservationContentField,
+    ObservationContentHit,
+    ObservationContentMatch,
+    ObservationContentQuery,
+    ObservationContentReference,
     ObservationId,
     ObservationPage,
     ObservationRecord,
@@ -202,3 +211,92 @@ def test_source_update_does_not_mutate_prior_sync_snapshot(tmp_path: Path) -> No
         assert store.observations(new_sync)[0].digest == Sha256Digest("sha256:new")
     finally:
         store.close()
+
+
+def test_content_is_addressed_once_and_supports_bounded_exact_and_phrase_search(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "collection.sqlite"
+    store = CollectionStore(path)
+    sync_id = CollectionSyncId("sync-content")
+    input_text = "Refund failed for [REDACTED_EMAIL]"
+    output_text = "Escalation opened"
+    input_reference = ObservationContentReference.for_text(input_text, truncated=False)
+    output_reference = ObservationContentReference.for_text(output_text, truncated=False)
+    input_content = ObservationContent(input_reference, input_text)
+    output_content = ObservationContent(output_reference, output_text)
+    observation = replace(
+        _observation("obs-content"),
+        input_content=input_reference,
+        output_content=output_reference,
+    )
+    page = ObservationPage(
+        (observation,),
+        None,
+        (input_content, output_content),
+    )
+    try:
+        store.commit_observation_page("connection-1", sync_id, page)
+        store.commit_observation_page("connection-1", sync_id, page)
+
+        assert store.read_content(sync_id, input_reference) == input_content
+        exact = store.search_content(
+            sync_id,
+            ObservationContentQuery(
+                "Escalation opened",
+                ObservationContentMatch.EXACT,
+                ObservationContentField.OUTPUT,
+                None,
+                10,
+                100,
+            ),
+        )
+        phrase = store.search_content(
+            sync_id,
+            ObservationContentQuery(
+                "refund failed",
+                ObservationContentMatch.TOKEN_PHRASE,
+                ObservationContentField.ANY,
+                TraceId("trace-1"),
+                10,
+                100,
+            ),
+        )
+        trajectory = store.trace_observations(sync_id, TraceId("trace-1"), 10)
+    finally:
+        store.close()
+
+    assert exact == (
+        ObservationContentHit(
+            ObservationId("obs-content"),
+            TraceId("trace-1"),
+            ObservationContentField.OUTPUT,
+            output_reference,
+            "Escalation opened",
+        ),
+    )
+    assert phrase[0].field is ObservationContentField.INPUT
+    assert phrase[0].reference == input_reference
+    assert trajectory == (observation,)
+    connection = sqlite3.connect(path)
+    try:
+        record_json = cast(
+            tuple[str] | None,
+            connection.execute("SELECT record_json FROM langfuse_observations").fetchone(),
+        )
+        content_count = cast(
+            tuple[int] | None,
+            connection.execute("SELECT COUNT(*) FROM observation_content").fetchone(),
+        )
+        search_count = cast(
+            tuple[int] | None,
+            connection.execute("SELECT COUNT(*) FROM observation_content_fts").fetchone(),
+        )
+    finally:
+        connection.close()
+    assert record_json is not None
+    assert content_count is not None
+    assert search_count is not None
+    assert input_text not in record_json[0]
+    assert content_count == (2,)
+    assert search_count == (2,)
