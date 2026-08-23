@@ -15,10 +15,12 @@ from pydantic import TypeAdapter
 
 from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.harness import Harness
-from ofw.observability.langfuse.contracts import TraceWindow
+from ofw.observability.langfuse.contracts import CollectionError, TraceWindow
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
     CollectionResult,
+    ObservationContent,
+    ObservationContentReference,
     ObservationId,
     ObservationLevel,
     ObservationRecord,
@@ -67,6 +69,7 @@ class MineErrorCode(StrEnum):
     REVISION_MISMATCH = "revision_mismatch"
     INVALID_POLICY = "invalid_policy"
     ARTIFACT_WRITE_FAILED = "artifact_write_failed"
+    CONTENT_INVALID = "content_invalid"
 
 
 class MineError(Exception):
@@ -171,6 +174,14 @@ class SnapshotObservation:
     level: ObservationLevel | None
     status_message: str | None
     digest: Sha256Digest
+    input_content: SnapshotContentReference | None = None
+    output_content: SnapshotContentReference | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotContentReference:
+    content: ObservationContentReference
+    path: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,12 +277,12 @@ class Mine:
         try:
             observations = store.observations(self.collection.observation_sync_id)
             scores = store.scores(self.collection.score_sync_id)
+            admissions = tuple(
+                self._admit(revision, run_id, trace, observations, scores, store)
+                for trace in sorted(self.collection.traces, key=_trace_sort_key)
+            )
         finally:
             store.close()
-        admissions = tuple(
-            self._admit(revision, run_id, trace, observations, scores)
-            for trace in sorted(self.collection.traces, key=_trace_sort_key)
-        )
         result = MineResult(
             MineSchemaVersion.V1,
             run_id,
@@ -292,6 +303,7 @@ class Mine:
         trace: TraceRecord,
         observations: tuple[ObservationRecord, ...],
         scores: tuple[ScoreRecord, ...],
+        store: CollectionStore,
     ) -> TraceAdmission:
         # ponytail: linear scans are simplest for local v0; index when profiling shows pressure.
         trace_observations = tuple(
@@ -311,7 +323,10 @@ class Mine:
             revision.id,
             self.collection.snapshot_digest,
             _snapshot_trace(trace, evidence),
-            tuple(_snapshot_observation(observation) for observation in trace_observations),
+            tuple(
+                self._snapshot_observation(revision, run_id, store, observation)
+                for observation in trace_observations
+            ),
             tuple(_snapshot_score(score) for score in snapshot_scores),
         )
         payload = _SNAPSHOT_ADAPTER.dump_json(snapshot)
@@ -319,6 +334,43 @@ class Mine:
         path = revision.root / ".ofw" / "mine" / str(run_id) / "traces" / f"{digest.value[7:]}.json"
         write_artifact(path, payload + b"\n")
         return TraceAdmission(trace.id, partition, reason, evidence, digest, path)
+
+    def _snapshot_observation(
+        self,
+        revision: HarnessRevision,
+        run_id: MineRunId,
+        store: CollectionStore,
+        observation: ObservationRecord,
+    ) -> SnapshotObservation:
+        return _snapshot_observation(
+            observation,
+            self._snapshot_content(revision, run_id, store, observation.input_content),
+            self._snapshot_content(revision, run_id, store, observation.output_content),
+        )
+
+    def _snapshot_content(
+        self,
+        revision: HarnessRevision,
+        run_id: MineRunId,
+        store: CollectionStore,
+        reference: ObservationContentReference | None,
+    ) -> SnapshotContentReference | None:
+        if reference is None:
+            return None
+        try:
+            content = store.read_content(self.collection.observation_sync_id, reference)
+        except CollectionError as error:
+            raise MineError(MineErrorCode.CONTENT_INVALID, str(reference.digest)) from error
+        path = (
+            revision.root
+            / ".ofw"
+            / "mine"
+            / str(run_id)
+            / "content"
+            / f"{reference.digest.value[7:]}.txt"
+        )
+        write_artifact(path, content.text.encode())
+        return SnapshotContentReference(reference, path)
 
     def _classify(
         self,
@@ -417,7 +469,11 @@ def _snapshot_trace(trace: TraceRecord, evidence: tuple[ScoreId, ...]) -> Snapsh
     )
 
 
-def _snapshot_observation(observation: ObservationRecord) -> SnapshotObservation:
+def _snapshot_observation(
+    observation: ObservationRecord,
+    input_content: SnapshotContentReference | None,
+    output_content: SnapshotContentReference | None,
+) -> SnapshotObservation:
     return SnapshotObservation(
         observation.id,
         observation.trace_id,
@@ -430,6 +486,8 @@ def _snapshot_observation(observation: ObservationRecord) -> SnapshotObservation
         observation.level,
         observation.status_message,
         observation.digest,
+        input_content,
+        output_content,
     )
 
 
@@ -487,3 +545,21 @@ def _digest_text(value: str) -> Sha256Digest:
 
 def digest_bytes(value: bytes) -> Sha256Digest:
     return Sha256Digest(f"sha256:{hashlib.sha256(value).hexdigest()}")
+
+
+def read_snapshot_content(
+    result: MineResult,
+    reference: SnapshotContentReference,
+) -> ObservationContent:
+    try:
+        allowed = (
+            result.root / ".ofw" / "mine" / str(result.id) / "content"
+        ).resolve(strict=True)
+        resolved = reference.path.resolve(strict=True)
+        resolved.relative_to(allowed)
+        expected_name = f"{reference.content.digest.value[7:]}.txt"
+        if resolved.name != expected_name:
+            raise ValueError("content path does not match digest")
+        return ObservationContent(reference.content, resolved.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise MineError(MineErrorCode.CONTENT_INVALID, str(reference.path)) from error
