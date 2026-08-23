@@ -37,7 +37,7 @@ Meta-Harness stores each candidate’s source, scores, and execution traces in a
 
 AHE resolves the scale problem with layered experience observability: a compact corpus supports navigation, while the raw evidence remains available for drill-down. It also adds decision observability, binding an edit’s predicted effects to later task-level outcomes. [Agentic Harness Engineering](https://arxiv.org/abs/2604.25850)
 
-**OFW decision:** create a typed experience index containing source trace/snapshot references, baseline and candidate verifier feedback, case deltas, and raw benchmark-result paths. It is an index, not a lossy replacement for the existing manifests.
+**OFW decision:** create a typed experience index containing developer source trace/snapshot references, paired baseline and candidate verifier feedback, case deltas, and raw developer benchmark-result paths. Selection and admission remain sealed and contribute only their pass/fail decisions. The index is not a lossy replacement for the existing manifests.
 
 ### 1.3 Trace shape and privacy are part of mining correctness
 
@@ -182,7 +182,7 @@ LangSmith’s comparative evaluation API can randomize answer order to mitigate 
 ### PR17 — Drill-down optimization experience index
 
 - Write one content-bound experience manifest per Fit campaign.
-- Index cluster/source trace/snapshot, case partition, baseline/candidate verdict, all verifier feedback, prediction error, and raw benchmark result paths.
+- Index developer cluster/source trace/snapshot, case partition, paired baseline/candidate verdicts, all developer verifier feedback, prediction error, and raw developer benchmark result paths.
 - Validate the index on cached Fit reads and expose a typed reader for provider-specific proposers.
 - TDD: feedback preserved byte-for-byte, source trace linkage, rejected/winner histories, artifact tamper rejection, no holdout payload copied into proposer-visible fields.
 
