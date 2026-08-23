@@ -11,6 +11,7 @@ import pytest
 
 from ofw import FitPolicy
 from ofw import ofw as ofw_namespace
+from ofw.cli import run_campaign_command
 from ofw.contracts import HarnessRevisionId
 from ofw.scheduler import (
     AutomationPolicy,
@@ -77,6 +78,7 @@ def _policy(*, daily_budget: Money = _DEFAULT_DAILY_BUDGET) -> AutomationPolicy:
             benchmark_export=Money(10_000),
             memory=Money(10_000),
             fit=Money(100_000),
+            promotion=Money(10_000),
         ),
     )
 
@@ -274,6 +276,72 @@ def test_fit_requires_matching_benchmark_lineage_and_optional_memory(tmp_path: P
     scheduler.close()
 
 
+@pytest.mark.parametrize(
+    ("progress", "expected"),
+    ((True, JobState.READY), (False, JobState.SKIPPED)),
+)
+def test_promotion_requires_a_fit_winner(
+    tmp_path: Path,
+    progress: bool,
+    expected: JobState,
+) -> None:
+    scheduler = _scheduler(tmp_path)
+    mine = scheduler.enqueue(_spec(JobKind.MINE, "promote-mine"), (), _NOW)
+    _run_success(
+        scheduler,
+        WorkerId("worker"),
+        _NOW,
+        _result(JobKind.MINE, "promote-mine-result"),
+    )
+    benchmark = scheduler.enqueue(
+        _spec(JobKind.EXPORT_BENCH_EVAL, "promote-benchmark"),
+        (Dependency(mine.id, DependencyMode.REQUIRED),),
+        _NOW,
+    )
+    scheduler.reconcile(_NOW)
+    _run_success(
+        scheduler,
+        WorkerId("worker"),
+        _NOW,
+        _result(
+            JobKind.EXPORT_BENCH_EVAL,
+            "promote-benchmark-result",
+            source=ResultId("promote-mine-result"),
+        ),
+    )
+    fit = scheduler.enqueue(
+        _spec(JobKind.FIT, "promote-fit", fit_policy=_fit_policy()),
+        (
+            Dependency(mine.id, DependencyMode.REQUIRED),
+            Dependency(benchmark.id, DependencyMode.REQUIRED),
+        ),
+        _NOW,
+    )
+    scheduler.reconcile(_NOW)
+    _run_success(
+        scheduler,
+        WorkerId("worker"),
+        _NOW,
+        _result(
+            JobKind.FIT,
+            "promote-fit-result",
+            progress=progress,
+            fit_policy=_fit_policy(),
+        ),
+    )
+    promotion = scheduler.enqueue(
+        _spec(JobKind.PROMOTE, "promotion"),
+        (Dependency(fit.id, DependencyMode.REQUIRED),),
+        _NOW,
+    )
+
+    report = scheduler.reconcile(_NOW)
+
+    assert scheduler.job(promotion.id).state is expected
+    assert (promotion.id in report.skipped) is (expected is JobState.SKIPPED)
+    scheduler.close()
+
+
 def test_policy_mismatch_and_overlapping_fit_are_blocked(tmp_path: Path) -> None:
     scheduler = _scheduler(tmp_path)
     mine = scheduler.enqueue(_spec(JobKind.MINE, "mine"), (), _NOW)
@@ -454,6 +522,29 @@ def test_restart_rejects_a_different_automation_policy(tmp_path: Path) -> None:
     assert raised.value.code is SchedulerErrorCode.POLICY_MISMATCH
 
 
+def test_campaign_cli_uses_the_same_status_cancel_resume_service(tmp_path: Path) -> None:
+    store_path = tmp_path / "scheduler.sqlite3"
+    policy_path = tmp_path / "automation-policy.json"
+    policy = _policy()
+    policy_path.write_text(policy.to_json(), encoding="utf-8")
+    scheduler = LocalScheduler(store_path, policy)
+    job = scheduler.enqueue(_spec(JobKind.TRACE_SYNC, "cli"), (), _NOW)
+    scheduler.close()
+    prefix = ("campaign", "status", str(store_path), str(policy_path), job.id.value)
+
+    assert run_campaign_command(prefix, _NOW).state is JobState.READY
+    cancelled = run_campaign_command(
+        ("campaign", "cancel", str(store_path), str(policy_path), job.id.value),
+        _NOW,
+    )
+    assert cancelled.state is JobState.CANCELLED
+    resumed = run_campaign_command(
+        ("campaign", "resume", str(store_path), str(policy_path), job.id.value),
+        _NOW,
+    )
+    assert resumed.state is JobState.READY
+
+
 def test_quiet_hours_budget_cooldown_and_no_progress_circuit(tmp_path: Path) -> None:
     policy = _policy(daily_budget=Money(250_000))
     scheduler = _scheduler(tmp_path, policy=policy)
@@ -622,7 +713,7 @@ def test_heartbeat_materializes_pipeline_once_and_excludes_ofw_evidence(tmp_path
         _NOW + timedelta(seconds=60),
     )
 
-    assert len(first.created) == 6
+    assert len(first.created) == 7
     assert second.created == ()
     assert excluded.created == ()
     assert all(job.state in (JobState.PENDING, JobState.READY) for job in scheduler.jobs())
