@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import TypeAdapter
 
 from ofw import (
     Harness,
@@ -18,16 +19,24 @@ from ofw import (
     ScoreName,
     TracePartition,
     TraceQualityThreshold,
+    read_snapshot_content,
 )
 from ofw.contracts import HarnessRevision, Sha256Digest
 from ofw.diagnosis import read_snapshot
-from ofw.observability.langfuse.contracts import LangfuseConnectionId, TraceWindow
+from ofw.mine import TraceSnapshot
+from ofw.observability.langfuse.contracts import (
+    LangfuseConnectionId,
+    ObservationContentPolicy,
+    TraceWindow,
+)
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
     CollectionCapabilityReason,
     CollectionResult,
     CollectionSyncId,
     JsonDocument,
+    ObservationContent,
+    ObservationContentReference,
     ObservationId,
     ObservationPage,
     ObservationRecord,
@@ -151,6 +160,7 @@ def _collection(
     *,
     conflict: bool = False,
     foreign_good_score: bool = False,
+    content: bool = False,
 ) -> CollectionResult:
     good_score = _score("good", True)
     if foreign_good_score:
@@ -165,12 +175,43 @@ def _collection(
         else ()
     )
     scores: tuple[ScoreRecord, ...] = (good_score, failed_score, *conflicting_scores)
-    observations: tuple[ObservationRecord, ...] = (
+    plain_observations: tuple[ObservationRecord, ...] = (
         _observation("good", revision),
         _observation("failed", revision),
         _observation("ambiguous", revision),
         _observation("invalid", revision, tags=("ofw-internal",)),
     )
+    contents: tuple[ObservationContent, ...] = ()
+    observations = plain_observations
+    if content:
+        captured: tuple[ObservationRecord, ...] = ()
+        for observation in plain_observations:
+            trace_id = observation.trace_id
+            assert trace_id is not None
+            input_text = f"request {trace_id.value} [REDACTED_EMAIL]"
+            output_text = f"result {trace_id.value}"
+            input_reference = ObservationContentReference.for_text(
+                input_text,
+                truncated=False,
+            )
+            output_reference = ObservationContentReference.for_text(
+                output_text,
+                truncated=False,
+            )
+            captured = (
+                *captured,
+                replace(
+                    observation,
+                    input_content=input_reference,
+                    output_content=output_reference,
+                ),
+            )
+            contents = (
+                *contents,
+                ObservationContent(input_reference, input_text),
+                ObservationContent(output_reference, output_text),
+            )
+        observations = captured
     traces: tuple[TraceRecord, ...] = (
         _trace("good", (good_score,)),
         _trace("failed", (failed_score,)),
@@ -185,7 +226,7 @@ def _collection(
         store.commit_observation_page(
             "connection-1",
             observation_sync,
-            ObservationPage(observations, None),
+            ObservationPage(observations, None, contents),
         )
         store.commit_score_page("connection-1", score_sync, ScorePage(scores, None))
     finally:
@@ -204,6 +245,14 @@ def _collection(
         snapshot_digest=Sha256Digest("sha256:collection"),
         capability=CollectionCapabilityReason.READY,
         store_path=store_path,
+        content_policy=(
+            ObservationContentPolicy.redacted(
+                maximum_bytes_per_field=4096,
+                secret_environment_variables=(),
+            )
+            if content
+            else ObservationContentPolicy.metadata_only()
+        ),
     )
 
 
@@ -294,6 +343,35 @@ def test_foreign_score_subject_cannot_label_trace(tmp_path: Path) -> None:
     )
 
     assert good.partition is TracePartition.AMBIGUOUS
+
+
+def test_mine_freezes_redacted_content_as_verified_artifact_references(
+    tmp_path: Path,
+) -> None:
+    revision = _harness(tmp_path).process()
+    collection = _collection(tmp_path, revision, content=True)
+
+    result = Mine(revision, collection, _policy()).run()
+
+    failed = next(
+        admission for admission in result.admissions if admission.trace_id == TraceId("failed")
+    )
+    assert failed.snapshot_path is not None
+    snapshot = TypeAdapter(TraceSnapshot).validate_json(failed.snapshot_path.read_bytes())
+    observation = snapshot.observations[0]
+    assert observation.input_content is not None
+    assert observation.output_content is not None
+    assert "request failed" not in failed.snapshot_path.read_text(encoding="utf-8")
+    input_content = read_snapshot_content(result, observation.input_content)
+    assert input_content.text == "request failed [REDACTED_EMAIL]"
+    assert input_content.reference == observation.input_content.content
+    collection.store_path.unlink()
+    assert read_snapshot_content(result, observation.input_content) == input_content
+
+    observation.input_content.path.write_text("tampered", encoding="utf-8")
+    with pytest.raises(MineError) as raised:
+        read_snapshot_content(result, observation.input_content)
+    assert raised.value.code is MineErrorCode.CONTENT_INVALID
 
 
 def test_source_window_is_part_of_mine_identity(tmp_path: Path) -> None:
