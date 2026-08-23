@@ -16,9 +16,14 @@ import pytest
 from ofw import (
     CollectionError,
     CollectionErrorCode,
+    ContentCaptureMode,
     Harness,
     HarnessRevision,
     LangfuseProject,
+    ObservationContentField,
+    ObservationContentMatch,
+    ObservationContentPolicy,
+    ObservationContentQuery,
     Tool,
     TraceWindow,
     ofw,
@@ -28,6 +33,7 @@ from ofw.observability.langfuse.domain import (
     CollectionCapabilityReason,
     CollectionSyncId,
     SyncStream,
+    TraceId,
 )
 from ofw.observability.langfuse.store import CollectionStore
 
@@ -85,6 +91,8 @@ def _observation_json(index: int, revision_id: str | None) -> str:
         '"environment":"production",'
         '"sessionId":"session-1",'
         f'"metadata":{metadata},'
+        f'"input":"request {observation_id} refund failed",'
+        f'"output":"result {observation_id}",'
         '"release":"chorus-17",'
         '"modelId":null,'
         '"inputPrice":null,'
@@ -208,6 +216,7 @@ def _revision(
     tmp_path: Path,
     server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
+    content_policy: ObservationContentPolicy | None = None,
 ) -> HarnessRevision:
     root = tmp_path / "agent"
     root.mkdir()
@@ -224,6 +233,7 @@ def _revision(
         environment="production",
         base_url=server.base_url,
         allow_private_network=True,
+        content_policy=content_policy,
     )
     harness = Harness("fixture-agent", root=root)
     harness.connect_prompt(ofw.editable(Path("prompt.md")))
@@ -373,3 +383,71 @@ def test_repeated_cursor_fails_instead_of_looping(
         )
 
     assert raised.value.code is CollectionErrorCode.CURSOR_LOOP
+
+
+def test_permissioned_content_can_be_searched_and_read_through_bounded_api(
+    tmp_path: Path,
+    collection_server: CollectionFixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_server.state.observation_count = 2
+    policy = ObservationContentPolicy.redacted(
+        maximum_bytes_per_field=4096,
+        secret_environment_variables=(),
+    )
+    revision = _revision(tmp_path, collection_server, monkeypatch, policy)
+    collection_server.state.revision_id = str(revision.id)
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
+
+    hits = ofw.search_observation_content(
+        result,
+        ObservationContentQuery(
+            "refund failed",
+            ObservationContentMatch.TOKEN_PHRASE,
+            ObservationContentField.INPUT,
+            TraceId("trace-1"),
+            10,
+            100,
+        ),
+    )
+    trajectory = ofw.read_trace_observations(result, TraceId("trace-1"), 10)
+    content = ofw.read_observation_content(result, hits[0].reference)
+
+    assert result.content_policy.mode is ContentCaptureMode.REDACTED
+    assert len(hits) == 2
+    assert len(trajectory) == 2
+    assert content.text.startswith("request obs-")
+
+
+def test_metadata_only_collection_denies_content_search(
+    tmp_path: Path,
+    collection_server: CollectionFixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_server.state.observation_count = 1
+    revision = _revision(tmp_path, collection_server, monkeypatch)
+    collection_server.state.revision_id = str(revision.id)
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
+
+    with pytest.raises(CollectionError) as raised:
+        ofw.search_observation_content(
+            result,
+            ObservationContentQuery(
+                "refund failed",
+                ObservationContentMatch.TOKEN_PHRASE,
+                ObservationContentField.ANY,
+                None,
+                10,
+                100,
+            ),
+        )
+
+    assert raised.value.code is CollectionErrorCode.CONTENT_NOT_CAPTURED
