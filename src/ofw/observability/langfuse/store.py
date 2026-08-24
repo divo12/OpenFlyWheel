@@ -203,6 +203,30 @@ class CollectionStore:
             complete=bool(complete),
         )
 
+    def replace_observation_membership(
+        self,
+        sync_id: CollectionSyncId,
+        refresh_sync_id: CollectionSyncId,
+    ) -> None:
+        self._replace_membership(
+            "collection_observations",
+            SyncStream.OBSERVATIONS,
+            sync_id,
+            refresh_sync_id,
+        )
+
+    def replace_score_membership(
+        self,
+        sync_id: CollectionSyncId,
+        refresh_sync_id: CollectionSyncId,
+    ) -> None:
+        self._replace_membership(
+            "collection_scores",
+            SyncStream.SCORES,
+            sync_id,
+            refresh_sync_id,
+        )
+
     def observations(self, sync_id: CollectionSyncId) -> tuple[ObservationRecord, ...]:
         cursor = self._connection.execute(
             """
@@ -251,10 +275,10 @@ class CollectionStore:
         reference: ObservationContentReference,
     ) -> ObservationContent:
         row = cast(
-            tuple[str, int, int] | None,
+            tuple[str, int] | None,
             self._connection.execute(
                 """
-                SELECT content.content_text, content.byte_count, content.truncated
+                SELECT content.content_text, content.byte_count
                 FROM observation_content AS content
                 WHERE content.content_digest = ?
                   AND EXISTS (
@@ -279,11 +303,10 @@ class CollectionStore:
                 CollectionErrorCode.CONTENT_NOT_CAPTURED,
                 str(reference.digest),
             )
-        text, byte_count, truncated = row
+        text, byte_count = row
         stored_reference = ObservationContentReference(
             reference.digest,
             byte_count,
-            bool(truncated),
         )
         if stored_reference != reference:
             raise CollectionError(
@@ -334,7 +357,7 @@ class CollectionStore:
                 WHERE membership.sync_id = ?
             )
             SELECT reference.observation_id, reference.trace_id, reference.field,
-                   content.content_digest, content.byte_count, content.truncated,
+                   content.content_digest, content.byte_count,
                    substr(content.content_text, 1, ?)
             FROM reference
             JOIN observation_content AS content
@@ -358,7 +381,7 @@ class CollectionStore:
                 query.limit,
             ),
         )
-        rows = cast(Iterable[tuple[str, str | None, str, str, int, int, str]], cursor)
+        rows = cast(Iterable[tuple[str, str | None, str, str, int, str]], cursor)
         return tuple(_content_hit(row) for row in rows)
 
     def scores(self, sync_id: CollectionSyncId) -> tuple[ScoreRecord, ...]:
@@ -394,19 +417,42 @@ class CollectionStore:
             ),
         )
 
+    def _replace_membership(
+        self,
+        table: str,
+        stream: SyncStream,
+        sync_id: CollectionSyncId,
+        refresh_sync_id: CollectionSyncId,
+    ) -> None:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    f"DELETE FROM {table} WHERE sync_id = ?",  # nosec B608
+                    (sync_id.value,),
+                )
+                self._connection.execute(
+                    f"UPDATE {table} SET sync_id = ? WHERE sync_id = ?",  # nosec B608
+                    (sync_id.value, refresh_sync_id.value),
+                )
+                self._connection.execute(
+                    "DELETE FROM collection_checkpoints WHERE sync_id = ? AND stream = ?",
+                    (refresh_sync_id.value, stream.value),
+                )
+        except sqlite3.Error as error:
+            raise CollectionError(CollectionErrorCode.DATABASE_ERROR, sync_id.value) from error
+
     def _commit_content(self, content: ObservationContent) -> None:
         inserted = self._connection.execute(
             """
             INSERT INTO observation_content (
-                content_digest, content_text, byte_count, truncated
-            ) VALUES (?, ?, ?, ?)
+                content_digest, content_text, byte_count
+            ) VALUES (?, ?, ?)
             ON CONFLICT (content_digest) DO NOTHING
             """,
             (
                 str(content.reference.digest),
                 content.text,
                 content.reference.byte_count,
-                int(content.reference.truncated),
             ),
         )
         if inserted.rowcount == 1:
@@ -445,9 +491,9 @@ def _fts_phrase(value: str) -> str:
 
 
 def _content_hit(
-    row: tuple[str, str | None, str, str, int, int, str],
+    row: tuple[str, str | None, str, str, int, str],
 ) -> ObservationContentHit:
-    observation_id, trace_id, field, digest, byte_count, truncated, excerpt = row
+    observation_id, trace_id, field, digest, byte_count, excerpt = row
     return ObservationContentHit(
         ObservationId(observation_id),
         None if trace_id is None else TraceId(trace_id),
@@ -455,7 +501,6 @@ def _content_hit(
         ObservationContentReference(
             Sha256Digest(digest),
             byte_count,
-            bool(truncated),
         ),
         excerpt,
     )

@@ -12,18 +12,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
+from pydantic import JsonValue, TypeAdapter
 
 from ofw import (
     CollectionError,
     CollectionErrorCode,
     LangfuseProject,
-    ObservationContentPolicy,
-    SecretEnvironmentVariable,
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import ObservationType, ScoreDataType, ScoreSubjectKind
 from ofw.observability.langfuse.transport import LangfuseHttpClient
 from ofw.observability.langfuse.wire import ObservationResponseWire, ScoreResponseWire
+
+_JSON_OBJECT_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 
 OBSERVATIONS_RESPONSE = r"""
 {
@@ -47,17 +48,29 @@ OBSERVATIONS_RESPONSE = r"""
       "updatedAt": "2026-08-22T00:00:07Z",
       "input": "{\"task\":\"ship\"}",
       "output": "{\"status\":\"done\"}",
-      "metadata": {"ofw.harness.revision": "ofw-revision-1"},
+      "metadata": {"ofw.harness.revision": "ofw-revision-1", "customer": "acme"},
+      "providedModelName": "gpt-5",
+      "internalModelId": "model-1",
+      "modelParameters": {"temperature": 0.2},
       "usageDetails": {"input": 10, "output": 4},
       "costDetails": {"total": 0.02},
       "totalCost": 0.02,
-      "modelId": null,
-      "inputPrice": null,
-      "outputPrice": null,
+      "inputUsage": 10,
+      "outputUsage": 4,
+      "totalUsage": 14,
+      "promptId": "prompt-1",
+      "promptName": "support-agent",
+      "promptVersion": 7,
+      "latency": 5.0,
+      "timeToFirstToken": 0.4,
+      "modelId": "model-1",
+      "inputPrice": "0.01",
+      "outputPrice": "0.02",
       "totalPrice": null,
       "tags": ["production", "chorus"],
       "release": "chorus-17",
-      "traceName": "employee-run"
+      "traceName": "employee-run",
+      "futureLangfuseField": {"preserved": true}
     }
   ],
   "meta": {"cursor": "next-observation-page"}
@@ -79,7 +92,12 @@ SCORES_RESPONSE = """
       "createdAt": "2026-08-22T00:01:01Z",
       "updatedAt": "2026-08-22T00:01:02Z",
       "comment": "reviewed",
-      "subject": {"kind": "trace", "id": "trace-1"}
+      "configId": "config-1",
+      "metadata": {"rubric": "strict"},
+      "authorUserId": "reviewer-1",
+      "queueId": "queue-1",
+      "subject": {"kind": "trace", "id": "trace-1"},
+      "futureScoreField": ["preserved"]
     }
   ],
   "meta": {"limit": 100, "cursor": null}
@@ -183,7 +201,6 @@ def langfuse_server() -> Iterator[FixtureServer]:
 def _project(
     server: FixtureServer,
     monkeypatch: pytest.MonkeyPatch,
-    content_policy: ObservationContentPolicy | None = None,
 ) -> LangfuseProject:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
@@ -191,7 +208,6 @@ def _project(
         environment="production",
         base_url=server.base_url,
         allow_private_network=True,
-        content_policy=content_policy,
     )
 
 
@@ -230,7 +246,9 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert observation.trace_id is not None
     assert observation.trace_id.value == "trace-1"
     assert observation.metadata is not None
-    assert observation.metadata.canonical == '{"ofw.harness.revision":"ofw-revision-1"}'
+    assert observation.metadata.canonical == (
+        '{"customer":"acme","ofw.harness.revision":"ofw-revision-1"}'
+    )
     assert observations.cursor is not None
     assert observations.cursor.value == "next-observation-page"
     assert score.data_type is ScoreDataType.BOOLEAN
@@ -238,26 +256,31 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert score.subject is not None
     assert score.subject.kind is ScoreSubjectKind.TRACE
     assert score.subject.id == "trace-1"
+    assert score.comment == "reviewed"
+    assert score.metadata is not None
+    observation_raw = _JSON_OBJECT_ADAPTER.validate_json(observation.raw.canonical)
+    score_raw = _JSON_OBJECT_ADAPTER.validate_json(score.raw.canonical)
+    assert observation_raw["futureLangfuseField"] == {"preserved": True}
+    assert observation_raw["promptName"] == "support-agent"
+    assert score_raw["futureScoreField"] == ["preserved"]
+    assert score_raw["authorUserId"] == "reviewer-1"
     assert ("fromStartTime", "2026-08-22T00:00:00Z") in observation_query
     assert ("toStartTime", "2026-08-22T01:00:00Z") in observation_query
-    assert ("fields", "core,basic,time,metadata,usage,trace_context") in observation_query
-    assert ("expandMetadata", "ofw.harness.revision") in observation_query
+    assert (
+        "fields",
+        "core,basic,time,io,metadata,model,usage,prompt,metrics,trace_context",
+    ) in observation_query
     assert ("fromTimestamp", "2026-08-22T00:00:00Z") in score_query
-    assert ("fields", "details,subject") in score_query
+    assert ("fields", "details,subject,annotation") in score_query
     assert all(request.authorization == expected_auth for request in langfuse_server.state.requests)
     assert langfuse_server.state.writes == 0
 
 
-def test_opted_in_io_is_redacted_truncated_and_requested_explicitly(
+def test_full_input_and_output_are_preserved_without_redaction_or_truncation(
     langfuse_server: FixtureServer,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TRACE_SECRET", "ship")
-    policy = ObservationContentPolicy.redacted(
-        maximum_bytes_per_field=32,
-        secret_environment_variables=(SecretEnvironmentVariable("TRACE_SECRET"),),
-    )
-    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch, policy))
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
     try:
         page = client.get_observations(_window())
     finally:
@@ -275,28 +298,12 @@ def test_opted_in_io_is_redacted_truncated_and_requested_explicitly(
         for request in langfuse_server.state.requests
         if request.path == "/api/public/v2/observations"
     )
-    assert input_content.text == '{"task":"[REDACTED_SECRET]"}'
-    assert "ship" not in input_content.text
-    assert ("fields", "core,basic,time,io,metadata,usage,trace_context") in query
-
-
-def test_wire_redacts_common_identifiers_before_content_addressing() -> None:
-    response = OBSERVATIONS_RESPONSE.replace(
-        '"input": "{\\"task\\":\\"ship\\"}"',
-        '"input": "email dev@example.com Bearer abcdef123456"',
-    )
-    policy = ObservationContentPolicy.redacted(
-        maximum_bytes_per_field=24,
-        secret_environment_variables=(),
-    )
-
-    page = ObservationResponseWire.model_validate_json(response).normalize(policy, ())
-
-    content = page.contents[0]
-    assert "dev@example.com" not in content.text
-    assert "abcdef123456" not in content.text
-    assert content.reference.truncated
-    assert content.reference.byte_count == len(content.text.encode())
+    assert input_content.text == '{"task":"ship"}'
+    assert (
+        "fields",
+        "core,basic,time,io,metadata,model,usage,prompt,metrics,trace_context",
+    ) in query
+    assert input_content.reference.byte_count == len(input_content.text.encode())
 
 
 def test_persisted_observation_and_score_changes_produce_new_digests() -> None:
@@ -332,7 +339,7 @@ def test_enrichment_field_changes_produce_new_observation_digests() -> None:
     )
     enriched_observation = (
         ObservationResponseWire.model_validate_json(
-            OBSERVATIONS_RESPONSE.replace('"modelId": null', '"modelId": "gpt-5"')
+            OBSERVATIONS_RESPONSE.replace('"modelId": "model-1"', '"modelId": "gpt-5"')
         )
         .normalize()
         .records[0]
@@ -342,17 +349,18 @@ def test_enrichment_field_changes_produce_new_observation_digests() -> None:
     assert first_observation.digest != enriched_observation.digest
 
 
-def test_unknown_upstream_fields_are_ignored() -> None:
+def test_unknown_upstream_fields_are_preserved_in_raw_record() -> None:
     augmented = OBSERVATIONS_RESPONSE.replace(
         '"traceName": "employee-run"',
         '"traceName": "employee-run",\n      "brandNewField": {"nested": true}',
     )
     records = ObservationResponseWire.model_validate_json(augmented).normalize().records
 
-    assert records[0].name == "backend-engineer"
+    raw = _JSON_OBJECT_ADAPTER.validate_json(records[0].raw.canonical)
+    assert raw["brandNewField"] == {"nested": True}
 
 
-def test_catalog_keeps_only_revision_metadata() -> None:
+def test_catalog_keeps_all_observation_metadata() -> None:
     augmented = OBSERVATIONS_RESPONSE.replace(
         '"ofw.harness.revision": "ofw-revision-1"',
         '"ofw.harness.revision": "ofw-revision-1", "secret": "discard-me"',
@@ -360,7 +368,10 @@ def test_catalog_keeps_only_revision_metadata() -> None:
     observation = ObservationResponseWire.model_validate_json(augmented).normalize().records[0]
 
     assert observation.metadata is not None
-    assert observation.metadata.canonical == '{"ofw.harness.revision":"ofw-revision-1"}'
+    assert observation.metadata.canonical == (
+        '{"customer":"acme","ofw.harness.revision":"ofw-revision-1",'
+        '"secret":"discard-me"}'
+    )
 
 
 def test_public_ipv6_literal_is_supported(monkeypatch: pytest.MonkeyPatch) -> None:

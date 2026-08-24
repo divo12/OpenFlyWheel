@@ -15,7 +15,6 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
     LangfuseProject,
     TraceWindow,
 )
@@ -56,8 +55,6 @@ class LangfuseHttpClient:
             timeout=timeout_seconds,
         )
         self._environment = manifest.environment.value
-        self._content_policy = manifest.content_policy
-        self._redaction_values = project.redaction_values()
 
     def close(self) -> None:
         self._client.close()
@@ -75,14 +72,9 @@ class LangfuseHttpClient:
         window: TraceWindow,
         cursor: PageCursor | None = None,
     ) -> ObservationPage:
-        field_groups = (
-            "core,basic,time,metadata,usage,trace_context"
-            if self._content_policy.mode is ContentCaptureMode.METADATA_ONLY
-            else "core,basic,time,io,metadata,usage,trace_context"
-        )
+        field_groups = "core,basic,time,io,metadata,model,usage,prompt,metrics,trace_context"
         parameters = (
             ("fields", field_groups),
-            ("expandMetadata", "ofw.harness.revision"),
             ("limit", "1000"),
             ("environment", self._environment),
             ("fromStartTime", _utc_text(window.start)),
@@ -93,7 +85,7 @@ class LangfuseHttpClient:
             parameters,
             TypeAdapter(ObservationResponseWire),
         )
-        return response.normalize(self._content_policy, self._redaction_values)
+        return response.normalize()
 
     def get_scores(
         self,
@@ -101,7 +93,7 @@ class LangfuseHttpClient:
         cursor: PageCursor | None = None,
     ) -> ScorePage:
         parameters = (
-            ("fields", "details,subject"),
+            ("fields", "details,subject,annotation"),
             ("limit", "100"),
             ("environment", self._environment),
             ("fromTimestamp", _utc_text(window.start)),

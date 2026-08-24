@@ -7,15 +7,14 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from ofw.contracts import Sha256Digest
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
-    ObservationContentPolicy,
 )
 from ofw.observability.langfuse.domain import (
     JsonDocument,
@@ -39,12 +38,7 @@ from ofw.observability.langfuse.domain import (
 )
 
 _VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
-_EMAIL_PATTERN = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])")
-_BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-_REDACTED_EMAIL = "[REDACTED_EMAIL]"
-_REDACTED_BEARER = "Bearer [REDACTED_TOKEN]"
-_REDACTED_SECRET = "[REDACTED_SECRET]"  # nosec B105
-_TRUNCATED = "[TRUNCATED]"
+_JSON_OBJECT_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 
 
 class HealthWire(BaseModel):
@@ -65,7 +59,7 @@ class HealthWire(BaseModel):
 
 
 class ObservationWire(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+    model_config = ConfigDict(extra="allow", frozen=True)
 
     id: str
     trace_id: str | None = Field(alias="traceId")
@@ -117,13 +111,9 @@ class ObservationResponseWire(BaseModel):
 
     def normalize(
         self,
-        policy: ObservationContentPolicy | None = None,
-        redaction_values: tuple[str, ...] = (),
     ) -> ObservationPage:
-        selected = policy or ObservationContentPolicy.metadata_only()
         normalized = tuple(
-            _normalize_observation_with_content(record, selected, redaction_values)
-            for record in self.data
+            _normalize_observation_with_content(record) for record in self.data
         )
         return ObservationPage(
             records=tuple(item.record for item in normalized),
@@ -154,7 +144,7 @@ class ScoreSubjectWire(BaseModel):
 
 
 class ScoreWire(BaseModel):
-    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+    model_config = ConfigDict(extra="allow", frozen=True)
 
     id: str
     project_id: str = Field(alias="projectId")
@@ -187,7 +177,9 @@ class ScoreResponseWire(BaseModel):
     data: tuple[ScoreWire, ...]
     meta: ScoreMetaWire
 
-    def normalize(self) -> ScorePage:
+    def normalize(
+        self,
+    ) -> ScorePage:
         return ScorePage(
             records=tuple(_normalize_score(record) for record in self.data),
             cursor=None if self.meta.cursor is None else PageCursor(self.meta.cursor),
@@ -203,11 +195,9 @@ class _NormalizedObservation:
 
 def _normalize_observation_with_content(
     wire: ObservationWire,
-    policy: ObservationContentPolicy,
-    redaction_values: tuple[str, ...],
 ) -> _NormalizedObservation:
-    input_content = _observation_content(wire.input, policy, redaction_values)
-    output_content = _observation_content(wire.output, policy, redaction_values)
+    input_content = _observation_content(wire.input)
+    output_content = _observation_content(wire.output)
     return _NormalizedObservation(
         _normalize_observation(
             wire,
@@ -224,53 +214,10 @@ def _normalize_observation(
     input_content: ObservationContentReference | None,
     output_content: ObservationContentReference | None,
 ) -> ObservationRecord:
-    metadata = _revision_document(wire.metadata)
+    raw = _wire_document(wire)
+    metadata = _json_document(wire.metadata)
     usage = _json_document(wire.usage_details)
     costs = _json_document(wire.cost_details)
-    digest_source = json.dumps(
-        (
-            wire.id,
-            wire.trace_id,
-            wire.start_time.isoformat(),
-            None if wire.end_time is None else wire.end_time.isoformat(),
-            wire.project_id,
-            wire.parent_observation_id,
-            wire.type.value,
-            wire.is_root,
-            wire.name,
-            None if wire.level is None else wire.level.value,
-            wire.status_message,
-            wire.version,
-            wire.environment,
-            wire.bookmarked,
-            wire.public,
-            wire.user_id,
-            wire.session_id,
-            (
-                None
-                if wire.completion_start_time is None
-                else wire.completion_start_time.isoformat()
-            ),
-            None if wire.created_at is None else wire.created_at.isoformat(),
-            None if wire.updated_at is None else wire.updated_at.isoformat(),
-            None if metadata is None else metadata.canonical,
-            None if usage is None else usage.canonical,
-            None if costs is None else costs.canonical,
-            wire.total_cost,
-            wire.usage_pricing_tier_name,
-            wire.model_id,
-            wire.input_price,
-            wire.output_price,
-            wire.total_price,
-            wire.tags,
-            wire.release,
-            wire.trace_name,
-            None if input_content is None else str(input_content.digest),
-            None if output_content is None else str(output_content.digest),
-        ),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
     return ObservationRecord(
         id=ObservationId(wire.id),
         trace_id=None if wire.trace_id is None else TraceId(wire.trace_id),
@@ -299,7 +246,8 @@ def _normalize_observation(
         tags=() if wire.tags is None else wire.tags,
         release=wire.release,
         trace_name=wire.trace_name,
-        digest=Sha256Digest(f"sha256:{hashlib.sha256(digest_source.encode()).hexdigest()}"),
+        raw=raw,
+        digest=Sha256Digest(f"sha256:{hashlib.sha256(raw.canonical.encode()).hexdigest()}"),
         status_message=wire.status_message,
         bookmarked=wire.bookmarked,
         public=wire.public,
@@ -314,31 +262,10 @@ def _normalize_observation(
     )
 
 
-def _observation_content(
-    value: str | None,
-    policy: ObservationContentPolicy,
-    redaction_values: tuple[str, ...],
-) -> ObservationContent | None:
-    if value is None or policy.mode is ContentCaptureMode.METADATA_ONLY:
+def _observation_content(value: str | None) -> ObservationContent | None:
+    if value is None:
         return None
-    redacted = value
-    for secret in sorted(redaction_values, key=len, reverse=True):
-        if secret:
-            redacted = redacted.replace(secret, _REDACTED_SECRET)
-    redacted = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, redacted)
-    redacted = _BEARER_PATTERN.sub(_REDACTED_BEARER, redacted)
-    bounded, truncated = _bounded_utf8(redacted, policy.maximum_bytes_per_field)
-    reference = ObservationContentReference.for_text(bounded, truncated=truncated)
-    return ObservationContent(reference, bounded)
-
-
-def _bounded_utf8(value: str, maximum_bytes: int) -> tuple[str, bool]:
-    encoded = value.encode()
-    if len(encoded) <= maximum_bytes:
-        return value, False
-    marker = _TRUNCATED.encode()
-    prefix = encoded[: maximum_bytes - len(marker)].decode(errors="ignore")
-    return prefix + _TRUNCATED, True
+    return ObservationContent(ObservationContentReference.for_text(value), value)
 
 
 def _unique_contents(contents: tuple[ObservationContent, ...]) -> tuple[ObservationContent, ...]:
@@ -351,6 +278,7 @@ def _unique_contents(contents: tuple[ObservationContent, ...]) -> tuple[Observat
 
 def _normalize_score(wire: ScoreWire) -> ScoreRecord:
     _validate_score_value(wire)
+    raw = _wire_document(wire)
     metadata = _json_document(wire.metadata)
     subject = (
         None
@@ -360,28 +288,6 @@ def _normalize_score(wire: ScoreWire) -> ScoreRecord:
             id=wire.subject.id,
             trace_id=None if wire.subject.trace_id is None else TraceId(wire.subject.trace_id),
         )
-    )
-    digest_source = json.dumps(
-        (
-            wire.id,
-            wire.project_id,
-            wire.name,
-            wire.data_type.value,
-            wire.value,
-            wire.source.value,
-            wire.timestamp.isoformat(),
-            wire.environment,
-            wire.created_at.isoformat(),
-            wire.updated_at.isoformat(),
-            wire.comment,
-            wire.config_id,
-            None if subject is None else subject.kind.value,
-            None if subject is None else subject.id,
-            (None if subject is None or subject.trace_id is None else subject.trace_id.value),
-            None if metadata is None else metadata.canonical,
-        ),
-        ensure_ascii=False,
-        separators=(",", ":"),
     )
     return ScoreRecord(
         id=ScoreId(wire.id),
@@ -397,7 +303,8 @@ def _normalize_score(wire: ScoreWire) -> ScoreRecord:
         comment=wire.comment,
         metadata=metadata,
         subject=subject,
-        digest=Sha256Digest(f"sha256:{hashlib.sha256(digest_source.encode()).hexdigest()}"),
+        raw=raw,
+        digest=Sha256Digest(f"sha256:{hashlib.sha256(raw.canonical.encode()).hexdigest()}"),
         config_id=wire.config_id,
     )
 
@@ -405,23 +312,18 @@ def _normalize_score(wire: ScoreWire) -> ScoreRecord:
 def _json_document(value: JsonValue | None) -> JsonDocument | None:
     if value is None:
         return None
+    return _canonical_document(value)
+
+
+def _canonical_document(value: JsonValue) -> JsonDocument:
     return JsonDocument(
         json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     )
 
 
-def _revision_document(value: JsonValue | None) -> JsonDocument | None:
-    if value is None:
-        return None
-    canonical = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    try:
-        metadata = RevisionMetadata.model_validate_json(canonical)
-    except ValidationError:
-        return None
-    if metadata.revision_id is None:
-        return None
-    revision = json.dumps(metadata.revision_id, ensure_ascii=False, separators=(",", ":"))
-    return JsonDocument(f'{{"ofw.harness.revision":{revision}}}')
+def _wire_document(wire: BaseModel) -> JsonDocument:
+    dumped = cast(object, wire.model_dump(mode="json", by_alias=True, exclude_none=False))
+    return _canonical_document(_JSON_OBJECT_ADAPTER.validate_python(dumped))
 
 
 def _validate_score_value(wire: ScoreWire) -> None:
