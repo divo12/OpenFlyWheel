@@ -63,6 +63,7 @@ def _observation(observation_id: str, digest_suffix: str = "one") -> Observation
         tags=("production",),
         release="release-1",
         trace_name="employee-run",
+        raw=JsonDocument('{"id":"' + observation_id + '"}'),
         digest=Sha256Digest(f"sha256:{digest_suffix}"),
     )
 
@@ -82,6 +83,7 @@ def _score() -> ScoreRecord:
         comment="reviewed",
         metadata=None,
         subject=ScoreSubject(ScoreSubjectKind.TRACE, "trace-1", None),
+        raw=JsonDocument('{"id":"score-1"}'),
         digest=Sha256Digest("sha256:score"),
     )
 
@@ -219,10 +221,10 @@ def test_content_is_addressed_once_and_supports_bounded_exact_and_phrase_search(
     path = tmp_path / "collection.sqlite"
     store = CollectionStore(path)
     sync_id = CollectionSyncId("sync-content")
-    input_text = "Refund failed for [REDACTED_EMAIL]"
+    input_text = "Refund failed for dev@example.com"
     output_text = "Escalation opened"
-    input_reference = ObservationContentReference.for_text(input_text, truncated=False)
-    output_reference = ObservationContentReference.for_text(output_text, truncated=False)
+    input_reference = ObservationContentReference.for_text(input_text)
+    output_reference = ObservationContentReference.for_text(output_text)
     input_content = ObservationContent(input_reference, input_text)
     output_content = ObservationContent(output_reference, output_text)
     observation = replace(

@@ -30,10 +30,7 @@ from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
     LangfuseProject,
-    ObservationContentPolicy,
-    SecretEnvironmentVariable,
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import (
@@ -101,7 +98,6 @@ __all__ = [
     "CollectionError",
     "CollectionErrorCode",
     "CollectionResult",
-    "ContentCaptureMode",
     "EditableFile",
     "GitCommit",
     "Harness",
@@ -119,12 +115,10 @@ __all__ = [
     "ObservationContentField",
     "ObservationContentHit",
     "ObservationContentMatch",
-    "ObservationContentPolicy",
     "ObservationContentQuery",
     "ObservationContentReference",
     "RepositorySnapshot",
     "Sha256Digest",
-    "SecretEnvironmentVariable",
     "Subagent",
     "Tool",
     "TraceWindow",

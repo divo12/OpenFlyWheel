@@ -12,11 +12,8 @@ import pytest
 from ofw import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
     Harness,
     LangfuseProject,
-    ObservationContentPolicy,
-    SecretEnvironmentVariable,
     TraceWindow,
     ofw,
 )
@@ -63,68 +60,6 @@ def test_from_env_keeps_credentials_out_of_manifest_and_repr(
     assert "sk-sensitive" not in rendered
     assert "pk-sensitive" not in repr(project)
     assert "sk-sensitive" not in repr(project)
-
-
-def test_observation_content_capture_requires_an_explicit_redacted_policy(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-sensitive")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-sensitive")
-    monkeypatch.setenv("TRACE_SECRET", "trace-sensitive")
-    metadata_only = LangfuseProject.from_env(
-        environment="production",
-        base_url="https://us.cloud.langfuse.com",
-    )
-    policy = ObservationContentPolicy.redacted(
-        maximum_bytes_per_field=4096,
-        secret_environment_variables=(SecretEnvironmentVariable("TRACE_SECRET"),),
-    )
-    captured = LangfuseProject.from_env(
-        environment="production",
-        base_url="https://us.cloud.langfuse.com",
-        content_policy=policy,
-    )
-
-    assert metadata_only.manifest().content_policy.mode is ContentCaptureMode.METADATA_ONLY
-    assert captured.manifest().content_policy == policy
-    assert captured.manifest().id != metadata_only.manifest().id
-    assert captured.redaction_values() == (
-        "pk-sensitive",
-        "sk-sensitive",
-        "trace-sensitive",
-    )
-    assert "trace-sensitive" not in captured.manifest().to_json()
-
-
-def test_observation_content_policy_rejects_unbounded_capture() -> None:
-    with pytest.raises(CollectionError) as raised:
-        ObservationContentPolicy.redacted(
-            maximum_bytes_per_field=0,
-            secret_environment_variables=(),
-        )
-
-    assert raised.value.code is CollectionErrorCode.INVALID_CONTENT_POLICY
-
-
-def test_missing_configured_redaction_value_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
-    monkeypatch.delenv("TRACE_SECRET", raising=False)
-    project = LangfuseProject.from_env(
-        environment="production",
-        base_url="https://us.cloud.langfuse.com",
-        content_policy=ObservationContentPolicy.redacted(
-            maximum_bytes_per_field=4096,
-            secret_environment_variables=(SecretEnvironmentVariable("TRACE_SECRET"),),
-        ),
-    )
-
-    with pytest.raises(CollectionError) as raised:
-        project.redaction_values()
-
-    assert raised.value.code is CollectionErrorCode.MISSING_REDACTION_VALUE
 
 
 @pytest.mark.parametrize(

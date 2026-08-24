@@ -13,7 +13,6 @@ from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
     LangfuseProject,
     TraceWindow,
 )
@@ -123,7 +122,6 @@ def collect(
             snapshot_digest=snapshot_digest,
             capability=capability,
             store_path=selected_store_path,
-            content_policy=revision.observability.content_policy,
         )
     finally:
         store.close()
@@ -367,7 +365,6 @@ def search_observation_content(
     collection: CollectionResult,
     query: ObservationContentQuery,
 ) -> tuple[ObservationContentHit, ...]:
-    _require_captured_content(collection)
     store = CollectionStore(collection.store_path)
     try:
         return store.search_content(collection.observation_sync_id, query)
@@ -393,17 +390,8 @@ def read_observation_content(
     collection: CollectionResult,
     reference: ObservationContentReference,
 ) -> ObservationContent:
-    _require_captured_content(collection)
     store = CollectionStore(collection.store_path)
     try:
         return store.read_content(collection.observation_sync_id, reference)
     finally:
         store.close()
-
-
-def _require_captured_content(collection: CollectionResult) -> None:
-    if collection.content_policy.mode is ContentCaptureMode.METADATA_ONLY:
-        raise CollectionError(
-            CollectionErrorCode.CONTENT_NOT_CAPTURED,
-            str(collection.observation_sync_id.value),
-        )

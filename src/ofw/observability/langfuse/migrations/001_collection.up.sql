@@ -3,8 +3,7 @@ BEGIN IMMEDIATE;
 CREATE TABLE observation_content (
     content_digest TEXT PRIMARY KEY,
     content_text TEXT NOT NULL,
-    byte_count INTEGER NOT NULL CHECK (byte_count >= 0),
-    truncated INTEGER NOT NULL CHECK (truncated IN (0, 1))
+    byte_count INTEGER NOT NULL CHECK (byte_count >= 0)
 );
 
 CREATE VIRTUAL TABLE observation_content_fts USING fts5(

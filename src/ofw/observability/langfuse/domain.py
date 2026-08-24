@@ -13,7 +13,6 @@ from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
     LangfuseConnectionId,
-    ObservationContentPolicy,
     TraceWindow,
 )
 
@@ -162,16 +161,13 @@ class JsonDocument:
 class ObservationContentReference:
     digest: Sha256Digest
     byte_count: int
-    truncated: bool
 
     @classmethod
-    def for_text(cls, text: str, *, truncated: bool) -> ObservationContentReference:
+    def for_text(cls, text: str) -> ObservationContentReference:
         encoded = text.encode()
-        digest_payload = b"1\0" + encoded if truncated else b"0\0" + encoded
         return cls(
-            Sha256Digest(f"sha256:{hashlib.sha256(digest_payload).hexdigest()}"),
+            Sha256Digest(f"sha256:{hashlib.sha256(encoded).hexdigest()}"),
             len(encoded),
-            truncated,
         )
 
 
@@ -181,10 +177,7 @@ class ObservationContent:
     text: str
 
     def __post_init__(self) -> None:
-        expected = ObservationContentReference.for_text(
-            self.text,
-            truncated=self.reference.truncated,
-        )
+        expected = ObservationContentReference.for_text(self.text)
         if self.reference != expected:
             raise ValueError("observation content reference mismatch")
 
@@ -244,6 +237,7 @@ class ObservationRecord:
     tags: tuple[str, ...]
     release: str | None
     trace_name: str | None
+    raw: JsonDocument
     digest: Sha256Digest
     status_message: str | None = None
     bookmarked: bool | None = None
@@ -280,6 +274,7 @@ class ScoreRecord:
     comment: str | None
     metadata: JsonDocument | None
     subject: ScoreSubject | None
+    raw: JsonDocument
     digest: Sha256Digest
     config_id: str | None = None
 
@@ -333,4 +328,3 @@ class CollectionResult:
     snapshot_digest: Sha256Digest
     capability: CollectionCapabilityReason
     store_path: Path
-    content_policy: ObservationContentPolicy
