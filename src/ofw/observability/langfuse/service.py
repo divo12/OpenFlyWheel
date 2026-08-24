@@ -317,7 +317,12 @@ def _attribution(
         if metadata.revision_id is not None and metadata.revision_id not in revisions:
             revisions.append(metadata.revision_id)
     if not revisions:
-        return AttributionLevel.MISSING
+        releases = {observation.release for observation in observations if observation.release}
+        return (
+            AttributionLevel.EXACT
+            if releases == {str(revision_id)}
+            else AttributionLevel.MISSING
+        )
     if len(revisions) == 1 and revisions[0] == str(revision_id):
         return AttributionLevel.EXACT
     return AttributionLevel.AMBIGUOUS

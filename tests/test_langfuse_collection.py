@@ -47,6 +47,7 @@ class CollectionFixtureState:
     observation_count: int = 1001
     score_count: int = 1
     revision_id: str | None = None
+    release: str = "chorus-17"
     requests: list[RequestRecord] = field(default_factory=list)
     writes: int = 0
     fail_second_observation_page_once: bool = False
@@ -67,7 +68,7 @@ class CollectionFixtureServer:
         self.thread.join(timeout=5)
 
 
-def _observation_json(index: int, revision_id: str | None) -> str:
+def _observation_json(index: int, revision_id: str | None, release: str) -> str:
     observation_id = f"obs-{index:04d}"
     parent = "null" if index == 0 else '"obs-0000"'
     observation_type = "AGENT" if index == 0 else "TOOL"
@@ -92,7 +93,7 @@ def _observation_json(index: int, revision_id: str | None) -> str:
         f'"metadata":{metadata},'
         f'"input":"request {observation_id} refund failed",'
         f'"output":"result {observation_id}",'
-        '"release":"chorus-17",'
+        f'"release":"{release}",'
         '"modelId":null,'
         '"inputPrice":null,'
         '"outputPrice":null,'
@@ -104,14 +105,16 @@ def _observation_json(index: int, revision_id: str | None) -> str:
 def _observations_response(state: CollectionFixtureState, cursor: str | None) -> str:
     if cursor is None:
         end = min(state.observation_count, 1000)
-        records = ",".join(_observation_json(index, state.revision_id) for index in range(end))
+        records = ",".join(
+            _observation_json(index, state.revision_id, state.release) for index in range(end)
+        )
         if state.repeat_observation_cursor:
             next_cursor = '"repeated-cursor"'
         else:
             next_cursor = '"obs-page-2"' if state.observation_count > 1000 else "null"
     else:
         records = ",".join(
-            _observation_json(index, state.revision_id)
+            _observation_json(index, state.revision_id, state.release)
             for index in range(1000, state.observation_count)
         )
         next_cursor = '"repeated-cursor"' if state.repeat_observation_cursor else "null"
@@ -290,6 +293,25 @@ def test_missing_revision_metadata_is_collected_but_not_fit_ready(
 
     assert result.observation_count == 2
     assert result.capability is CollectionCapabilityReason.MISSING_REVISION_ATTRIBUTION
+
+
+def test_native_langfuse_release_attributes_trace_without_custom_metadata(
+    tmp_path: Path,
+    collection_server: CollectionFixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_server.state.observation_count = 2
+    revision = _revision(tmp_path, collection_server, monkeypatch)
+    collection_server.state.release = str(revision.id)
+
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
+
+    assert result.traces[0].attribution is AttributionLevel.EXACT
+    assert result.capability is CollectionCapabilityReason.READY
 
 
 def test_wrong_revision_metadata_is_ambiguous_and_not_fit_ready(
