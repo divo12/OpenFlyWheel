@@ -208,6 +208,31 @@ def test_local_process_reports_timeout_and_nonzero_exit(tmp_path: Path) -> None:
     assert crashed.error_code is RunErrorCode.NON_ZERO_EXIT
 
 
+def test_local_process_injects_revision_attribution_without_user_code(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    revision = _revision(root)
+    environment = LocalProcess(ProcessLimits(timedelta(seconds=1)))
+    prepared = environment.prepare(revision, CanaryCase(CaseId("attribution"), "input"))
+    command = ProcessCommand(
+        (
+            sys.executable,
+            "-c",
+            "import os; print(os.environ['OFW_HARNESS_REVISION'] + '|' + "
+            "os.environ['LANGFUSE_RELEASE'])",
+        )
+    )
+    try:
+        result = CommandLoop(command).invoke(
+            CanaryCase(CaseId("attribution"), "input"),
+            prepared,
+            revision,
+        )
+    finally:
+        environment.destroy(prepared)
+
+    assert result.output == f"{revision.id}|{revision.id}"
+
+
 def test_local_process_reset_restores_workspace(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     revision = _revision(root)
@@ -260,6 +285,13 @@ def test_docker_compose_adapter_uses_disposable_native_lifecycle(tmp_path: Path)
     prepared = environment.prepare(revision, CanaryCase(CaseId("docker"), "input"))
 
     assert environment.health(prepared).passed
+    assert (
+        "-e",
+        f"OFW_HARNESS_REVISION={revision.id}",
+        "-e",
+        f"LANGFUSE_RELEASE={revision.id}",
+        "agent",
+    ) == prepared.command_prefix[-5:]
     (prepared.root / "prompt.md").write_text("mutated\n", encoding="utf-8")
     environment.reset(prepared)
     assert (prepared.root / "prompt.md").read_text(encoding="utf-8") == "Be accurate.\n"

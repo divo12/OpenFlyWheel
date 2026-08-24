@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import re
 import shutil
 import subprocess  # nosec B404
@@ -185,6 +186,7 @@ class PreparedEnvironment:
     temporary: tempfile.TemporaryDirectory[str]
     limits: ProcessLimits
     command_prefix: tuple[str, ...] = ()
+    environment: tuple[tuple[str, str], ...] = ()
 
     def run(self, command: ProcessCommand, payload: str) -> ProcessResult:
         started = time.monotonic()
@@ -196,6 +198,7 @@ class PreparedEnvironment:
                 input=payload,
                 capture_output=True,
                 text=True,
+                env={**os.environ, **dict(self.environment)},
                 timeout=self.limits.timeout.total_seconds(),
                 check=False,
             )
@@ -221,7 +224,11 @@ class LocalProcess:
 
     def prepare(self, revision: HarnessRevision, case: CanaryCase) -> PreparedEnvironment:
         del case
-        return _prepare_workspace(revision.root, self.limits)
+        return _prepare_workspace(
+            revision.root,
+            self.limits,
+            environment=_revision_environment(revision),
+        )
 
     def health(self, prepared: PreparedEnvironment) -> CheckReport:
         return CheckReport(prepared.root.is_dir(), "local workspace")
@@ -252,7 +259,11 @@ class DockerCompose:
 
     def prepare(self, revision: HarnessRevision, case: CanaryCase) -> PreparedEnvironment:
         del case
-        workspace = _prepare_workspace(revision.root, self.limits)
+        workspace = _prepare_workspace(
+            revision.root,
+            self.limits,
+            environment=_revision_environment(revision),
+        )
         prepared = PreparedEnvironment(
             workspace.root,
             workspace.source_root,
@@ -262,8 +273,10 @@ class DockerCompose:
                 *_compose_prefix(self, workspace),
                 "exec",
                 "-T",
+                *_compose_environment(workspace.environment),
                 self.service.value,
             ),
+            workspace.environment,
         )
         if not (prepared.root / self.compose_file).is_file():
             self.destroy(prepared)
@@ -503,11 +516,12 @@ def _prepare_workspace(
     source_root: Path,
     limits: ProcessLimits,
     command_prefix: tuple[str, ...] = (),
+    environment: tuple[tuple[str, str], ...] = (),
 ) -> PreparedEnvironment:
     temporary = tempfile.TemporaryDirectory(prefix="ofw-runtime-")
     root = Path(temporary.name) / "workspace"
     _copy_workspace(source_root, root)
-    return PreparedEnvironment(root, source_root, temporary, limits, command_prefix)
+    return PreparedEnvironment(root, source_root, temporary, limits, command_prefix, environment)
 
 
 def _copy_workspace(source: Path, destination: Path) -> None:
@@ -545,6 +559,7 @@ def _compose_control(
         prepared.source_root,
         prepared.temporary,
         prepared.limits,
+        environment=prepared.environment,
     )
     return local.run(command, "")
 
@@ -561,6 +576,22 @@ def _compose_prefix(
         adapter.compose_file.as_posix(),
         "-p",
         f"ofw-{project}",
+    )
+
+
+def _revision_environment(revision: HarnessRevision) -> tuple[tuple[str, str], ...]:
+    revision_id = str(revision.id)
+    return (
+        ("OFW_HARNESS_REVISION", revision_id),
+        ("LANGFUSE_RELEASE", revision_id),
+    )
+
+
+def _compose_environment(environment: tuple[tuple[str, str], ...]) -> tuple[str, ...]:
+    return tuple(
+        argument
+        for name, value in environment
+        for argument in ("-e", f"{name}={value}")
     )
 
 
