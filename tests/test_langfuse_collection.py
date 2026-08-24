@@ -47,6 +47,7 @@ class RequestRecord:
 @dataclass(slots=True)
 class CollectionFixtureState:
     observation_count: int = 1001
+    score_count: int = 1
     revision_id: str | None = None
     requests: list[RequestRecord] = field(default_factory=list)
     writes: int = 0
@@ -119,8 +120,8 @@ def _observations_response(state: CollectionFixtureState, cursor: str | None) ->
     return f'{{"data":[{records}],"meta":{{"cursor":{next_cursor}}}}}'
 
 
-def _scores_response(cursor: str | None) -> str:
-    if cursor is not None:
+def _scores_response(state: CollectionFixtureState, cursor: str | None) -> str:
+    if cursor is not None or state.score_count == 0:
         return '{"data":[],"meta":{"limit":100,"cursor":null}}'
     return """
     {
@@ -166,7 +167,7 @@ def _handler(state: CollectionFixtureState) -> type[BaseHTTPRequestHandler]:
             elif parsed.path == "/api/public/v2/observations":
                 payload = _observations_response(state, cursor)
             elif parsed.path == "/api/public/v3/scores":
-                payload = _scores_response(cursor)
+                payload = _scores_response(state, cursor)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -247,7 +248,7 @@ def _window() -> TraceWindow:
     return TraceWindow(start, start + timedelta(hours=1))
 
 
-def test_collects_1001_observations_and_refreshes_completed_window(
+def test_refreshes_completed_window_without_stale_membership(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
@@ -259,6 +260,9 @@ def test_collects_1001_observations_and_refreshes_completed_window(
     first = ofw.collect(revision, window=_window(), store_path=store_path)
     collection_server.state.observation_count = 1002
     repeated = ofw.collect(revision, window=_window(), store_path=store_path)
+    collection_server.state.observation_count = 1
+    collection_server.state.score_count = 0
+    reduced = ofw.collect(revision, window=_window(), store_path=store_path)
 
     assert first.observation_count == 1001
     assert repeated.observation_count == 1002
@@ -269,6 +273,8 @@ def test_collects_1001_observations_and_refreshes_completed_window(
     assert first.traces[0].score_ids[0].value == "score-1"
     assert first.traces[0].attribution is AttributionLevel.EXACT
     assert first.capability is CollectionCapabilityReason.READY
+    assert reduced.observation_count == 1
+    assert reduced.score_count == 0
     assert collection_server.state.writes == 0
 
 
@@ -364,6 +370,32 @@ def test_failed_second_page_resumes_from_committed_cursor(
     )
     assert resumed.observation_count == 1001
     assert observation_requests[-1].cursor == "obs-page-2"
+
+
+def test_failed_refresh_keeps_previous_snapshot_and_resumes(
+    tmp_path: Path,
+    collection_server: CollectionFixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = _revision(tmp_path, collection_server, monkeypatch)
+    collection_server.state.revision_id = str(revision.id)
+    store_path = tmp_path / "collection.sqlite"
+    first = ofw.collect(revision, window=_window(), store_path=store_path)
+    collection_server.state.observation_count = 1002
+    collection_server.state.fail_second_observation_page_once = True
+
+    with pytest.raises(CollectionError):
+        ofw.collect(revision, window=_window(), store_path=store_path)
+
+    store = CollectionStore(store_path)
+    try:
+        assert len(store.observations(first.observation_sync_id)) == 1001
+    finally:
+        store.close()
+
+    refreshed = ofw.collect(revision, window=_window(), store_path=store_path)
+
+    assert refreshed.observation_count == 1002
 
 
 def test_repeated_cursor_fails_instead_of_looping(

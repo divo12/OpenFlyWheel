@@ -238,12 +238,14 @@ def test_reads_typed_observation_and_score_pages_with_bounded_queries(
     assert score.subject is not None
     assert score.subject.kind is ScoreSubjectKind.TRACE
     assert score.subject.id == "trace-1"
+    assert score.comment is None
+    assert score.metadata is None
     assert ("fromStartTime", "2026-08-22T00:00:00Z") in observation_query
     assert ("toStartTime", "2026-08-22T01:00:00Z") in observation_query
     assert ("fields", "core,basic,time,metadata,usage,trace_context") in observation_query
     assert ("expandMetadata", "ofw.harness.revision") in observation_query
     assert ("fromTimestamp", "2026-08-22T00:00:00Z") in score_query
-    assert ("fields", "details,subject") in score_query
+    assert ("fields", "subject") in score_query
     assert all(request.authorization == expected_auth for request in langfuse_server.state.requests)
     assert langfuse_server.state.writes == 0
 
@@ -260,6 +262,7 @@ def test_opted_in_io_is_redacted_truncated_and_requested_explicitly(
     client = LangfuseHttpClient(_project(langfuse_server, monkeypatch, policy))
     try:
         page = client.get_observations(_window())
+        scores = client.get_scores(_window())
     finally:
         client.close()
 
@@ -275,9 +278,50 @@ def test_opted_in_io_is_redacted_truncated_and_requested_explicitly(
         for request in langfuse_server.state.requests
         if request.path == "/api/public/v2/observations"
     )
+    score_query = next(
+        request.query
+        for request in langfuse_server.state.requests
+        if request.path == "/api/public/v3/scores"
+    )
     assert input_content.text == '{"task":"[REDACTED_SECRET]"}'
     assert "ship" not in input_content.text
     assert ("fields", "core,basic,time,io,metadata,usage,trace_context") in query
+    assert scores.records[0].comment == "reviewed"
+    assert ("fields", "details,subject") in score_query
+
+
+def test_score_details_follow_content_policy_and_redaction() -> None:
+    response = SCORES_RESPONSE.replace(
+        '"value": true',
+        '"value": "ship dev@example.com"',
+    ).replace(
+        '"dataType": "BOOLEAN"',
+        '"dataType": "TEXT"',
+    ).replace(
+        '"comment": "reviewed"',
+        '"comment": "ship dev@example.com Bearer abcdef123456", '
+        '"metadata": {"secret": "ship"}',
+    )
+    policy = ObservationContentPolicy.redacted(
+        maximum_bytes_per_field=128,
+        secret_environment_variables=(),
+    )
+
+    metadata_only = ScoreResponseWire.model_validate_json(response).normalize().records[0]
+    redacted = ScoreResponseWire.model_validate_json(response).normalize(
+        policy,
+        ("ship",),
+    ).records[0]
+
+    assert metadata_only.comment is None
+    assert metadata_only.metadata is None
+    assert metadata_only.value == "[CONTENT_NOT_CAPTURED]"
+    assert redacted.value == "[REDACTED_SECRET] [REDACTED_EMAIL]"
+    assert redacted.comment == (
+        "[REDACTED_SECRET] [REDACTED_EMAIL] Bearer [REDACTED_TOKEN]"
+    )
+    assert redacted.metadata is not None
+    assert redacted.metadata.canonical == '{"secret":"[REDACTED_SECRET]"}'
 
 
 def test_wire_redacts_common_identifiers_before_content_addressing() -> None:
@@ -300,6 +344,10 @@ def test_wire_redacts_common_identifiers_before_content_addressing() -> None:
 
 
 def test_persisted_observation_and_score_changes_produce_new_digests() -> None:
+    details_policy = ObservationContentPolicy.redacted(
+        maximum_bytes_per_field=1024,
+        secret_environment_variables=(),
+    )
     first_observation = (
         ObservationResponseWire.model_validate_json(OBSERVATIONS_RESPONSE).normalize().records[0]
     )
@@ -313,12 +361,14 @@ def test_persisted_observation_and_score_changes_produce_new_digests() -> None:
         .normalize()
         .records[0]
     )
-    first_score = ScoreResponseWire.model_validate_json(SCORES_RESPONSE).normalize().records[0]
+    first_score = ScoreResponseWire.model_validate_json(SCORES_RESPONSE).normalize(
+        details_policy,
+    ).records[0]
     changed_score = (
         ScoreResponseWire.model_validate_json(
             SCORES_RESPONSE.replace('"comment": "reviewed"', '"comment": "reviewed again"')
         )
-        .normalize()
+        .normalize(details_policy)
         .records[0]
     )
 

@@ -100,8 +100,13 @@ class LangfuseHttpClient:
         window: TraceWindow,
         cursor: PageCursor | None = None,
     ) -> ScorePage:
+        fields = (
+            "subject"
+            if self._content_policy.mode is ContentCaptureMode.METADATA_ONLY
+            else "details,subject"
+        )
         parameters = (
-            ("fields", "details,subject"),
+            ("fields", fields),
             ("limit", "100"),
             ("environment", self._environment),
             ("fromTimestamp", _utc_text(window.start)),
@@ -112,7 +117,7 @@ class LangfuseHttpClient:
             parameters,
             TypeAdapter(ScoreResponseWire),
         )
-        return response.normalize()
+        return response.normalize(self._content_policy, self._redaction_values)
 
     def _get(
         self,

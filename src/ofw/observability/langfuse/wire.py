@@ -44,6 +44,7 @@ _BEARER_PATTERN = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 _REDACTED_EMAIL = "[REDACTED_EMAIL]"
 _REDACTED_BEARER = "Bearer [REDACTED_TOKEN]"
 _REDACTED_SECRET = "[REDACTED_SECRET]"  # nosec B105
+_CONTENT_NOT_CAPTURED = "[CONTENT_NOT_CAPTURED]"
 _TRUNCATED = "[TRUNCATED]"
 
 
@@ -187,9 +188,16 @@ class ScoreResponseWire(BaseModel):
     data: tuple[ScoreWire, ...]
     meta: ScoreMetaWire
 
-    def normalize(self) -> ScorePage:
+    def normalize(
+        self,
+        policy: ObservationContentPolicy | None = None,
+        redaction_values: tuple[str, ...] = (),
+    ) -> ScorePage:
+        selected = policy or ObservationContentPolicy.metadata_only()
         return ScorePage(
-            records=tuple(_normalize_score(record) for record in self.data),
+            records=tuple(
+                _normalize_score(record, selected, redaction_values) for record in self.data
+            ),
             cursor=None if self.meta.cursor is None else PageCursor(self.meta.cursor),
         )
 
@@ -321,15 +329,23 @@ def _observation_content(
 ) -> ObservationContent | None:
     if value is None or policy.mode is ContentCaptureMode.METADATA_ONLY:
         return None
+    bounded, truncated = _redact_and_bound(value, policy, redaction_values)
+    reference = ObservationContentReference.for_text(bounded, truncated=truncated)
+    return ObservationContent(reference, bounded)
+
+
+def _redact_and_bound(
+    value: str,
+    policy: ObservationContentPolicy,
+    redaction_values: tuple[str, ...],
+) -> tuple[str, bool]:
     redacted = value
     for secret in sorted(redaction_values, key=len, reverse=True):
         if secret:
             redacted = redacted.replace(secret, _REDACTED_SECRET)
     redacted = _EMAIL_PATTERN.sub(_REDACTED_EMAIL, redacted)
     redacted = _BEARER_PATTERN.sub(_REDACTED_BEARER, redacted)
-    bounded, truncated = _bounded_utf8(redacted, policy.maximum_bytes_per_field)
-    reference = ObservationContentReference.for_text(bounded, truncated=truncated)
-    return ObservationContent(reference, bounded)
+    return _bounded_utf8(redacted, policy.maximum_bytes_per_field)
 
 
 def _bounded_utf8(value: str, maximum_bytes: int) -> tuple[str, bool]:
@@ -349,9 +365,39 @@ def _unique_contents(contents: tuple[ObservationContent, ...]) -> tuple[Observat
     return tuple(unique)
 
 
-def _normalize_score(wire: ScoreWire) -> ScoreRecord:
+def _normalize_score(
+    wire: ScoreWire,
+    policy: ObservationContentPolicy,
+    redaction_values: tuple[str, ...],
+) -> ScoreRecord:
     _validate_score_value(wire)
-    metadata = _json_document(wire.metadata)
+    capture_details = policy.mode is ContentCaptureMode.REDACTED
+    value: bool | float | str = wire.value
+    if wire.data_type in (ScoreDataType.TEXT, ScoreDataType.CORRECTION):
+        value = (
+            _redact_and_bound(wire.value, policy, redaction_values)[0]
+            if capture_details and isinstance(wire.value, str)
+            else _CONTENT_NOT_CAPTURED
+        )
+    comment = (
+        None
+        if wire.comment is None or not capture_details
+        else _redact_and_bound(wire.comment, policy, redaction_values)[0]
+    )
+    metadata_document = _json_document(wire.metadata) if capture_details else None
+    metadata: JsonDocument | None = None
+    if metadata_document is not None:
+        bounded_metadata, truncated = _redact_and_bound(
+            metadata_document.canonical,
+            policy,
+            redaction_values,
+        )
+        metadata = JsonDocument(
+            json.dumps(bounded_metadata, ensure_ascii=False, separators=(",", ":"))
+            if truncated
+            else bounded_metadata
+        )
+    config_id = wire.config_id if capture_details else None
     subject = (
         None
         if wire.subject is None
@@ -367,14 +413,14 @@ def _normalize_score(wire: ScoreWire) -> ScoreRecord:
             wire.project_id,
             wire.name,
             wire.data_type.value,
-            wire.value,
+            value,
             wire.source.value,
             wire.timestamp.isoformat(),
             wire.environment,
             wire.created_at.isoformat(),
             wire.updated_at.isoformat(),
-            wire.comment,
-            wire.config_id,
+            comment,
+            config_id,
             None if subject is None else subject.kind.value,
             None if subject is None else subject.id,
             (None if subject is None or subject.trace_id is None else subject.trace_id.value),
@@ -387,18 +433,18 @@ def _normalize_score(wire: ScoreWire) -> ScoreRecord:
         id=ScoreId(wire.id),
         project_id=ProjectId(wire.project_id),
         name=wire.name,
-        value=wire.value,
+        value=value,
         data_type=wire.data_type,
         source=wire.source,
         timestamp=wire.timestamp,
         environment=wire.environment,
         created_at=wire.created_at,
         updated_at=wire.updated_at,
-        comment=wire.comment,
+        comment=comment,
         metadata=metadata,
         subject=subject,
         digest=Sha256Digest(f"sha256:{hashlib.sha256(digest_source.encode()).hexdigest()}"),
-        config_id=wire.config_id,
+        config_id=config_id,
     )
 
 

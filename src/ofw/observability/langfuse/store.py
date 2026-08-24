@@ -203,6 +203,30 @@ class CollectionStore:
             complete=bool(complete),
         )
 
+    def replace_observation_membership(
+        self,
+        sync_id: CollectionSyncId,
+        refresh_sync_id: CollectionSyncId,
+    ) -> None:
+        self._replace_membership(
+            "collection_observations",
+            SyncStream.OBSERVATIONS,
+            sync_id,
+            refresh_sync_id,
+        )
+
+    def replace_score_membership(
+        self,
+        sync_id: CollectionSyncId,
+        refresh_sync_id: CollectionSyncId,
+    ) -> None:
+        self._replace_membership(
+            "collection_scores",
+            SyncStream.SCORES,
+            sync_id,
+            refresh_sync_id,
+        )
+
     def observations(self, sync_id: CollectionSyncId) -> tuple[ObservationRecord, ...]:
         cursor = self._connection.execute(
             """
@@ -393,6 +417,30 @@ class CollectionStore:
                 int(cursor is None),
             ),
         )
+
+    def _replace_membership(
+        self,
+        table: str,
+        stream: SyncStream,
+        sync_id: CollectionSyncId,
+        refresh_sync_id: CollectionSyncId,
+    ) -> None:
+        try:
+            with self._connection:
+                self._connection.execute(
+                    f"DELETE FROM {table} WHERE sync_id = ?",  # nosec B608
+                    (sync_id.value,),
+                )
+                self._connection.execute(
+                    f"UPDATE {table} SET sync_id = ? WHERE sync_id = ?",  # nosec B608
+                    (sync_id.value, refresh_sync_id.value),
+                )
+                self._connection.execute(
+                    "DELETE FROM collection_checkpoints WHERE sync_id = ? AND stream = ?",
+                    (refresh_sync_id.value, stream.value),
+                )
+        except sqlite3.Error as error:
+            raise CollectionError(CollectionErrorCode.DATABASE_ERROR, sync_id.value) from error
 
     def _commit_content(self, content: ObservationContent) -> None:
         inserted = self._connection.execute(
