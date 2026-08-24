@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
+from ofw.observability.langfuse.contracts import LangfuseConnectionManifest
+
 
 class HarnessSchemaVersion(IntEnum):
     V1 = 1
@@ -115,6 +117,7 @@ class HarnessRevisionContent:
     harness_name: str
     repository: RepositorySnapshot
     components: tuple[HarnessComponent, ...]
+    observability: LangfuseConnectionManifest | None
 
     def canonical_json(self) -> str:
         return _render_content(self)
@@ -128,6 +131,7 @@ class HarnessRevision:
     root: Path
     repository: RepositorySnapshot
     components: tuple[HarnessComponent, ...]
+    observability: LangfuseConnectionManifest | None
 
     @property
     def manifest_path(self) -> Path:
@@ -168,6 +172,7 @@ class HarnessRevision:
             f'"harness_name":{_quote(self.harness_name)},'
             f'"root":{_quote(self.root.as_posix())},'
             f'"repository":{_render_repository(self.repository)},'
+            f'"observability":{_render_observability(self.observability)},'
             f'"components":[{components}]'
             "}"
         )
@@ -180,6 +185,7 @@ def _render_content(content: HarnessRevisionContent) -> str:
         f'"schema_version":{int(content.schema_version)},'
         f'"harness_name":{_quote(content.harness_name)},'
         f'"repository":{_render_repository(content.repository)},'
+        f'"observability":{_render_observability(content.observability)},'
         f'"components":[{components}]'
         "}"
     )
@@ -197,6 +203,10 @@ def _render_repository(repository: RepositorySnapshot) -> str:
         f'"dirty_digest":{dirty_digest}'
         "}"
     )
+
+
+def _render_observability(connection: LangfuseConnectionManifest | None) -> str:
+    return "null" if connection is None else connection.to_json()
 
 
 def _render_component(component: HarnessComponent) -> str:

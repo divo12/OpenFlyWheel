@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 import re
-import subprocess
+import subprocess  # nosec B404
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +27,7 @@ from ofw.contracts import (
     Sha256Digest,
     WorkspaceFile,
 )
+from ofw.observability.langfuse.contracts import LangfuseProject
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ class Harness:
     name: str
     root: Path
     _files: list[_FileRegistration] = field(default_factory=list, init=False, repr=False)
+    _observability: LangfuseProject | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if _NAME_PATTERN.fullmatch(self.name) is None:
@@ -130,6 +132,10 @@ class Harness:
         self._register_files(ComponentKind.MIDDLEWARE, sources)
         return self
 
+    def connect_observability(self, project: LangfuseProject) -> Harness:
+        self._observability = project
+        return self
+
     def _register_files(
         self,
         component: ComponentKind,
@@ -151,6 +157,7 @@ class Harness:
             harness_name=self.name,
             repository=repository,
             components=components,
+            observability=(None if self._observability is None else self._observability.manifest()),
         )
         content_digest = _digest_text(content.canonical_json())
         revision = HarnessRevision(
@@ -160,6 +167,7 @@ class Harness:
             root=root,
             repository=content.repository,
             components=content.components,
+            observability=content.observability,
         )
         _write_manifest(revision)
         logger.debug("Compiled harness revision %s", revision.id)
@@ -347,7 +355,8 @@ def _run_git(
     repository_probe: bool = False,
 ) -> bytes:
     try:
-        result: subprocess.CompletedProcess[bytes] = subprocess.run(
+        # Every argument is selected internally; the validated root is one argv value.
+        result: subprocess.CompletedProcess[bytes] = subprocess.run(  # nosec B603
             ("git", "-C", str(root), *arguments),
             check=False,
             capture_output=True,

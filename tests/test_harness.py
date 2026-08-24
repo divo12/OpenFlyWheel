@@ -242,7 +242,7 @@ def test_invalid_subagent_name_fails(name: str) -> None:
 def test_duplicate_subagent_name_fails(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     source = root / "subagents.py"
-    source.write_text("reviewer = object()\n", encoding="utf-8")
+    source.write_text("reviewer = 1\n", encoding="utf-8")
     harness = _configured_harness(root)
 
     with pytest.raises(HarnessValidationError) as raised:
@@ -257,7 +257,7 @@ def test_duplicate_subagent_name_fails(tmp_path: Path) -> None:
 def test_multiple_named_subagents_may_share_one_source_file(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     source = root / "subagents.py"
-    source.write_text("reviewer = object()\nresearcher = object()\n", encoding="utf-8")
+    source.write_text("reviewer = 1\nresearcher = 2\n", encoding="utf-8")
     harness = _configured_harness(root)
     harness.connect_subagents(
         Subagent(name="reviewer", source=ofw.editable(Path("subagents.py"))),
