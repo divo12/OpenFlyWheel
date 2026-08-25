@@ -48,6 +48,7 @@ class CollectionFixtureState:
     score_count: int = 1
     revision_id: str | None = None
     release: str = "chorus-17"
+    root_parent_observation_id: str | None = None
     requests: list[RequestRecord] = field(default_factory=list)
     writes: int = 0
     fail_second_observation_page_once: bool = False
@@ -68,9 +69,20 @@ class CollectionFixtureServer:
         self.thread.join(timeout=5)
 
 
-def _observation_json(index: int, revision_id: str | None, release: str) -> str:
+def _observation_json(
+    index: int,
+    revision_id: str | None,
+    release: str,
+    root_parent_observation_id: str | None,
+) -> str:
     observation_id = f"obs-{index:04d}"
-    parent = "null" if index == 0 else '"obs-0000"'
+    parent = (
+        "null"
+        if index == 0 and root_parent_observation_id is None
+        else f'"{root_parent_observation_id}"'
+        if index == 0
+        else '"obs-0000"'
+    )
     observation_type = "AGENT" if index == 0 else "TOOL"
     root = "true" if index == 0 else "false"
     metadata = (
@@ -106,7 +118,13 @@ def _observations_response(state: CollectionFixtureState, cursor: str | None) ->
     if cursor is None:
         end = min(state.observation_count, 1000)
         records = ",".join(
-            _observation_json(index, state.revision_id, state.release) for index in range(end)
+            _observation_json(
+                index,
+                state.revision_id,
+                state.release,
+                state.root_parent_observation_id,
+            )
+            for index in range(end)
         )
         if state.repeat_observation_cursor:
             next_cursor = '"repeated-cursor"'
@@ -114,7 +132,12 @@ def _observations_response(state: CollectionFixtureState, cursor: str | None) ->
             next_cursor = '"obs-page-2"' if state.observation_count > 1000 else "null"
     else:
         records = ",".join(
-            _observation_json(index, state.revision_id, state.release)
+            _observation_json(
+                index,
+                state.revision_id,
+                state.release,
+                state.root_parent_observation_id,
+            )
             for index in range(1000, state.observation_count)
         )
         next_cursor = '"repeated-cursor"' if state.repeat_observation_cursor else "null"
@@ -311,6 +334,27 @@ def test_native_langfuse_release_attributes_trace_without_custom_metadata(
     )
 
     assert result.traces[0].attribution is AttributionLevel.EXACT
+    assert result.capability is CollectionCapabilityReason.READY
+
+
+def test_logical_root_may_have_parent_outside_langfuse_project(
+    tmp_path: Path,
+    collection_server: CollectionFixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection_server.state.observation_count = 2
+    collection_server.state.root_parent_observation_id = "external-otel-parent"
+    revision = _revision(tmp_path, collection_server, monkeypatch)
+    collection_server.state.release = str(revision.id)
+
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
+
+    assert result.traces[0].root_observation_ids[0].value == "obs-0000"
+    assert not result.traces[0].gaps
     assert result.capability is CollectionCapabilityReason.READY
 
 
