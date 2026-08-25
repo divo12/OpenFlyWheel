@@ -17,10 +17,12 @@ from ofw.contracts import (
     Sha256Digest,
 )
 from ofw.mine import (
+    AdaptationRequest,
+    BehaviorObservation,
     CompletionCheck,
     CompletionStatus,
     Confidence,
-    EnvironmentCheck,
+    ConstraintKind,
     EnvironmentCheckId,
     EnvironmentCheckRequest,
     EnvironmentSource,
@@ -30,15 +32,27 @@ from ofw.mine import (
     EvidenceKind,
     EvidenceRecordId,
     EvidenceReference,
+    FailureBehavior,
+    FailureBehaviorKind,
     FailureMiningResult,
+    FailurePhase,
     FailureSource,
     FailureSourceId,
     FailureSourceKind,
     Mine,
+    MiningContext,
     MiningInvalidReason,
     MiningNomination,
+    MiningTask,
     MiningTools,
     MiningVerdict,
+    RecoveryStatus,
+    RequiredOutcome,
+    TaskConstraint,
+    TaskId,
+    ToolAccess,
+    ToolCapability,
+    ToolName,
     ToolStatus,
     TraceMiningCase,
     TrajectoryPageRequest,
@@ -216,13 +230,60 @@ def _nomination(kind: FailureSourceKind) -> MiningNomination:
         id=SOURCE_ID,
         kind=EnvironmentSourceKind.PRODUCTION_API,
         summary="Read-only ITSM production state.",
-        checks=(EnvironmentCheck(CHECK_ID, "The ticket is closed."),),
     )
     return MiningNomination(
         trace_id=TRACE_ID,
-        user_job="Close the customer ticket.",
+        task=_task(),
         sources=(source,),
         environment_sources=(environment,),
+        available_tools=(
+            ToolCapability(ToolName("update-ticket"), ToolAccess.MUTATING),
+        ),
+    )
+
+
+def _task() -> MiningTask:
+    return MiningTask(
+        id=TaskId("close-ticket"),
+        intent="Close the customer ticket.",
+        required_outcomes=(
+            RequiredOutcome(
+                check_id=CHECK_ID,
+                source_id=SOURCE_ID,
+                description="The ticket is closed.",
+            ),
+        ),
+        constraints=(
+            TaskConstraint(
+                kind=ConstraintKind.POLICY,
+                description="Do not claim completion without verifying the ticket state.",
+            ),
+        ),
+    )
+
+
+def _context(observation_ids: tuple[ObservationId, ...]) -> MiningContext:
+    return MiningContext(
+        revision_id=HarnessRevisionId("revision-1"),
+        trace_id=TRACE_ID,
+        trace_digest=_digest("trace-1"),
+        observation_ids=observation_ids,
+        session_id="session-1",
+        environment_name="production",
+        release="revision-1",
+        available_tools=(
+            ToolCapability(ToolName("search_trajectory"), ToolAccess.READ_ONLY),
+            ToolCapability(ToolName("read_trajectory"), ToolAccess.READ_ONLY),
+            ToolCapability(ToolName("verify_environment"), ToolAccess.READ_ONLY),
+        ),
+        environment_sources=(
+            EnvironmentSource(
+                id=SOURCE_ID,
+                kind=EnvironmentSourceKind.PRODUCTION_API,
+                summary="Read-only ITSM production state.",
+            ),
+        ),
+        initial_state_evidence=(),
     )
 
 
@@ -235,10 +296,10 @@ class RecordedEnvironmentVerifier:
         self,
         request: EnvironmentCheckRequest,
         source: EnvironmentSource,
-        check: EnvironmentCheck,
+        outcome: RequiredOutcome,
     ) -> EnvironmentVerification:
         assert request.source_id == source.id
-        assert request.check_id == check.id
+        assert request.check_id == outcome.check_id
         evidence = (
             ()
             if self.status is CompletionStatus.UNKNOWN
@@ -306,12 +367,64 @@ class FakeHermesJudge:
             environment_evidence = verification.artifacts
             observed_state = verification.verification.observed_state
 
+        adapted = tools.adapt(
+            AdaptationRequest(
+                (
+                    FailureSourceKind.HUMAN_FEEDBACK,
+                    FailureSourceKind.USER_CORRECTION,
+                    FailureSourceKind.DOWNSTREAM_FAILURE,
+                    FailureSourceKind.AGENT_ERROR,
+                ),
+                10,
+            )
+        )
+        assert adapted.status is ToolStatus.OK
+
+        behavior_evidence = next(
+            item
+            for item in trajectory_evidence
+            if item.record_id.value == search.hits[0].observation_id.value
+        )
+
+        failure_behavior = (
+            None
+            if verdict is not MiningVerdict.CONFIRMED_FAILURE
+            else FailureBehavior(
+                primary=(
+                    FailureBehaviorKind.FALSE_COMPLETION
+                    if "successfully" in search.hits[0].excerpt.lower()
+                    else FailureBehaviorKind.UNRECOVERED_ACTION_FAILURE
+                ),
+                summary=(
+                    "The agent claimed success while the ticket stayed open."
+                    if "successfully" in search.hits[0].excerpt.lower()
+                    else "The tool failure was not recovered before completion."
+                ),
+                observations=(
+                    BehaviorObservation(
+                        kind=(
+                            FailureBehaviorKind.FALSE_COMPLETION
+                            if "successfully" in search.hits[0].excerpt.lower()
+                            else FailureBehaviorKind.UNRECOVERED_ACTION_FAILURE
+                        ),
+                        phase=(
+                            FailurePhase.COMPLETION
+                            if "successfully" in search.hits[0].excerpt.lower()
+                            else FailurePhase.RECOVERY
+                        ),
+                        first_observation_id=search.hits[0].observation_id,
+                        last_observation_id=None,
+                        recovery_status=RecoveryStatus.NOT_RECOVERED,
+                        evidence=(behavior_evidence,),
+                    ),
+                ),
+            )
+        )
+
         return FailureMiningResult(
-            revision_id=tools.case.revision_id,
-            trace_id=tools.case.trace_id,
-            trace_digest=tools.case.trace_digest,
+            task=tools.case.task,
+            context=tools.case.context,
             verdict=verdict,
-            user_job=tools.case.user_job,
             source_ids=tuple(source.id for source in tools.case.sources),
             completion_checks=(
                 CompletionCheck(
@@ -323,6 +436,7 @@ class FakeHermesJudge:
                     evidence=environment_evidence,
                 ),
             ),
+            failure_behavior=failure_behavior,
             trajectory_evidence=trajectory_evidence,
             environment_evidence=environment_evidence,
             confidence=Confidence(0.95 if completion is not CompletionStatus.UNKNOWN else 0.4),
@@ -363,11 +477,9 @@ class PartialTraceHermesJudge:
         )
         assert verification.verification is not None
         return FailureMiningResult(
-            revision_id=case.revision_id,
-            trace_id=case.trace_id,
-            trace_digest=case.trace_digest,
+            task=case.task,
+            context=case.context,
             verdict=MiningVerdict.CONFIRMED_FAILURE,
-            user_job=case.user_job,
             source_ids=tuple(source.id for source in case.sources),
             completion_checks=(
                 CompletionCheck(
@@ -377,6 +489,20 @@ class PartialTraceHermesJudge:
                     observed_state=verification.verification.observed_state,
                     status=CompletionStatus.NOT_COMPLETED,
                     evidence=verification.artifacts,
+                ),
+            ),
+            failure_behavior=FailureBehavior(
+                primary=FailureBehaviorKind.UNRECOVERED_ACTION_FAILURE,
+                summary="The tool failure was not recovered before completion.",
+                observations=(
+                    BehaviorObservation(
+                        kind=FailureBehaviorKind.UNRECOVERED_ACTION_FAILURE,
+                        phase=FailurePhase.RECOVERY,
+                        first_observation_id=page.observations[0].record.id,
+                        last_observation_id=None,
+                        recovery_status=RecoveryStatus.NOT_RECOVERED,
+                        evidence=page.artifacts,
+                    ),
                 ),
             ),
             trajectory_evidence=page.artifacts,
@@ -490,11 +616,9 @@ def test_wrong_revision_or_corrupt_trace_is_invalid(
 def test_confirmed_failure_requires_trajectory_and_environment_evidence() -> None:
     with pytest.raises(ValueError, match="confirmed failure requires"):
         FailureMiningResult(
-            revision_id=HarnessRevisionId("revision-1"),
-            trace_id=TRACE_ID,
-            trace_digest=_digest("trace-1"),
+            task=_task(),
+            context=_context((ObservationId("observation-1"),)),
             verdict=MiningVerdict.CONFIRMED_FAILURE,
-            user_job="Close the customer ticket.",
             source_ids=(FailureSourceId("signal-1"),),
             completion_checks=(
                 CompletionCheck(
@@ -506,7 +630,29 @@ def test_confirmed_failure_requires_trajectory_and_environment_evidence() -> Non
                     evidence=(),
                 ),
             ),
-            trajectory_evidence=(),
+            failure_behavior=FailureBehavior(
+                primary=FailureBehaviorKind.FALSE_COMPLETION,
+                summary="The agent claimed success while the ticket stayed open.",
+                observations=(
+                    BehaviorObservation(
+                        kind=FailureBehaviorKind.FALSE_COMPLETION,
+                        phase=FailurePhase.COMPLETION,
+                        first_observation_id=ObservationId("observation-1"),
+                        last_observation_id=None,
+                        recovery_status=RecoveryStatus.NOT_RECOVERED,
+                        evidence=(
+                            _evidence(
+                                EvidenceKind.TRAJECTORY,
+                                "observation-1",
+                                "observation-1",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            trajectory_evidence=(
+                _evidence(EvidenceKind.TRAJECTORY, "observation-1", "observation-1"),
+            ),
             environment_evidence=(),
             confidence=Confidence(0.9),
             unresolved_questions=(),
@@ -554,3 +700,174 @@ def test_judge_must_read_the_full_trace_before_returning_verdict(tmp_path: Path)
 
     assert result.verdict is MiningVerdict.INVALID
     assert result.invalid_reason is MiningInvalidReason.JUDGE_OUTPUT
+
+
+def test_confirmed_failure_requires_failure_behavior() -> None:
+    with pytest.raises(ValueError, match="confirmed failure requires"):
+        FailureMiningResult(
+            task=_task(),
+            context=_context((ObservationId("observation-1"),)),
+            verdict=MiningVerdict.CONFIRMED_FAILURE,
+            source_ids=(FailureSourceId("signal-1"),),
+            completion_checks=(
+                CompletionCheck(
+                    check_id=CHECK_ID,
+                    required_outcome="The ticket is closed.",
+                    agent_claim="Ticket closed successfully.",
+                    observed_state="Ticket remains open.",
+                    status=CompletionStatus.NOT_COMPLETED,
+                    evidence=(_evidence(EvidenceKind.ENVIRONMENT, "ticket-123", "state-1"),),
+                ),
+            ),
+            failure_behavior=None,
+            trajectory_evidence=(
+                _evidence(EvidenceKind.TRAJECTORY, "observation-1", "observation-1"),
+            ),
+            environment_evidence=(
+                _evidence(EvidenceKind.ENVIRONMENT, "ticket-123", "state-1"),
+            ),
+            confidence=Confidence(0.9),
+            unresolved_questions=(),
+            invalid_reason=None,
+        )
+
+
+def test_no_failure_rejects_failure_behavior() -> None:
+    with pytest.raises(ValueError, match="no-failure verdict"):
+        FailureMiningResult(
+            task=_task(),
+            context=_context((ObservationId("observation-1"),)),
+            verdict=MiningVerdict.NO_FAILURE,
+            source_ids=(FailureSourceId("signal-1"),),
+            completion_checks=(
+                CompletionCheck(
+                    check_id=CHECK_ID,
+                    required_outcome="The ticket is closed.",
+                    agent_claim="Retry succeeded.",
+                    observed_state="Ticket is closed.",
+                    status=CompletionStatus.COMPLETED,
+                    evidence=(_evidence(EvidenceKind.ENVIRONMENT, "ticket-123", "state-1"),),
+                ),
+            ),
+            failure_behavior=FailureBehavior(
+                primary=FailureBehaviorKind.UNRECOVERED_ACTION_FAILURE,
+                summary="A failure was incorrectly retained after recovery.",
+                observations=(
+                    BehaviorObservation(
+                        kind=FailureBehaviorKind.UNRECOVERED_ACTION_FAILURE,
+                        phase=FailurePhase.RECOVERY,
+                        first_observation_id=ObservationId("observation-1"),
+                        last_observation_id=None,
+                        recovery_status=RecoveryStatus.RECOVERED,
+                        evidence=(
+                            _evidence(
+                                EvidenceKind.TRAJECTORY,
+                                "observation-1",
+                                "observation-1",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            trajectory_evidence=(
+                _evidence(EvidenceKind.TRAJECTORY, "observation-1", "observation-1"),
+            ),
+            environment_evidence=(
+                _evidence(EvidenceKind.ENVIRONMENT, "ticket-123", "state-1"),
+            ),
+            confidence=Confidence(0.9),
+            unresolved_questions=(),
+            invalid_reason=None,
+        )
+
+
+def test_failure_behavior_observation_must_belong_to_context() -> None:
+    with pytest.raises(ValueError, match="failure behavior observation"):
+        FailureMiningResult(
+            task=_task(),
+            context=_context((ObservationId("observation-1"),)),
+            verdict=MiningVerdict.CONFIRMED_FAILURE,
+            source_ids=(FailureSourceId("signal-1"),),
+            completion_checks=(
+                CompletionCheck(
+                    check_id=CHECK_ID,
+                    required_outcome="The ticket is closed.",
+                    agent_claim="Ticket closed successfully.",
+                    observed_state="Ticket remains open.",
+                    status=CompletionStatus.NOT_COMPLETED,
+                    evidence=(_evidence(EvidenceKind.ENVIRONMENT, "ticket-123", "state-1"),),
+                ),
+            ),
+            failure_behavior=FailureBehavior(
+                primary=FailureBehaviorKind.FALSE_COMPLETION,
+                summary="The agent claimed success while the ticket stayed open.",
+                observations=(
+                    BehaviorObservation(
+                        kind=FailureBehaviorKind.FALSE_COMPLETION,
+                        phase=FailurePhase.COMPLETION,
+                        first_observation_id=ObservationId("observation-2"),
+                        last_observation_id=None,
+                        recovery_status=RecoveryStatus.NOT_RECOVERED,
+                        evidence=(
+                            _evidence(
+                                EvidenceKind.TRAJECTORY,
+                                "observation-2",
+                                "observation-2",
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            trajectory_evidence=(
+                _evidence(EvidenceKind.TRAJECTORY, "observation-1", "observation-1"),
+            ),
+            environment_evidence=(
+                _evidence(EvidenceKind.ENVIRONMENT, "ticket-123", "state-1"),
+            ),
+            confidence=Confidence(0.9),
+            unresolved_questions=(),
+            invalid_reason=None,
+        )
+
+
+def test_search_focuses_natural_query_and_adapt_compares_signals(tmp_path: Path) -> None:
+    revision = _revision(tmp_path)
+    collection = _collection(
+        tmp_path,
+        revision,
+        ("x" * 1500 + " update failed after retry", "Ticket remains open"),
+    )
+    nomination = _nomination(FailureSourceKind.DOWNSTREAM_FAILURE)
+    prior_signal = replace(
+        nomination.sources[0],
+        id=FailureSourceId("signal-2"),
+        trace_id=TraceId("trace-2"),
+        kind=FailureSourceKind.HUMAN_FEEDBACK,
+    )
+    tools = MiningTools(
+        TraceMiningCase(
+            nomination.task,
+            _context(collection.traces[0].observation_ids),
+            nomination.sources,
+        ),
+        collection,
+        RecordedEnvironmentVerifier(CompletionStatus.UNKNOWN, None),
+        (*nomination.sources, prior_signal),
+    )
+
+    search = tools.search_trajectory(
+        TrajectorySearchRequest("completion failed retries", ObservationContentField.ANY, 5)
+    )
+    adapted = tools.adapt(
+        AdaptationRequest(
+            (FailureSourceKind.DOWNSTREAM_FAILURE, FailureSourceKind.HUMAN_FEEDBACK),
+            5,
+        )
+    )
+
+    assert search.status is ToolStatus.OK
+    assert "update failed" in search.hits[0].excerpt
+    assert tuple(signal.id for signal in adapted.signals) == (
+        FailureSourceId("signal-1"),
+        FailureSourceId("signal-2"),
+    )
