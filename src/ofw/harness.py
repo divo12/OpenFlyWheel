@@ -112,7 +112,6 @@ class Harness:
         return self
 
     def connect_tools(self, *tools: Tool) -> Harness:
-        self._current_revision = None
         for tool in tools:
             if any(
                 registration.component is ComponentKind.TOOL and registration.name == tool.name
@@ -127,7 +126,6 @@ class Harness:
         return self
 
     def connect_subagents(self, *subagents: Subagent) -> Harness:
-        self._current_revision = None
         for subagent in subagents:
             if any(
                 registration.component is ComponentKind.SUBAGENT
@@ -148,7 +146,6 @@ class Harness:
         return self
 
     def connect_observability(self, project: LangfuseProject) -> Harness:
-        self._current_revision = None
         self._observability = project
         return self
 
@@ -172,7 +169,6 @@ class Harness:
         component: ComponentKind,
         sources: tuple[Path | EditableFile, ...],
     ) -> None:
-        self._current_revision = None
         for source in sources:
             self._files.append(_registration(component, source, None))
 
