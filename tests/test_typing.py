@@ -12,5 +12,5 @@ def test_package_declares_inline_types_and_namespace_methods() -> None:
     assert Path(package_file).with_name("py.typed").is_file()
     assert callable(ofw.collect)
     assert callable(ofw.editable)
-    assert callable(ofw.LocalProcess)
+    assert callable(ofw.E2BSandbox)
     assert callable(ofw.ProcessLimits)

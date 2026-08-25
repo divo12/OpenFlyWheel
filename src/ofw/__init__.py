@@ -55,20 +55,13 @@ from ofw.runtime import (
     CaseId,
     CommandLoop,
     CommandVerifier,
-    DockerCompose,
-    FunctionName,
-    LocalProcess,
+    E2BSandbox,
     ModelFingerprint,
-    ModuleName,
     ProcessCommand,
     ProcessLimits,
-    PythonEntrypoint,
-    PythonLoop,
-    PythonVerifier,
     RunErrorCode,
     RunResult,
     RunStatus,
-    ServiceName,
     VerifierResult,
     VerifierVerdict,
 )
@@ -77,21 +70,14 @@ from ofw.runtime import (
 class _OfwNamespace:
     __slots__ = ()
 
-    LocalProcess = LocalProcess
-    DockerCompose = DockerCompose
+    E2BSandbox = E2BSandbox
     ProcessLimits = ProcessLimits
     ProcessCommand = ProcessCommand
     CommandLoop = CommandLoop
-    PythonLoop = PythonLoop
-    PythonEntrypoint = PythonEntrypoint
-    ModuleName = ModuleName
-    FunctionName = FunctionName
     ModelFingerprint = ModelFingerprint
     CommandVerifier = CommandVerifier
-    PythonVerifier = PythonVerifier
     CanaryCase = CanaryCase
     CaseId = CaseId
-    ServiceName = ServiceName
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -140,7 +126,7 @@ __all__ = [
     "CollectionResult",
     "CommandLoop",
     "CommandVerifier",
-    "DockerCompose",
+    "E2BSandbox",
     "EditableFile",
     "GitCommit",
     "Harness",
@@ -150,14 +136,11 @@ __all__ = [
     "HarnessRevision",
     "HarnessRevisionId",
     "HarnessValidationError",
-    "FunctionName",
     "Langfuse",
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
     "LangfuseSpan",
-    "LocalProcess",
     "ModelFingerprint",
-    "ModuleName",
     "ObservationContent",
     "ObservationContentField",
     "ObservationContentHit",
@@ -167,14 +150,10 @@ __all__ = [
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
-    "PythonEntrypoint",
-    "PythonLoop",
-    "PythonVerifier",
     "RunErrorCode",
     "RunResult",
     "RunStatus",
     "Sha256Digest",
-    "ServiceName",
     "Subagent",
     "Tool",
     "TraceWindow",
