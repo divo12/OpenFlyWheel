@@ -2,26 +2,67 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
+import io
+import math
+import os
 import re
+import shlex
 import shutil
-import subprocess  # nosec B404
-import sys
+import tarfile
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import IntEnum, StrEnum
 from pathlib import Path
+from typing import Protocol, cast
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from ofw.contracts import HarnessRevision, RuntimeConfiguration, Sha256Digest
 
 _NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
-_MODULE_PATTERN = re.compile(r"[a-zA-Z_][a-zA-Z0-9_.]*")
-_FUNCTION_PATTERN = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*")
+_ENVIRONMENT_PATTERN = re.compile(r"[A-Z_][A-Z0-9_]*")
+_E2B_REMOTE_ROOT = "/home/user/workspace"
+_E2B_WORKSPACE_ARCHIVE = "/tmp/ofw-workspace.tar.gz"  # nosec B108 - per-run sandbox
+_E2B_HOBBY_TIMEOUT_SECONDS = 3600
+
+
+@dataclass(frozen=True, slots=True)
+class _E2BCommandResult:
+    stderr: str
+    stdout: str
+    exit_code: int
+    error: str | None
+
+
+class _E2BFiles(Protocol):
+    def write(self, path: str, data: bytes | str) -> object: ...
+
+
+class _E2BCommands(Protocol):
+    def run(
+        self,
+        cmd: str,
+        *,
+        envs: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> _E2BCommandResult: ...
+
+
+class _E2BClient(Protocol):
+    @property
+    def files(self) -> _E2BFiles: ...
+
+    @property
+    def commands(self) -> _E2BCommands: ...
+
+    def is_running(self) -> bool: ...
+
+    def kill(self) -> bool: ...
 
 
 class RunStatus(StrEnum):
@@ -61,39 +102,6 @@ class CaseId:
 class CanaryCase:
     id: CaseId
     payload: str
-
-
-@dataclass(frozen=True, slots=True)
-class ModuleName:
-    value: str
-
-    def __post_init__(self) -> None:
-        if _MODULE_PATTERN.fullmatch(self.value) is None:
-            raise ValueError("invalid module name")
-
-
-@dataclass(frozen=True, slots=True)
-class FunctionName:
-    value: str
-
-    def __post_init__(self) -> None:
-        if _FUNCTION_PATTERN.fullmatch(self.value) is None:
-            raise ValueError("invalid function name")
-
-
-@dataclass(frozen=True, slots=True)
-class PythonEntrypoint:
-    module: ModuleName
-    function: FunctionName
-
-
-@dataclass(frozen=True, slots=True)
-class ServiceName:
-    value: str
-
-    def __post_init__(self) -> None:
-        if _NAME_PATTERN.fullmatch(self.value) is None:
-            raise ValueError("invalid service name")
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,118 +192,115 @@ class PreparedEnvironment:
     source_root: Path
     temporary: tempfile.TemporaryDirectory[str]
     limits: ProcessLimits
-    command_prefix: tuple[str, ...] = ()
+    environment: tuple[tuple[str, str], ...]
+    sandbox: _E2BClient
+    remote_root: str
 
     def run(self, command: ProcessCommand, payload: str) -> ProcessResult:
         started = time.monotonic()
-        try:
-            # The revision freezes argv; every call uses shell=False.
-            completed = subprocess.run(  # nosec B603
-                (*self.command_prefix, *command.arguments),
-                cwd=self.root,
-                input=payload,
-                capture_output=True,
-                text=True,
-                timeout=self.limits.timeout.total_seconds(),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            return ProcessResult(None, "", True, time.monotonic() - started)
-        return ProcessResult(
-            completed.returncode,
-            completed.stdout.rstrip("\n"),
-            False,
-            time.monotonic() - started,
-        )
+        return _run_e2b_command(self, command, payload, started)
 
 
 @dataclass(frozen=True, slots=True)
-class LocalProcess:
+class _StagedWorkspace:
+    root: Path
+    source_root: Path
+    temporary: tempfile.TemporaryDirectory[str]
     limits: ProcessLimits
+
+
+@dataclass(frozen=True, slots=True)
+class E2BSandbox:
+    limits: ProcessLimits
+    template: str | None = None
+    allow_internet_access: bool = True
+    forward_environment: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        seconds = math.ceil(self.limits.timeout.total_seconds())
+        if seconds > _E2B_HOBBY_TIMEOUT_SECONDS:
+            raise ValueError("E2B Hobby sandboxes support at most 3600 seconds")
+        reserved = {"E2B_API_KEY", "OFW_HARNESS_REVISION", "LANGFUSE_RELEASE"}
+        if (
+            len(set(self.forward_environment)) != len(self.forward_environment)
+            or any(
+                _ENVIRONMENT_PATTERN.fullmatch(name) is None
+                for name in self.forward_environment
+            )
+            or any(name in reserved for name in self.forward_environment)
+        ):
+            raise ValueError("invalid forwarded environment")
 
     def fingerprint(self, root: Path) -> Sha256Digest:
         del root
         return _digest_text(
-            f"local\0{self.limits.timeout.total_seconds()}\0{sys.version}\0{sys.platform}"
-        )
-
-    def prepare(self, revision: HarnessRevision, case: CanaryCase) -> PreparedEnvironment:
-        del case
-        return _prepare_workspace(revision.root, self.limits)
-
-    def health(self, prepared: PreparedEnvironment) -> CheckReport:
-        return CheckReport(prepared.root.is_dir(), "local workspace")
-
-    def snapshot(self, prepared: PreparedEnvironment) -> EnvironmentFingerprint:
-        return EnvironmentFingerprint(_digest_tree(prepared.root))
-
-    def reset(self, prepared: PreparedEnvironment) -> None:
-        _restore_workspace(prepared)
-
-    def destroy(self, prepared: PreparedEnvironment) -> None:
-        prepared.temporary.cleanup()
-
-
-@dataclass(frozen=True, slots=True)
-class DockerCompose:
-    compose_file: Path
-    service: ServiceName
-    executable: Path
-    limits: ProcessLimits
-
-    def fingerprint(self, root: Path) -> Sha256Digest:
-        compose = root / self.compose_file
-        return _digest_text(
-            f"docker\0{self.service.value}\0{self.executable}\0"
-            f"{self.limits.timeout.total_seconds()}\0{_digest_file(compose)}"
+            f"e2b\0{self.template or ''}\0{self.allow_internet_access}\0"
+            f"{self.limits.timeout.total_seconds()}\0{','.join(self.forward_environment)}"
         )
 
     def prepare(self, revision: HarnessRevision, case: CanaryCase) -> PreparedEnvironment:
         del case
         workspace = _prepare_workspace(revision.root, self.limits)
+        control_environment = _control_environment()
+        runtime_environment = _runtime_environment(revision.root)
+        timeout = max(1, math.ceil(self.limits.timeout.total_seconds()))
+        sandbox = _create_e2b_sandbox(
+            template=self.template,
+            timeout=timeout,
+            api_key=_required_env(control_environment, "E2B_API_KEY"),
+            environment=_revision_environment(revision)
+            + _forwarded_environment(runtime_environment, self.forward_environment),
+            allow_internet_access=self.allow_internet_access,
+        )
         prepared = PreparedEnvironment(
             workspace.root,
             workspace.source_root,
             workspace.temporary,
             workspace.limits,
-            (
-                *_compose_prefix(self, workspace),
-                "exec",
-                "-T",
-                self.service.value,
-            ),
+            environment=sandbox.envs,
+            sandbox=sandbox.client,
+            remote_root=_E2B_REMOTE_ROOT,
         )
-        if not (prepared.root / self.compose_file).is_file():
-            self.destroy(prepared)
-            raise RuntimeError("compose file is missing")
-        started = _compose_control(self, prepared, ("up", "-d", self.service.value))
-        if started.exit_code != 0:
-            self.destroy(prepared)
-            raise RuntimeError("docker compose failed to start")
+        try:
+            archive = _workspace_archive(workspace.root)
+            sandbox.client.files.write(_E2B_WORKSPACE_ARCHIVE, archive)
+            _extract_e2b_workspace(prepared)
+        except Exception:
+            try:
+                sandbox.client.kill()
+            finally:
+                workspace.temporary.cleanup()
+            raise
         return prepared
 
     def health(self, prepared: PreparedEnvironment) -> CheckReport:
-        result = _compose_control(self, prepared, ("ps", "--status", "running"))
-        return CheckReport(result.exit_code == 0, "docker compose")
+        return CheckReport(prepared.sandbox.is_running(), "e2b sandbox")
 
     def snapshot(self, prepared: PreparedEnvironment) -> EnvironmentFingerprint:
-        return EnvironmentFingerprint(_digest_tree(prepared.root))
+        result = prepared.sandbox.commands.run(
+            "find . -type f -print0 | sort -z | xargs -0 sha256sum",
+            cwd=prepared.remote_root,
+            timeout=prepared.limits.timeout.total_seconds(),
+        )
+        return EnvironmentFingerprint(_digest_text(result.stdout))
 
     def reset(self, prepared: PreparedEnvironment) -> None:
-        stopped = _compose_control(self, prepared, ("down", "--volumes", "--remove-orphans"))
-        if stopped.exit_code != 0:
-            raise RuntimeError("docker compose reset failed")
-        _restore_workspace(prepared)
-        started = _compose_control(self, prepared, ("up", "-d", self.service.value))
-        if started.exit_code != 0:
-            raise RuntimeError("docker compose reset failed")
+        _extract_e2b_workspace(prepared)
 
     def destroy(self, prepared: PreparedEnvironment) -> None:
-        _compose_control(self, prepared, ("down", "--volumes", "--remove-orphans"))
-        prepared.temporary.cleanup()
+        try:
+            prepared.sandbox.kill()
+        finally:
+            prepared.temporary.cleanup()
 
 
-ExecutionEnvironment = LocalProcess | DockerCompose
+@dataclass(frozen=True, slots=True)
+class _CreatedE2BSandbox:
+    client: _E2BClient
+    envs: tuple[tuple[str, str], ...]
+
+
+ExecutionEnvironment = E2BSandbox
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,90 +321,7 @@ class CommandLoop:
         return _run_result(case.id, prepared.run(self.command, case.payload))
 
 
-@dataclass(frozen=True, slots=True)
-class PythonLoop:
-    entrypoint: PythonEntrypoint
-    models: tuple[ModelFingerprint, ...] = ()
-
-    def fingerprint(self, root: Path) -> Sha256Digest:
-        module_path = _python_source(root, self.entrypoint)
-        return _digest_text(
-            f"python-loop\0{self.entrypoint.module.value}\0"
-            f"{self.entrypoint.function.value}\0{_digest_file(module_path)}\0"
-            f"{_models_text(self.models)}"
-        )
-
-    def invoke(
-        self,
-        case: CanaryCase,
-        prepared: PreparedEnvironment,
-        revision: HarnessRevision,
-    ) -> RunResult:
-        del revision
-        command = ProcessCommand(
-            (
-                sys.executable,
-                "-m",
-                "ofw._runner",
-                self.entrypoint.module.value,
-                self.entrypoint.function.value,
-            )
-        )
-        return _run_result(case.id, prepared.run(command, case.payload))
-
-
-LifecycleAdapter = CommandLoop | PythonLoop
-
-
-@dataclass(frozen=True, slots=True)
-class PythonVerifier:
-    name: str
-    entrypoint: PythonEntrypoint
-
-    def __post_init__(self) -> None:
-        if _NAME_PATTERN.fullmatch(self.name) is None:
-            raise ValueError("invalid verifier name")
-
-    def fingerprint(self, root: Path) -> Sha256Digest:
-        source = _python_source(root, self.entrypoint)
-        return _digest_text(
-            f"python-verifier\0{self.name}\0{self.entrypoint.module.value}\0"
-            f"{self.entrypoint.function.value}\0{_digest_file(source)}"
-        )
-
-    def verify(
-        self,
-        result: RunResult,
-        prepared: PreparedEnvironment,
-    ) -> VerifierResult:
-        command = ProcessCommand(
-            (
-                sys.executable,
-                "-m",
-                "ofw._verifier_runner",
-                self.entrypoint.module.value,
-                self.entrypoint.function.value,
-            )
-        )
-        process = prepared.run(command, _RUN_ADAPTER.dump_json(result).decode())
-        if process.timed_out:
-            return VerifierResult(
-                VerifierVerdict.ERROR,
-                None,
-                "python verifier timed out",
-                retryable=True,
-            )
-        if process.exit_code != 0:
-            return VerifierResult(
-                VerifierVerdict.ERROR,
-                None,
-                "python verifier failed",
-                retryable=True,
-            )
-        try:
-            return _VERIFIER_ADAPTER.validate_json(process.stdout)
-        except ValidationError:
-            return VerifierResult(VerifierVerdict.ERROR, None, "invalid verifier result")
+LifecycleAdapter = CommandLoop
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,13 +355,15 @@ class CommandVerifier:
             return VerifierResult(VerifierVerdict.FAIL, 0.0, process.stdout)
         if process.exit_code == VerifierExitCode.ABSTAIN:
             return VerifierResult(VerifierVerdict.ABSTAIN, None, process.stdout)
-        return VerifierResult(VerifierVerdict.ERROR, None, "command verifier failed")
+        return VerifierResult(
+            VerifierVerdict.ERROR,
+            None,
+            "command verifier failed",
+            retryable=True,
+        )
 
 
-VerifierAdapter = PythonVerifier | CommandVerifier
-
-_RUN_ADAPTER: TypeAdapter[RunResult] = TypeAdapter(RunResult)
-_VERIFIER_ADAPTER: TypeAdapter[VerifierResult] = TypeAdapter(VerifierResult)
+VerifierAdapter = CommandVerifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,12 +426,11 @@ def run_canary(
 def _prepare_workspace(
     source_root: Path,
     limits: ProcessLimits,
-    command_prefix: tuple[str, ...] = (),
-) -> PreparedEnvironment:
+) -> _StagedWorkspace:
     temporary = tempfile.TemporaryDirectory(prefix="ofw-runtime-")
     root = Path(temporary.name) / "workspace"
     _copy_workspace(source_root, root)
-    return PreparedEnvironment(root, source_root, temporary, limits, command_prefix)
+    return _StagedWorkspace(root, source_root, temporary, limits)
 
 
 def _copy_workspace(source: Path, destination: Path) -> None:
@@ -519,49 +442,144 @@ def _copy_workspace(source: Path, destination: Path) -> None:
 
 
 def _ignored_artifacts(directory: str, names: list[str]) -> set[str]:
-    del directory
-    ignored = (".git", ".ofw", ".venv", "__pycache__", "build", "dist")
-    return {name for name in names if name in ignored}
+    directory_path = Path(directory)
+    fixed = {".git", ".ofw", ".venv", "__pycache__", "build", "dist"}
+    return {
+        name
+        for name in names
+        if name in fixed
+        or (name == ".env" or (name.startswith(".env.") and name != ".env.example"))
+        or (directory_path / name).is_symlink()
+    }
 
 
-def _restore_workspace(prepared: PreparedEnvironment) -> None:
-    shutil.rmtree(prepared.root)
-    _copy_workspace(prepared.source_root, prepared.root)
-
-
-def _compose_control(
-    adapter: DockerCompose,
-    prepared: PreparedEnvironment,
-    arguments: tuple[str, ...],
-) -> ProcessResult:
-    command = ProcessCommand(
-        (
-            *_compose_prefix(adapter, prepared),
-            *arguments,
-        )
-    )
-    local = PreparedEnvironment(
-        prepared.root,
-        prepared.source_root,
-        prepared.temporary,
-        prepared.limits,
-    )
-    return local.run(command, "")
-
-
-def _compose_prefix(
-    adapter: DockerCompose,
-    prepared: PreparedEnvironment,
-) -> tuple[str, ...]:
-    project = hashlib.sha256(prepared.temporary.name.encode()).hexdigest()[:16]
+def _revision_environment(revision: HarnessRevision) -> tuple[tuple[str, str], ...]:
+    revision_id = str(revision.id)
     return (
-        str(adapter.executable),
-        "compose",
-        "-f",
-        adapter.compose_file.as_posix(),
-        "-p",
-        f"ofw-{project}",
+        ("OFW_HARNESS_REVISION", revision_id),
+        ("LANGFUSE_RELEASE", revision_id),
     )
+
+
+def _create_e2b_sandbox(
+    *,
+    template: str | None,
+    timeout: int,
+    api_key: str,
+    environment: tuple[tuple[str, str], ...],
+    allow_internet_access: bool,
+) -> _CreatedE2BSandbox:
+    from e2b import Sandbox
+
+    revision_id = dict(environment)["OFW_HARNESS_REVISION"]
+    client = cast(
+        _E2BClient,
+        Sandbox.create(
+            template=template,
+            timeout=timeout,
+            api_key=api_key,
+            envs=dict(environment),
+            metadata={"ofw.harness.revision": revision_id},
+            secure=True,
+            allow_internet_access=allow_internet_access,
+        ),
+    )
+    return _CreatedE2BSandbox(client, environment)
+
+
+def _run_e2b_command(
+    prepared: PreparedEnvironment,
+    command: ProcessCommand,
+    payload: str,
+    started: float,
+) -> ProcessResult:
+    from e2b import CommandExitException, TimeoutException
+
+    stdin_path = f"/tmp/ofw-stdin-{uuid.uuid4().hex}"  # nosec B108 - per-run sandbox
+    prepared.sandbox.files.write(stdin_path, payload)
+    timeout = prepared.limits.timeout.total_seconds()
+    try:
+        result = prepared.sandbox.commands.run(
+            f"{shlex.join(command.arguments)} < {shlex.quote(stdin_path)}",
+            cwd=prepared.remote_root,
+            envs=dict(prepared.environment),
+            timeout=timeout,
+        )
+    except TimeoutException:
+        return ProcessResult(None, "", True, time.monotonic() - started)
+    except CommandExitException as error:
+        result = _E2BCommandResult(error.stderr, error.stdout, error.exit_code, error.error)
+    return ProcessResult(
+        result.exit_code,
+        result.stdout.rstrip("\n"),
+        False,
+        time.monotonic() - started,
+    )
+
+
+def _extract_e2b_workspace(prepared: PreparedEnvironment) -> None:
+    result = prepared.sandbox.commands.run(
+        " && ".join(
+            (
+                f"rm -rf {shlex.quote(prepared.remote_root)}",
+                f"mkdir -p {shlex.quote(prepared.remote_root)}",
+                f"tar -xzf {shlex.quote(_E2B_WORKSPACE_ARCHIVE)} -C "
+                f"{shlex.quote(prepared.remote_root)}",
+            )
+        ),
+        timeout=prepared.limits.timeout.total_seconds(),
+    )
+    if result.exit_code != 0:
+        raise RuntimeError("e2b workspace restore failed")
+
+
+def _workspace_archive(root: Path) -> bytes:
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
+        archive.add(root, arcname=".")
+    return stream.getvalue()
+
+
+def _runtime_environment(root: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for path in (Path.cwd() / ".env", root / ".env"):
+        if path.is_file():
+            values.update(_dotenv_values(path))
+    values.update(os.environ)
+    return values
+
+
+def _control_environment() -> dict[str, str]:
+    values = _dotenv_values(Path.cwd() / ".env") if (Path.cwd() / ".env").is_file() else {}
+    values.update(os.environ)
+    return values
+
+
+def _dotenv_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*", line)
+        if match is None:
+            continue
+        value: str = match.group(2)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        values[match.group(1)] = value
+    return values
+
+
+def _required_env(values: dict[str, str], name: str) -> str:
+    value = values.get(name)
+    if not value:
+        raise RuntimeError(f"{name} is required")
+    return value
+
+
+def _forwarded_environment(
+    values: dict[str, str],
+    names: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    return tuple((name, values[name]) for name in names if values.get(name))
 
 
 def _run_result(case_id: CaseId, process: ProcessResult) -> RunResult:
@@ -594,33 +612,8 @@ def _command_fingerprint(
     return _digest_text("\0".join((kind, *command.arguments, *sources, _models_text(models))))
 
 
-def _python_source(root: Path, entrypoint: PythonEntrypoint) -> Path:
-    path = root / Path(*entrypoint.module.value.split(".")).with_suffix(".py")
-    if not path.is_file():
-        raise ValueError("python module is missing")
-    try:
-        module = ast.parse(path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError) as error:
-        raise ValueError("python module is invalid") from error
-    if not any(
-        isinstance(node, ast.FunctionDef) and node.name == entrypoint.function.value
-        for node in module.body
-    ):
-        raise ValueError("top-level python function is missing")
-    return path
-
-
 def _models_text(models: tuple[ModelFingerprint, ...]) -> str:
     return "\0".join(f"{model.provider}:{model.model}:{model.reasoning}" for model in models)
-
-
-def _digest_tree(root: Path) -> Sha256Digest:
-    payload = "\0".join(
-        f"{path.relative_to(root).as_posix()}:{_digest_file(path)}"
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    )
-    return _digest_text(payload)
 
 
 def _digest_file(path: Path) -> str:

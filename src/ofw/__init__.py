@@ -42,10 +42,7 @@ from ofw.mine import (
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
     LangfuseProject,
-    ObservationContentPolicy,
-    SecretEnvironmentVariable,
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import (
@@ -70,20 +67,13 @@ from ofw.runtime import (
     CaseId,
     CommandLoop,
     CommandVerifier,
-    DockerCompose,
-    FunctionName,
-    LocalProcess,
+    E2BSandbox,
     ModelFingerprint,
-    ModuleName,
     ProcessCommand,
     ProcessLimits,
-    PythonEntrypoint,
-    PythonLoop,
-    PythonVerifier,
     RunErrorCode,
     RunResult,
     RunStatus,
-    ServiceName,
     VerifierResult,
     VerifierVerdict,
 )
@@ -92,23 +82,14 @@ from ofw.runtime import (
 class _OfwNamespace:
     __slots__ = ()
 
-    LocalProcess = LocalProcess
-    DockerCompose = DockerCompose
+    E2BSandbox = E2BSandbox
     ProcessLimits = ProcessLimits
     ProcessCommand = ProcessCommand
     CommandLoop = CommandLoop
-    PythonLoop = PythonLoop
-    PythonEntrypoint = PythonEntrypoint
-    ModuleName = ModuleName
-    FunctionName = FunctionName
     ModelFingerprint = ModelFingerprint
     CommandVerifier = CommandVerifier
-    PythonVerifier = PythonVerifier
     CanaryCase = CanaryCase
     CaseId = CaseId
-    ServiceName = ServiceName
-    MiningPolicy = MiningPolicy
-    ScoreName = ScoreName
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -164,8 +145,7 @@ __all__ = [
     "CollectionResult",
     "CommandLoop",
     "CommandVerifier",
-    "ContentCaptureMode",
-    "DockerCompose",
+    "E2BSandbox",
     "EditableFile",
     "GitCommit",
     "Harness",
@@ -180,39 +160,23 @@ __all__ = [
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
     "LangfuseSpan",
-    "LocalProcess",
     "ModelFingerprint",
-    "ModuleName",
-    "Mine",
-    "MineError",
-    "MineErrorCode",
-    "MiningPolicy",
     "ObservationContent",
     "ObservationContentField",
     "ObservationContentHit",
     "ObservationContentMatch",
-    "ObservationContentPolicy",
     "ObservationContentQuery",
     "ObservationContentReference",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
-    "PythonEntrypoint",
-    "PythonLoop",
-    "PythonVerifier",
     "RunErrorCode",
     "RunResult",
     "RunStatus",
-    "ScoreName",
     "Sha256Digest",
-    "ServiceName",
-    "SecretEnvironmentVariable",
-    "SnapshotContentReference",
     "Subagent",
     "Tool",
     "TraceWindow",
-    "TracePartition",
-    "TraceQualityThreshold",
     "VerifierResult",
     "VerifierVerdict",
     "WorkspaceFile",

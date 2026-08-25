@@ -13,7 +13,6 @@ from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
-    ContentCaptureMode,
     LangfuseProject,
     TraceWindow,
 )
@@ -31,6 +30,7 @@ from ofw.observability.langfuse.domain import (
     PageCursor,
     ScoreRecord,
     ScoreSubjectKind,
+    SyncCheckpoint,
     SyncStream,
     TraceGap,
     TraceId,
@@ -70,30 +70,38 @@ def collect(
         client = LangfuseHttpClient(project)
         try:
             client.check_health()
+            observation_target, observation_cursor = _sync_target(
+                store,
+                observation_sync_id,
+                SyncStream.OBSERVATIONS,
+                observation_checkpoint,
+            )
             _sync_observations(
                 client,
                 store,
                 str(revision.observability.id),
-                observation_sync_id,
+                observation_target,
                 window,
-                (
-                    observation_checkpoint.cursor
-                    if observation_checkpoint is not None and not observation_checkpoint.complete
-                    else None
-                ),
+                observation_cursor,
+            )
+            if observation_target != observation_sync_id:
+                store.replace_observation_membership(observation_sync_id, observation_target)
+            score_target, score_cursor = _sync_target(
+                store,
+                score_sync_id,
+                SyncStream.SCORES,
+                score_checkpoint,
             )
             _sync_scores(
                 client,
                 store,
                 str(revision.observability.id),
-                score_sync_id,
+                score_target,
                 window,
-                (
-                    score_checkpoint.cursor
-                    if score_checkpoint is not None and not score_checkpoint.complete
-                    else None
-                ),
+                score_cursor,
             )
+            if score_target != score_sync_id:
+                store.replace_score_membership(score_sync_id, score_target)
         finally:
             client.close()
         observations = store.observations(observation_sync_id)
@@ -114,10 +122,29 @@ def collect(
             snapshot_digest=snapshot_digest,
             capability=capability,
             store_path=selected_store_path,
-            content_policy=revision.observability.content_policy,
         )
     finally:
         store.close()
+
+
+def _sync_target(
+    store: CollectionStore,
+    sync_id: CollectionSyncId,
+    stream: SyncStream,
+    checkpoint: SyncCheckpoint | None,
+) -> tuple[CollectionSyncId, PageCursor | None]:
+    if checkpoint is None:
+        return sync_id, None
+    if not checkpoint.complete:
+        return sync_id, checkpoint.cursor
+    refresh_sync_id = CollectionSyncId(f"{sync_id.value}_refresh")
+    refresh_checkpoint = store.checkpoint(refresh_sync_id, stream)
+    cursor = (
+        refresh_checkpoint.cursor
+        if refresh_checkpoint is not None and not refresh_checkpoint.complete
+        else None
+    )
+    return refresh_sync_id, cursor
 
 
 def _sync_observations(
@@ -221,6 +248,7 @@ def _assemble_trace(
     known_ids = {record.id.value for record in observations}
     if any(
         record.parent_observation_id is not None
+        and record.is_root is not True
         and record.parent_observation_id.value not in known_ids
         for record in observations
     ):
@@ -290,7 +318,12 @@ def _attribution(
         if metadata.revision_id is not None and metadata.revision_id not in revisions:
             revisions.append(metadata.revision_id)
     if not revisions:
-        return AttributionLevel.MISSING
+        releases = {observation.release for observation in observations if observation.release}
+        return (
+            AttributionLevel.EXACT
+            if releases == {str(revision_id)}
+            else AttributionLevel.MISSING
+        )
     if len(revisions) == 1 and revisions[0] == str(revision_id):
         return AttributionLevel.EXACT
     return AttributionLevel.AMBIGUOUS
@@ -338,7 +371,6 @@ def search_observation_content(
     collection: CollectionResult,
     query: ObservationContentQuery,
 ) -> tuple[ObservationContentHit, ...]:
-    _require_captured_content(collection)
     store = CollectionStore(collection.store_path)
     try:
         return store.search_content(collection.observation_sync_id, query)
@@ -364,17 +396,8 @@ def read_observation_content(
     collection: CollectionResult,
     reference: ObservationContentReference,
 ) -> ObservationContent:
-    _require_captured_content(collection)
     store = CollectionStore(collection.store_path)
     try:
         return store.read_content(collection.observation_sync_id, reference)
     finally:
         store.close()
-
-
-def _require_captured_content(collection: CollectionResult) -> None:
-    if collection.content_policy.mode is ContentCaptureMode.METADATA_ONLY:
-        raise CollectionError(
-            CollectionErrorCode.CONTENT_NOT_CAPTURED,
-            str(collection.observation_sync_id.value),
-        )

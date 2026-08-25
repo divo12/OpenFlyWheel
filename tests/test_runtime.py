@@ -2,39 +2,154 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
-import sys
+import tarfile
 import time
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
+from e2b.exceptions import TimeoutException
 
+import ofw.runtime as runtime_module
 from ofw import (
     CanaryCase,
     CaseId,
     CommandLoop,
     CommandVerifier,
-    DockerCompose,
-    FunctionName,
+    E2BSandbox,
     Harness,
     HarnessErrorCode,
     HarnessRevision,
     HarnessValidationError,
-    LocalProcess,
     ModelFingerprint,
-    ModuleName,
     ProcessCommand,
     ProcessLimits,
-    PythonEntrypoint,
-    PythonLoop,
-    PythonVerifier,
     RunErrorCode,
     RunResult,
     RunStatus,
-    ServiceName,
     VerifierVerdict,
 )
+
+
+class _FakeCommandCall:
+    def __init__(
+        self,
+        cmd: str,
+        envs: dict[str, str],
+        cwd: str | None,
+        timeout: float | None,
+    ) -> None:
+        self.cmd = cmd
+        self.envs = envs
+        self.cwd = cwd
+        self.timeout = timeout
+
+
+class _FakeFiles:
+    def __init__(self, writes: dict[str, bytes | str]) -> None:
+        self._writes = writes
+
+    def write(self, path: str, data: bytes | str) -> None:
+        self._writes[path] = data
+
+
+class _FakeCommands:
+    def __init__(self, writes: dict[str, bytes | str]) -> None:
+        self._writes = writes
+        self.calls: list[_FakeCommandCall] = []
+        self.fail_extract = False
+
+    def run(
+        self,
+        cmd: str,
+        *,
+        envs: dict[str, str] | None = None,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> runtime_module._E2BCommandResult:
+        selected_envs = envs or {}
+        self.calls.append(_FakeCommandCall(cmd, selected_envs, cwd, timeout))
+        if "rm -rf /home/user/workspace" in cmd:
+            exit_code = 1 if self.fail_extract else 0
+            return runtime_module._E2BCommandResult("fixture", "", exit_code, None)
+        if cmd.startswith("find "):
+            return runtime_module._E2BCommandResult("", "", 0, None)
+        payload_path = cmd.rsplit("<", 1)[1].strip().strip("'")
+        raw_payload = self._writes[payload_path]
+        payload = raw_payload.decode() if isinstance(raw_payload, bytes) else raw_payload
+        if "timeout.py" in cmd or "verifier.py slow" in cmd:
+            raise TimeoutException("fixture timeout")
+        if "crash.py" in cmd or "verifier.py broken" in cmd:
+            return runtime_module._E2BCommandResult("fixture crash", "", 7, "fixture")
+        if "abstain.py" in cmd:
+            return runtime_module._E2BCommandResult("", "not enough evidence", 2, None)
+        if "agent_loop.py" in cmd:
+            return runtime_module._E2BCommandResult("", payload.upper(), 0, None)
+        if "verifier.py reject" in cmd:
+            return runtime_module._E2BCommandResult("", "rejected", 1, None)
+        if "verifier.py uppercase" in cmd:
+            exit_code = 0 if payload == "SHIP" else 1
+            return runtime_module._E2BCommandResult("", "uppercase output", exit_code, None)
+        if "OFW_HARNESS_REVISION" in cmd:
+            output = (
+                selected_envs["OFW_HARNESS_REVISION"]
+                + "|"
+                + selected_envs["LANGFUSE_RELEASE"]
+            )
+            return runtime_module._E2BCommandResult("", output, 0, None)
+        if cmd.startswith("printf ok"):
+            return runtime_module._E2BCommandResult("", "ok", 0, None)
+        return runtime_module._E2BCommandResult("", payload, 0, None)
+
+
+class _FakeE2BClient:
+    def __init__(self) -> None:
+        self.writes: dict[str, bytes | str] = {}
+        self.files = _FakeFiles(self.writes)
+        self._commands = _FakeCommands(self.writes)
+        self.killed = False
+
+    @property
+    def commands(self) -> _FakeCommands:
+        return self._commands
+
+    def is_running(self) -> bool:
+        return True
+
+    def kill(self) -> bool:
+        self.killed = True
+        return True
+
+    @property
+    def commands_calls(self) -> list[_FakeCommandCall]:
+        return self._commands.calls
+
+
+@pytest.fixture(autouse=True)
+def fake_e2b_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[_FakeE2BClient]:
+    created: list[_FakeE2BClient] = []
+
+    def create_fake_sandbox(
+        *,
+        template: str | None,
+        timeout: int,
+        api_key: str,
+        environment: tuple[tuple[str, str], ...],
+        allow_internet_access: bool,
+    ) -> runtime_module._CreatedE2BSandbox:
+        del template, timeout, api_key, allow_internet_access
+        fake = _FakeE2BClient()
+        created.append(fake)
+        return runtime_module._CreatedE2BSandbox(fake, environment)
+
+    monkeypatch.setenv("E2B_API_KEY", "e2b-test")
+    monkeypatch.setattr(runtime_module, "_create_e2b_sandbox", create_fake_sandbox)
+    return created
 
 
 def _run_git(root: Path, *arguments: str) -> None:
@@ -51,26 +166,17 @@ def _repository(tmp_path: Path) -> Path:
     root.mkdir()
     (root / "prompt.md").write_text("Be accurate.\n", encoding="utf-8")
     (root / "agent_loop.py").write_text(
-        "def run_case(value: str) -> str:\n    return value.upper()\n",
+        "import sys\nsys.stdout.write(sys.stdin.read().upper())\n",
         encoding="utf-8",
     )
-    (root / "verifiers.py").write_text(
-        "from __future__ import annotations\n"
-        "import time\n"
-        "from ofw import RunResult, VerifierResult, VerifierVerdict\n"
-        "def uppercase(result: RunResult) -> VerifierResult:\n"
-        "    verdict = VerifierVerdict.PASS if result.output == 'SHIP' else VerifierVerdict.FAIL\n"
-        "    return VerifierResult(verdict, 1.0, 'uppercase output')\n"
-        "def broken(result: RunResult) -> VerifierResult:\n"
-        "    del result\n"
-        "    raise RuntimeError('fixture verifier failure')\n"
-        "def reject(result: RunResult) -> VerifierResult:\n"
-        "    del result\n"
-        "    return VerifierResult(VerifierVerdict.FAIL, 0.0, 'fixture rejection')\n"
-        "def slow(result: RunResult) -> VerifierResult:\n"
-        "    del result\n"
-        "    time.sleep(2)\n"
-        "    return VerifierResult(VerifierVerdict.PASS, 1.0, 'late')\n",
+    (root / "verifier.py").write_text(
+        "import sys, time\n"
+        "mode = sys.argv[1]\n"
+        "payload = sys.stdin.read()\n"
+        "if mode == 'slow': time.sleep(2)\n"
+        "if mode == 'broken': raise SystemExit(7)\n"
+        "if mode == 'reject': raise SystemExit(1)\n"
+        "raise SystemExit(0 if payload == 'SHIP' else 1)\n",
         encoding="utf-8",
     )
     (root / "compose.yaml").write_text(
@@ -91,16 +197,13 @@ def _revision(root: Path) -> HarnessRevision:
     return harness.process()
 
 
-def _verifier(function: str, name: str = "verifier") -> PythonVerifier:
-    return PythonVerifier(
-        name,
-        PythonEntrypoint(ModuleName("verifiers"), FunctionName(function)),
-    )
+def _verifier(mode: str, name: str = "verifier") -> CommandVerifier:
+    return CommandVerifier(name, ProcessCommand(("python3", "verifier.py", mode)))
 
 
-def _python_loop() -> PythonLoop:
-    return PythonLoop(
-        entrypoint=PythonEntrypoint(ModuleName("agent_loop"), FunctionName("run_case")),
+def _command_loop() -> CommandLoop:
+    return CommandLoop(
+        command=ProcessCommand(("python3", "agent_loop.py")),
         models=(ModelFingerprint("openai", "gpt-5", "medium"),),
     )
 
@@ -108,18 +211,18 @@ def _python_loop() -> PythonLoop:
 def _runtime_harness(root: Path) -> Harness:
     harness = Harness("runtime-agent", root=root)
     harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=2))))
-    harness.connect_lifecycle(_python_loop())
+    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
+    harness.connect_lifecycle(_command_loop())
     harness.connect_verifiers(_verifier("uppercase", "uppercase"))
     return harness
 
 
-def test_process_runs_local_python_canary_and_records_frozen_evidence(tmp_path: Path) -> None:
+def test_process_runs_e2b_command_canary_and_records_frozen_evidence(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     harness = Harness("runtime-agent", root=root)
     harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=2))))
-    harness.connect_lifecycle(_python_loop())
+    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
+    harness.connect_lifecycle(_command_loop())
     harness.connect_verifiers(_verifier("uppercase", "uppercase"))
 
     revision = harness.process(canary=CanaryCase(CaseId("smoke"), "ship"))
@@ -144,7 +247,7 @@ def test_partial_runtime_configuration_is_rejected(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     harness = Harness("runtime-agent", root=root)
     harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=1))))
+    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=1))))
 
     with pytest.raises(HarnessValidationError) as raised:
         harness.process()
@@ -168,8 +271,8 @@ def test_failed_canary_blocks_revision_creation(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     harness = Harness("runtime-agent", root=root)
     harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=2))))
-    harness.connect_lifecycle(_python_loop())
+    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
+    harness.connect_lifecycle(_command_loop())
     harness.connect_verifiers(_verifier("reject", "reject"))
 
     with pytest.raises(HarnessValidationError) as raised:
@@ -178,25 +281,25 @@ def test_failed_canary_blocks_revision_creation(tmp_path: Path) -> None:
     assert raised.value.code is HarnessErrorCode.CANARY_FAILED
 
 
-def test_local_process_reports_timeout_and_nonzero_exit(tmp_path: Path) -> None:
+def test_e2b_reports_timeout_and_nonzero_exit(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     revision = _revision(root)
     timeout_script = root / "timeout.py"
     timeout_script.write_text("import time\ntime.sleep(2)\n", encoding="utf-8")
     crash_script = root / "crash.py"
     crash_script.write_text("raise SystemExit(7)\n", encoding="utf-8")
-    timeout_environment = LocalProcess(ProcessLimits(timedelta(milliseconds=50)))
+    timeout_environment = E2BSandbox(ProcessLimits(timedelta(milliseconds=50)))
     prepared = timeout_environment.prepare(revision, CanaryCase(CaseId("failure"), "input"))
     try:
-        timed_out = CommandLoop(ProcessCommand((sys.executable, "timeout.py"))).invoke(
+        timed_out = CommandLoop(ProcessCommand(("python3", "timeout.py"))).invoke(
             CanaryCase(CaseId("timeout"), "input"), prepared, revision
         )
     finally:
         timeout_environment.destroy(prepared)
-    crash_environment = LocalProcess(ProcessLimits(timedelta(seconds=1)))
+    crash_environment = E2BSandbox(ProcessLimits(timedelta(seconds=1)))
     prepared = crash_environment.prepare(revision, CanaryCase(CaseId("failure"), "input"))
     try:
-        crashed = CommandLoop(ProcessCommand((sys.executable, "crash.py"))).invoke(
+        crashed = CommandLoop(ProcessCommand(("python3", "crash.py"))).invoke(
             CanaryCase(CaseId("crash"), "input"), prepared, revision
         )
     finally:
@@ -208,36 +311,158 @@ def test_local_process_reports_timeout_and_nonzero_exit(tmp_path: Path) -> None:
     assert crashed.error_code is RunErrorCode.NON_ZERO_EXIT
 
 
-def test_local_process_reset_restores_workspace(tmp_path: Path) -> None:
+def test_e2b_injects_revision_attribution_without_user_code(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     revision = _revision(root)
-    environment = LocalProcess(ProcessLimits(timedelta(seconds=1)))
+    environment = E2BSandbox(ProcessLimits(timedelta(seconds=1)))
+    prepared = environment.prepare(revision, CanaryCase(CaseId("attribution"), "input"))
+    command = ProcessCommand(
+        (
+            "python3",
+            "-c",
+            "import os; print(os.environ['OFW_HARNESS_REVISION'] + '|' + "
+            "os.environ['LANGFUSE_RELEASE'])",
+        )
+    )
+    try:
+        result = CommandLoop(command).invoke(
+            CanaryCase(CaseId("attribution"), "input"),
+            prepared,
+            revision,
+        )
+    finally:
+        environment.destroy(prepared)
+
+    assert result.output == f"{revision.id}|{revision.id}"
+
+
+def test_e2b_reset_restores_workspace(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    revision = _revision(root)
+    environment = E2BSandbox(ProcessLimits(timedelta(seconds=1)))
     prepared = environment.prepare(revision, CanaryCase(CaseId("reset"), "input"))
-    copied_prompt = prepared.root / "prompt.md"
-    copied_prompt.write_text("mutated\n", encoding="utf-8")
+    commands = cast(_FakeCommands, prepared.sandbox.commands)
+    calls_before = len(commands.calls)
 
     environment.reset(prepared)
 
-    assert copied_prompt.read_text(encoding="utf-8") == "Be accurate.\n"
+    assert len(commands.calls) == calls_before + 1
     environment.destroy(prepared)
-    assert not prepared.root.exists()
 
 
-def test_python_and_command_verifiers_report_typed_outcomes(tmp_path: Path) -> None:
+def test_e2b_sandbox_uploads_workspace_without_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     root = _repository(tmp_path)
-    revision = _revision(root)
-    environment = LocalProcess(ProcessLimits(timedelta(seconds=1)))
-    prepared = environment.prepare(revision, CanaryCase(CaseId("verify"), "input"))
-    abstain_script = prepared.root / "abstain.py"
-    abstain_script.write_text(
-        "import sys\nprint('not enough evidence')\nraise SystemExit(2)\n",
+    (root / ".env").write_text(
+        "E2B_API_KEY=e2b-test\nOPENAI_API_KEY=sk-test\nLANGFUSE_SECRET_KEY=lf-test\n",
         encoding="utf-8",
     )
+    outside = tmp_path / "outside-secret"
+    outside.write_text("must-not-upload\n", encoding="utf-8")
+    (root / "outside-link").symlink_to(outside)
+    revision = _revision(root)
+    fake = _FakeE2BClient()
+    monkeypatch.setenv("E2B_API_KEY", "e2b-test")
+
+    def create_fake_sandbox(
+        *,
+        template: str | None,
+        timeout: int,
+        api_key: str,
+        environment: tuple[tuple[str, str], ...],
+        allow_internet_access: bool,
+    ) -> runtime_module._CreatedE2BSandbox:
+        assert template is None
+        assert timeout == 2
+        assert api_key == "e2b-test"
+        assert allow_internet_access
+        return runtime_module._CreatedE2BSandbox(fake, environment)
+
+    monkeypatch.setattr(runtime_module, "_create_e2b_sandbox", create_fake_sandbox)
+    environment = E2BSandbox(ProcessLimits(timedelta(seconds=2)))
+    prepared = environment.prepare(revision, CanaryCase(CaseId("remote"), "ship"))
+    try:
+        process = prepared.run(ProcessCommand(("printf", "ok")), "payload")
+    finally:
+        environment.destroy(prepared)
+
+    assert not (prepared.root / ".env").exists()
+    archive = fake.writes["/tmp/ofw-workspace.tar.gz"]
+    assert isinstance(archive, bytes)
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as uploaded:
+        uploaded_names = tuple(uploaded.getnames())
+    assert all(".env" not in name for name in uploaded_names)
+    assert all("outside-link" not in name for name in uploaded_names)
+    stdin_paths = tuple(path for path in fake.writes if path.startswith("/tmp/ofw-stdin-"))
+    assert len(stdin_paths) == 1
+    assert fake.writes[stdin_paths[0]] == "payload"
+    command_call = fake.commands_calls[-1]
+    assert command_call.cmd.startswith("printf ok < /tmp/ofw-stdin-")
+    assert command_call.cwd == "/home/user/workspace"
+    assert command_call.envs["OFW_HARNESS_REVISION"] == str(revision.id)
+    assert command_call.envs["LANGFUSE_RELEASE"] == str(revision.id)
+    assert "OPENAI_API_KEY" not in command_call.envs
+    assert "LANGFUSE_SECRET_KEY" not in command_call.envs
+    assert "E2B_API_KEY" not in command_call.envs
+    assert process.exit_code == 0
+    assert process.stdout == "ok"
+    assert fake.killed
+
+
+def test_e2b_hobby_timeout_is_validated() -> None:
+    with pytest.raises(ValueError):
+        E2BSandbox(ProcessLimits(timedelta(seconds=3601)))
+
+    with pytest.raises(ValueError):
+        E2BSandbox(
+            ProcessLimits(timedelta(seconds=60)),
+            forward_environment=("E2B_API_KEY",),
+        )
+
+
+def test_e2b_prepare_failure_kills_sandbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _repository(tmp_path)
+    revision = _revision(root)
+    fake = _FakeE2BClient()
+    fake.commands.fail_extract = True
+
+    def create_fake_sandbox(**options: object) -> runtime_module._CreatedE2BSandbox:
+        environment = cast(tuple[tuple[str, str], ...], options["environment"])
+        return runtime_module._CreatedE2BSandbox(fake, environment)
+
+    monkeypatch.setattr(runtime_module, "_create_e2b_sandbox", create_fake_sandbox)
+
+    with pytest.raises(RuntimeError):
+        E2BSandbox(ProcessLimits(timedelta(seconds=2))).prepare(
+            revision,
+            CanaryCase(CaseId("prepare-failure"), ""),
+        )
+
+    assert fake.killed
+
+
+def test_host_execution_backends_are_not_public() -> None:
+    import ofw
+
+    assert not hasattr(ofw, "LocalProcess")
+    assert not hasattr(ofw, "DockerCompose")
+
+
+def test_command_verifiers_report_typed_outcomes(tmp_path: Path) -> None:
+    root = _repository(tmp_path)
+    revision = _revision(root)
+    environment = E2BSandbox(ProcessLimits(timedelta(seconds=1)))
+    prepared = environment.prepare(revision, CanaryCase(CaseId("verify"), "input"))
     run = RunResult.success(CaseId("verify"), "SHIP")
     try:
         abstained = CommandVerifier(
             "command",
-            ProcessCommand((sys.executable, "abstain.py")),
+            ProcessCommand(("python3", "abstain.py")),
         ).verify(run, prepared)
         errored = _verifier("broken", "broken").verify(run, prepared)
     finally:
@@ -248,39 +473,15 @@ def test_python_and_command_verifiers_report_typed_outcomes(tmp_path: Path) -> N
     assert errored.retryable
 
 
-def test_docker_compose_adapter_uses_disposable_native_lifecycle(tmp_path: Path) -> None:
+def test_parallel_e2b_environments_are_distinct(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     revision = _revision(root)
-    environment = DockerCompose(
-        compose_file=Path("compose.yaml"),
-        service=ServiceName("agent"),
-        executable=Path("/usr/bin/true"),
-        limits=ProcessLimits(timedelta(seconds=1)),
-    )
-    prepared = environment.prepare(revision, CanaryCase(CaseId("docker"), "input"))
-
-    assert environment.health(prepared).passed
-    (prepared.root / "prompt.md").write_text("mutated\n", encoding="utf-8")
-    environment.reset(prepared)
-    assert (prepared.root / "prompt.md").read_text(encoding="utf-8") == "Be accurate.\n"
-    environment.destroy(prepared)
-    assert not prepared.root.exists()
-
-
-def test_parallel_docker_environments_have_distinct_projects(tmp_path: Path) -> None:
-    root = _repository(tmp_path)
-    revision = _revision(root)
-    environment = DockerCompose(
-        compose_file=Path("compose.yaml"),
-        service=ServiceName("agent"),
-        executable=Path("/usr/bin/true"),
-        limits=ProcessLimits(timedelta(seconds=1)),
-    )
+    environment = E2BSandbox(ProcessLimits(timedelta(seconds=1)))
     case = CanaryCase(CaseId("parallel"), "input")
     first = environment.prepare(revision, case)
     second = environment.prepare(revision, case)
     try:
-        assert first.command_prefix != second.command_prefix
+        assert first.sandbox is not second.sandbox
     finally:
         environment.destroy(first)
         environment.destroy(second)
@@ -290,13 +491,13 @@ def test_runtime_fingerprint_changes_without_changing_assets(tmp_path: Path) -> 
     root = _repository(tmp_path)
     first = Harness("runtime-agent", root=root)
     first.connect_prompt(Path("prompt.md"))
-    first.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=1))))
-    first.connect_lifecycle(_python_loop())
+    first.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=1))))
+    first.connect_lifecycle(_command_loop())
     first.connect_verifiers(_verifier("uppercase", "uppercase"))
     second = Harness("runtime-agent", root=root)
     second.connect_prompt(Path("prompt.md"))
-    second.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=2))))
-    second.connect_lifecycle(_python_loop())
+    second.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
+    second.connect_lifecycle(_command_loop())
     second.connect_verifiers(_verifier("uppercase", "uppercase"))
 
     first_revision = first.process()
@@ -306,26 +507,10 @@ def test_runtime_fingerprint_changes_without_changing_assets(tmp_path: Path) -> 
     assert first_revision.components == second_revision.components
 
 
-def test_missing_python_entrypoint_is_rejected_during_process(tmp_path: Path) -> None:
-    root = _repository(tmp_path)
-    harness = Harness("runtime-agent", root=root)
-    harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(LocalProcess(ProcessLimits(timedelta(seconds=1))))
-    harness.connect_lifecycle(
-        PythonLoop(PythonEntrypoint(ModuleName("missing_module"), FunctionName("run")))
-    )
-    harness.connect_verifiers(_verifier("uppercase"))
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.RUNTIME_INVALID
-
-
-def test_python_verifier_is_terminated_at_environment_timeout(tmp_path: Path) -> None:
+def test_command_verifier_is_terminated_at_environment_timeout(tmp_path: Path) -> None:
     root = _repository(tmp_path)
     revision = _revision(root)
-    environment = LocalProcess(ProcessLimits(timedelta(milliseconds=50)))
+    environment = E2BSandbox(ProcessLimits(timedelta(milliseconds=50)))
     prepared = environment.prepare(revision, CanaryCase(CaseId("slow"), "ship"))
     started = time.monotonic()
     try:
