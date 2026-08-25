@@ -27,6 +27,7 @@ from ofw.contracts import (
     WorkspaceFile,
 )
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
+from ofw.mcp import FailureMiningMcpServer
 from ofw.mine import (
     AdaptationRequest,
     AdaptationResult,
@@ -184,6 +185,7 @@ __all__ = [
     "EvidenceRecordId",
     "EvidenceReference",
     "FailureMiningResult",
+    "FailureMiningMcpServer",
     "FailureMiningRun",
     "FailureBehavior",
     "FailureBehaviorKind",

@@ -560,7 +560,7 @@ class EnvironmentVerifier(Protocol):
     ) -> EnvironmentVerification: ...
 
 
-class HermesJudge(Protocol):
+class FailureJudge(Protocol):
     def investigate(
         self,
         case: TraceMiningCase,
@@ -776,7 +776,7 @@ class Mine:
     revision: HarnessRevision
     collection: CollectionResult
     nominations: tuple[MiningNomination, ...]
-    judge: HermesJudge
+    judge: FailureJudge
     environment: EnvironmentVerifier
 
     def __post_init__(self) -> None:

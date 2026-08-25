@@ -313,7 +313,7 @@ class RecordedEnvironmentVerifier:
 
 
 @dataclass(frozen=True, slots=True)
-class FakeHermesJudge:
+class FakeFailureJudge:
     search_text: str
 
     def investigate(
@@ -446,8 +446,8 @@ class FakeHermesJudge:
 
 
 @dataclass(frozen=True, slots=True)
-class ForgingHermesJudge:
-    delegate: FakeHermesJudge
+class ForgingFailureJudge:
+    delegate: FakeFailureJudge
 
     def investigate(
         self,
@@ -465,7 +465,7 @@ class ForgingHermesJudge:
 
 
 @dataclass(frozen=True, slots=True)
-class PartialTraceHermesJudge:
+class PartialTraceFailureJudge:
     def investigate(
         self,
         case: TraceMiningCase,
@@ -564,7 +564,7 @@ def test_mine_uses_complete_trajectory_and_verified_state(
         revision=revision,
         collection=_collection(tmp_path, revision, outputs),
         nominations=(_nomination(source_kind),),
-        judge=FakeHermesJudge(search),
+        judge=FakeFailureJudge(search),
         environment=RecordedEnvironmentVerifier(state, observed),
     ).run()
 
@@ -605,7 +605,7 @@ def test_wrong_revision_or_corrupt_trace_is_invalid(
         revision=revision,
         collection=collection,
         nominations=(_nomination(FailureSourceKind.AGENT_ERROR),),
-        judge=FakeHermesJudge("successfully"),
+        judge=FakeFailureJudge("successfully"),
         environment=RecordedEnvironmentVerifier(CompletionStatus.COMPLETED, "closed"),
     ).run().results[0]
 
@@ -670,7 +670,7 @@ def test_judge_cannot_invent_evidence_that_no_tool_returned(tmp_path: Path) -> N
             ("Close ticket", "update failed", "Ticket closed successfully"),
         ),
         nominations=(_nomination(FailureSourceKind.DOWNSTREAM_FAILURE),),
-        judge=ForgingHermesJudge(FakeHermesJudge("failed")),
+        judge=ForgingFailureJudge(FakeFailureJudge("failed")),
         environment=RecordedEnvironmentVerifier(
             CompletionStatus.NOT_COMPLETED,
             "Ticket remains open",
@@ -691,7 +691,7 @@ def test_judge_must_read_the_full_trace_before_returning_verdict(tmp_path: Path)
             ("Close ticket", "update failed", "Ticket closed successfully"),
         ),
         nominations=(_nomination(FailureSourceKind.DOWNSTREAM_FAILURE),),
-        judge=PartialTraceHermesJudge(),
+        judge=PartialTraceFailureJudge(),
         environment=RecordedEnvironmentVerifier(
             CompletionStatus.NOT_COMPLETED,
             "Ticket remains open",
