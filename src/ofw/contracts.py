@@ -47,6 +47,10 @@ class HarnessErrorCode(StrEnum):
     GIT_COMMAND_FAILED = "git_command_failed"
     MANIFEST_WRITE_FAILED = "manifest_write_failed"
     SENSITIVE_ASSET = "sensitive_asset"
+    RUNTIME_INCOMPLETE = "runtime_incomplete"
+    CANARY_FAILED = "canary_failed"
+    DUPLICATE_VERIFIER = "duplicate_verifier"
+    RUNTIME_INVALID = "runtime_invalid"
 
 
 class HarnessValidationError(Exception):
@@ -112,12 +116,30 @@ class RepositorySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeConfiguration:
+    execution: Sha256Digest
+    lifecycle: Sha256Digest
+    verifiers: tuple[Sha256Digest, ...]
+
+    def canonical_json(self) -> str:
+        verifiers = ",".join(_quote(str(verifier)) for verifier in self.verifiers)
+        return (
+            "{"
+            f'"execution":{_quote(str(self.execution))},'
+            f'"lifecycle":{_quote(str(self.lifecycle))},'
+            f'"verifiers":[{verifiers}]'
+            "}"
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class HarnessRevisionContent:
     schema_version: HarnessSchemaVersion
     harness_name: str
     repository: RepositorySnapshot
     components: tuple[HarnessComponent, ...]
     observability: LangfuseConnectionManifest | None
+    runtime: RuntimeConfiguration | None
 
     def canonical_json(self) -> str:
         return _render_content(self)
@@ -132,10 +154,16 @@ class HarnessRevision:
     repository: RepositorySnapshot
     components: tuple[HarnessComponent, ...]
     observability: LangfuseConnectionManifest | None
+    runtime: RuntimeConfiguration | None
+    canary_digest: Sha256Digest | None
 
     @property
     def manifest_path(self) -> Path:
         return self.root / ".ofw" / "revisions" / str(self.id) / "manifest.json"
+
+    @property
+    def canary_path(self) -> Path:
+        return self.manifest_path.with_name("canary.json")
 
     @property
     def assets(self) -> tuple[HarnessAsset, ...]:
@@ -173,6 +201,8 @@ class HarnessRevision:
             f'"root":{_quote(self.root.as_posix())},'
             f'"repository":{_render_repository(self.repository)},'
             f'"observability":{_render_observability(self.observability)},'
+            f'"runtime":{_render_runtime(self.runtime)},'
+            f'"canary_digest":{_render_digest(self.canary_digest)},'
             f'"components":[{components}]'
             "}"
         )
@@ -186,6 +216,7 @@ def _render_content(content: HarnessRevisionContent) -> str:
         f'"harness_name":{_quote(content.harness_name)},'
         f'"repository":{_render_repository(content.repository)},'
         f'"observability":{_render_observability(content.observability)},'
+        f'"runtime":{_render_runtime(content.runtime)},'
         f'"components":[{components}]'
         "}"
     )
@@ -207,6 +238,14 @@ def _render_repository(repository: RepositorySnapshot) -> str:
 
 def _render_observability(connection: LangfuseConnectionManifest | None) -> str:
     return "null" if connection is None else connection.to_json()
+
+
+def _render_runtime(runtime: RuntimeConfiguration | None) -> str:
+    return "null" if runtime is None else runtime.canonical_json()
+
+
+def _render_digest(digest: Sha256Digest | None) -> str:
+    return "null" if digest is None else _quote(str(digest))
 
 
 def _render_component(component: HarnessComponent) -> str:
