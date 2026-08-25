@@ -248,6 +248,7 @@ def _assemble_trace(
     known_ids = {record.id.value for record in observations}
     if any(
         record.parent_observation_id is not None
+        and record.is_root is not True
         and record.parent_observation_id.value not in known_ids
         for record in observations
     ):
