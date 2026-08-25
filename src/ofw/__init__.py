@@ -50,10 +50,34 @@ from ofw.observability.langfuse.service import (
     read_trace_observations,
     search_observation_content,
 )
+from ofw.runtime import (
+    CanaryCase,
+    CaseId,
+    CommandLoop,
+    CommandVerifier,
+    E2BSandbox,
+    ModelFingerprint,
+    ProcessCommand,
+    ProcessLimits,
+    RunErrorCode,
+    RunResult,
+    RunStatus,
+    VerifierResult,
+    VerifierVerdict,
+)
 
 
 class _OfwNamespace:
     __slots__ = ()
+
+    E2BSandbox = E2BSandbox
+    ProcessLimits = ProcessLimits
+    ProcessCommand = ProcessCommand
+    CommandLoop = CommandLoop
+    ModelFingerprint = ModelFingerprint
+    CommandVerifier = CommandVerifier
+    CanaryCase = CanaryCase
+    CaseId = CaseId
 
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
@@ -94,10 +118,15 @@ ofw = _OfwNamespace()
 
 __all__ = [
     "AssetAccess",
+    "CanaryCase",
+    "CaseId",
     "ComponentKind",
     "CollectionError",
     "CollectionErrorCode",
     "CollectionResult",
+    "CommandLoop",
+    "CommandVerifier",
+    "E2BSandbox",
     "EditableFile",
     "GitCommit",
     "Harness",
@@ -111,6 +140,7 @@ __all__ = [
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
     "LangfuseSpan",
+    "ModelFingerprint",
     "ObservationContent",
     "ObservationContentField",
     "ObservationContentHit",
@@ -118,10 +148,17 @@ __all__ = [
     "ObservationContentQuery",
     "ObservationContentReference",
     "RepositorySnapshot",
+    "ProcessCommand",
+    "ProcessLimits",
+    "RunErrorCode",
+    "RunResult",
+    "RunStatus",
     "Sha256Digest",
     "Subagent",
     "Tool",
     "TraceWindow",
+    "VerifierResult",
+    "VerifierVerdict",
     "WorkspaceFile",
     "collect",
     "editable",
