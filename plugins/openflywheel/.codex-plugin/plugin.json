@@ -1,7 +1,7 @@
 {
   "name": "openflywheel",
   "version": "0.1.0",
-  "description": "Integrate any Langfuse-connected agent harness with OpenFlyWheel and mine evidence-backed failures with Codex.",
+  "description": "Mine evidence-backed failures from Langfuse-connected agent harnesses with Codex.",
   "author": {
     "name": "OpenFlyWheel"
   },
@@ -9,13 +9,12 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "OpenFlyWheel",
-    "shortDescription": "Integrate agent harnesses and mine failures",
-    "longDescription": "Codex workflows for integrating any Langfuse-connected agent harness with OpenFlyWheel and mining observable failures from full trajectories.",
+    "shortDescription": "Mine failures from production traces",
+    "longDescription": "Codex workflows for mining observable failures from full Langfuse trajectories without explicit harness component mapping.",
     "developerName": "OpenFlyWheel",
     "category": "Developer Tools",
     "capabilities": ["Read", "Write"],
     "defaultPrompt": [
-      "Integrate this agent harness with OpenFlyWheel.",
       "Mine failures from the connected OpenFlyWheel trajectory."
     ]
   }

@@ -97,10 +97,7 @@ def _revision(tmp_path: Path, value: str = "revision-1") -> HarnessRevision:
         harness_name="support-agent",
         root=tmp_path,
         repository=RepositorySnapshot(GitCommit("abc123"), False, None),
-        components=(),
         observability=None,
-        runtime=None,
-        canary_digest=None,
     )
 
 

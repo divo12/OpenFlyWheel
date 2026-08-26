@@ -21,7 +21,7 @@ from typing import Protocol, cast
 
 from pydantic import TypeAdapter
 
-from ofw.contracts import HarnessRevision, RuntimeConfiguration, Sha256Digest
+from ofw.contracts import HarnessRevision, Sha256Digest
 
 _NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 _ENVIRONMENT_PATTERN = re.compile(r"[A-Z_][A-Z0-9_]*")
@@ -391,19 +391,6 @@ class CanaryReport:
 
 
 _CANARY_ADAPTER: TypeAdapter[CanaryReport] = TypeAdapter(CanaryReport)
-
-
-def runtime_configuration(
-    root: Path,
-    execution: ExecutionEnvironment,
-    lifecycle: LifecycleAdapter,
-    verifiers: tuple[VerifierAdapter, ...],
-) -> RuntimeConfiguration:
-    return RuntimeConfiguration(
-        execution.fingerprint(root),
-        lifecycle.fingerprint(root),
-        tuple(verifier.fingerprint(root) for verifier in verifiers),
-    )
 
 
 def run_canary(

@@ -13,20 +13,14 @@ from langfuse import (
 )
 
 from ofw.contracts import (
-    AssetAccess,
-    ComponentKind,
     GitCommit,
-    HarnessAsset,
-    HarnessComponent,
     HarnessErrorCode,
     HarnessRevision,
     HarnessRevisionId,
     HarnessValidationError,
     RepositorySnapshot,
     Sha256Digest,
-    WorkspaceFile,
 )
-from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.mcp import FailureMiningMcpServer
 from ofw.mine import (
     AdaptationRequest,
@@ -91,6 +85,7 @@ from ofw.observability.langfuse.service import (
     read_trace_observations,
     search_observation_content,
 )
+from ofw.repository import process_repository
 from ofw.runtime import (
     CanaryCase,
     CaseId,
@@ -119,9 +114,6 @@ class _OfwNamespace:
     CommandVerifier = CommandVerifier
     CanaryCase = CanaryCase
     CaseId = CaseId
-
-    def editable(self, path: Path) -> EditableFile:
-        return editable(path)
 
     def collect(
         self,
@@ -157,13 +149,11 @@ class _OfwNamespace:
 ofw = _OfwNamespace()
 
 __all__ = [
-    "AssetAccess",
     "AdaptationRequest",
     "AdaptationResult",
     "BehaviorObservation",
     "CanaryCase",
     "CaseId",
-    "ComponentKind",
     "CollectionError",
     "CollectionErrorCode",
     "CollectionResult",
@@ -174,7 +164,6 @@ __all__ = [
     "Confidence",
     "ConstraintKind",
     "E2BSandbox",
-    "EditableFile",
     "EnvironmentCheckId",
     "EnvironmentCheckRequest",
     "EnvironmentSource",
@@ -194,9 +183,6 @@ __all__ = [
     "FailureSourceId",
     "FailureSourceKind",
     "GitCommit",
-    "Harness",
-    "HarnessAsset",
-    "HarnessComponent",
     "HarnessErrorCode",
     "HarnessRevision",
     "HarnessRevisionId",
@@ -227,10 +213,8 @@ __all__ = [
     "RunResult",
     "RunStatus",
     "Sha256Digest",
-    "Subagent",
     "TaskConstraint",
     "TaskId",
-    "Tool",
     "ToolAccess",
     "ToolCapability",
     "ToolName",
@@ -238,13 +222,12 @@ __all__ = [
     "TraceMiningCase",
     "VerifierResult",
     "VerifierVerdict",
-    "WorkspaceFile",
     "collect",
-    "editable",
     "get_client",
     "is_default_export_span",
     "observe",
     "ofw",
+    "process_repository",
     "propagate_attributes",
     "read_observation_content",
     "read_trace_observations",

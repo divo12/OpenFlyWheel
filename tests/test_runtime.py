@@ -20,10 +20,7 @@ from ofw import (
     CommandLoop,
     CommandVerifier,
     E2BSandbox,
-    Harness,
-    HarnessErrorCode,
     HarnessRevision,
-    HarnessValidationError,
     ModelFingerprint,
     ProcessCommand,
     ProcessLimits,
@@ -31,6 +28,7 @@ from ofw import (
     RunResult,
     RunStatus,
     VerifierVerdict,
+    process_repository,
 )
 
 
@@ -192,9 +190,7 @@ def _repository(tmp_path: Path) -> Path:
 
 
 def _revision(root: Path) -> HarnessRevision:
-    harness = Harness("runtime-agent", root=root)
-    harness.connect_prompt(Path("prompt.md"))
-    return harness.process()
+    return process_repository("runtime-agent", root)
 
 
 def _verifier(mode: str, name: str = "verifier") -> CommandVerifier:
@@ -208,77 +204,36 @@ def _command_loop() -> CommandLoop:
     )
 
 
-def _runtime_harness(root: Path) -> Harness:
-    harness = Harness("runtime-agent", root=root)
-    harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
-    harness.connect_lifecycle(_command_loop())
-    harness.connect_verifiers(_verifier("uppercase", "uppercase"))
-    return harness
-
-
-def test_process_runs_e2b_command_canary_and_records_frozen_evidence(tmp_path: Path) -> None:
+def test_run_canary_returns_frozen_evidence(tmp_path: Path) -> None:
     root = _repository(tmp_path)
-    harness = Harness("runtime-agent", root=root)
-    harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
-    harness.connect_lifecycle(_command_loop())
-    harness.connect_verifiers(_verifier("uppercase", "uppercase"))
+    revision = _revision(root)
 
-    revision = harness.process(canary=CanaryCase(CaseId("smoke"), "ship"))
+    report = runtime_module.run_canary(
+        revision,
+        CanaryCase(CaseId("smoke"), "ship"),
+        E2BSandbox(ProcessLimits(timedelta(seconds=2))),
+        _command_loop(),
+        (_verifier("uppercase", "uppercase"),),
+    )
 
-    assert revision.runtime is not None
-    assert revision.canary_digest is not None
-    assert revision.canary_path.is_file()
-    assert "pass" in revision.canary_path.read_text(encoding="utf-8")
+    assert report.passed
+    assert str(report.digest).startswith("sha256:")
 
 
-def test_canary_evidence_does_not_change_runtime_revision_identity(tmp_path: Path) -> None:
+def test_failed_canary_is_reported_without_mutating_revision(tmp_path: Path) -> None:
     root = _repository(tmp_path)
+    revision = _revision(root)
 
-    without_canary = _runtime_harness(root).process()
-    with_canary = _runtime_harness(root).process(canary=CanaryCase(CaseId("identity"), "ship"))
+    report = runtime_module.run_canary(
+        revision,
+        CanaryCase(CaseId("rejected"), "ship"),
+        E2BSandbox(ProcessLimits(timedelta(seconds=2))),
+        _command_loop(),
+        (_verifier("reject", "reject"),),
+    )
 
-    assert with_canary.id == without_canary.id
-    assert with_canary.canary_digest is not None
-
-
-def test_partial_runtime_configuration_is_rejected(tmp_path: Path) -> None:
-    root = _repository(tmp_path)
-    harness = Harness("runtime-agent", root=root)
-    harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=1))))
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process()
-
-    assert raised.value.code is HarnessErrorCode.RUNTIME_INCOMPLETE
-
-
-def test_duplicate_verifier_name_is_rejected(tmp_path: Path) -> None:
-    harness = Harness("runtime-agent", root=_repository(tmp_path))
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.connect_verifiers(
-            _verifier("uppercase", "duplicate"),
-            _verifier("reject", "duplicate"),
-        )
-
-    assert raised.value.code is HarnessErrorCode.DUPLICATE_VERIFIER
-
-
-def test_failed_canary_blocks_revision_creation(tmp_path: Path) -> None:
-    root = _repository(tmp_path)
-    harness = Harness("runtime-agent", root=root)
-    harness.connect_prompt(Path("prompt.md"))
-    harness.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
-    harness.connect_lifecycle(_command_loop())
-    harness.connect_verifiers(_verifier("reject", "reject"))
-
-    with pytest.raises(HarnessValidationError) as raised:
-        harness.process(canary=CanaryCase(CaseId("rejected"), "ship"))
-
-    assert raised.value.code is HarnessErrorCode.CANARY_FAILED
+    assert not report.passed
+    assert _revision(root).id == revision.id
 
 
 def test_e2b_reports_timeout_and_nonzero_exit(tmp_path: Path) -> None:
@@ -485,26 +440,6 @@ def test_parallel_e2b_environments_are_distinct(tmp_path: Path) -> None:
     finally:
         environment.destroy(first)
         environment.destroy(second)
-
-
-def test_runtime_fingerprint_changes_without_changing_assets(tmp_path: Path) -> None:
-    root = _repository(tmp_path)
-    first = Harness("runtime-agent", root=root)
-    first.connect_prompt(Path("prompt.md"))
-    first.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=1))))
-    first.connect_lifecycle(_command_loop())
-    first.connect_verifiers(_verifier("uppercase", "uppercase"))
-    second = Harness("runtime-agent", root=root)
-    second.connect_prompt(Path("prompt.md"))
-    second.connect_execute(E2BSandbox(ProcessLimits(timedelta(seconds=2))))
-    second.connect_lifecycle(_command_loop())
-    second.connect_verifiers(_verifier("uppercase", "uppercase"))
-
-    first_revision = first.process()
-    second_revision = second.process()
-
-    assert first_revision.id != second_revision.id
-    assert first_revision.components == second_revision.components
 
 
 def test_command_verifier_is_terminated_at_environment_timeout(tmp_path: Path) -> None:
