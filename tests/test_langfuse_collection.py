@@ -16,15 +16,14 @@ import pytest
 from ofw import (
     CollectionError,
     CollectionErrorCode,
-    Harness,
     HarnessRevision,
     LangfuseProject,
     ObservationContentField,
     ObservationContentMatch,
     ObservationContentQuery,
-    Tool,
     TraceWindow,
     ofw,
+    process_repository,
 )
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
@@ -258,11 +257,7 @@ def _revision(
         base_url=server.base_url,
         allow_private_network=True,
     )
-    harness = Harness("fixture-agent", root=root)
-    harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    harness.connect_tools(Tool(name="run", source=ofw.editable(Path("tool.py"))))
-    harness.connect_observability(project)
-    return harness.process()
+    return process_repository("fixture-agent", root, traces=project)
 
 
 def _window() -> TraceWindow:

@@ -12,10 +12,10 @@ import pytest
 from ofw import (
     CollectionError,
     CollectionErrorCode,
-    Harness,
     LangfuseProject,
     TraceWindow,
     ofw,
+    process_repository,
 )
 
 
@@ -105,27 +105,21 @@ def test_trace_window_requires_aware_utc_ordering() -> None:
     assert reversed_window.value.code is CollectionErrorCode.INVALID_WINDOW
 
 
-def test_observability_connection_changes_harness_revision_without_persisting_secrets(
+def test_observability_connection_does_not_change_code_revision_or_persist_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = _harness_root(tmp_path)
-    baseline_harness = Harness("fixture-agent", root=root)
-    baseline_harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    baseline = baseline_harness.process()
+    baseline = process_repository("fixture-agent", root)
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-sensitive")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-sensitive")
     project = LangfuseProject.from_env(
         environment="production",
         base_url="https://us.cloud.langfuse.com",
     )
-    connected_harness = Harness("fixture-agent", root=root)
-    connected_harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    connected_harness.connect_observability(project)
+    connected = process_repository("fixture-agent", root, traces=project)
 
-    connected = connected_harness.process()
-
-    assert connected.id != baseline.id
+    assert connected.id == baseline.id
     assert connected.observability is not None
     assert connected.observability == project.manifest()
     assert "pk-sensitive" not in connected.to_json()
@@ -134,9 +128,7 @@ def test_observability_connection_changes_harness_revision_without_persisting_se
 
 def test_collect_requires_connected_observability(tmp_path: Path) -> None:
     root = _harness_root(tmp_path)
-    harness = Harness("fixture-agent", root=root)
-    harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    revision = harness.process()
+    revision = process_repository("fixture-agent", root)
     start = datetime(2026, 8, 22, tzinfo=UTC)
 
     with pytest.raises(CollectionError) as raised:
