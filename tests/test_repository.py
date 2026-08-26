@@ -44,6 +44,7 @@ def test_process_repository_creates_an_immutable_revision(tmp_path: Path) -> Non
     revision = process_repository("fixture-agent", root)
 
     assert isinstance(revision, HarnessRevision)
+    assert str(revision.id) == str(revision.repository.commit)
     assert revision.root == root
     assert revision.manifest_path.is_file()
     assert revision.manifest_path.read_text(encoding="utf-8") == f"{revision.to_json()}\n"
@@ -79,7 +80,7 @@ def test_observability_connection_changes_revision_without_storing_secrets(
 
     connected = process_repository("fixture-agent", root, traces=project)
 
-    assert connected.id != baseline.id
+    assert connected.id == baseline.id
     assert connected.observability == project.manifest()
     assert "pk-sensitive" not in connected.to_json()
     assert "sk-sensitive" not in connected.to_json()

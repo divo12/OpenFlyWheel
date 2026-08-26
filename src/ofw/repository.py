@@ -41,10 +41,10 @@ def process_repository(
         repository=_snapshot_repository(selected_root),
         observability=None if traces is None else traces.manifest(),
     )
-    digest = _digest(content.canonical_json().encode())
+    revision_id = _revision_id(content.repository)
     revision = HarnessRevision(
         schema_version=content.schema_version,
-        id=HarnessRevisionId(f"ofw_{digest.value[7:]}"),
+        id=revision_id,
         harness_name=content.harness_name,
         root=selected_root,
         repository=content.repository,
@@ -52,6 +52,14 @@ def process_repository(
     )
     _write_manifest(revision)
     return revision
+
+
+def _revision_id(repository: RepositorySnapshot) -> HarnessRevisionId:
+    if repository.dirty_digest is None:
+        return HarnessRevisionId(str(repository.commit))
+    return HarnessRevisionId(
+        f"{repository.commit.value}-dirty-{repository.dirty_digest.value[7:23]}"
+    )
 
 
 def _resolve_root(root: Path) -> Path:

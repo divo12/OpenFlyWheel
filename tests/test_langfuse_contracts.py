@@ -105,7 +105,7 @@ def test_trace_window_requires_aware_utc_ordering() -> None:
     assert reversed_window.value.code is CollectionErrorCode.INVALID_WINDOW
 
 
-def test_observability_connection_changes_repository_revision_without_persisting_secrets(
+def test_observability_connection_does_not_change_code_revision_or_persist_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -119,7 +119,7 @@ def test_observability_connection_changes_repository_revision_without_persisting
     )
     connected = process_repository("fixture-agent", root, traces=project)
 
-    assert connected.id != baseline.id
+    assert connected.id == baseline.id
     assert connected.observability is not None
     assert connected.observability == project.manifest()
     assert "pk-sensitive" not in connected.to_json()
