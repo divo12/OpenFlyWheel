@@ -152,7 +152,7 @@ class FailureMiningMcpServer:
         server: MCPServer[None] = MCPServer(
             name="openflywheel-failure-mining",
             instructions=(
-                "Inspect and verify one executed Hermes trajectory. Do not diagnose causes, "
+                "Inspect and verify one executed agent-harness trajectory. Do not diagnose causes, "
                 "propose fixes, cluster failures, generate evals, or mutate rubrics."
             ),
         )

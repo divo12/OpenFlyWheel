@@ -1,6 +1,6 @@
 # Supported Python integration
 
-Use only this API surface. Adapt paths and names to the inspected Hermes
+Use only this API surface. Adapt paths and names to the inspected agent-harness
 repository; do not invent components that are not active.
 
 ```python
@@ -12,7 +12,7 @@ from ofw import Harness, LangfuseProject, Tool, TraceWindow, ofw, propagate_attr
 ROOT = Path(__file__).resolve().parent
 
 project = LangfuseProject.from_env(environment="production")
-harness = Harness("hermes", root=ROOT)
+harness = Harness("agent-harness", root=ROOT)
 harness.connect_prompt(ofw.editable(Path("path/to/system-prompt.md")))
 harness.connect_tools(
     Tool(name="search", source=Path("path/to/search-tool.py")),
@@ -28,13 +28,13 @@ Register only component kinds that exist. For named subagents use
 names must be lowercase identifiers accepted by OFW. Every registered path is
 relative to the git root and may belong to only one component.
 
-Run the real Hermes entry point inside revision attribution:
+Run the real agent entry point inside revision attribution:
 
 ```python
 with propagate_attributes(
     metadata={"ofw.harness.revision": str(revision.id)},
 ):
-    run_real_hermes_request()
+    run_real_agent_request()
 ```
 
 The surrounding application remains responsible for its existing Langfuse

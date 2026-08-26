@@ -1,7 +1,7 @@
 {
   "name": "openflywheel",
   "version": "0.1.0",
-  "description": "Integrate Hermes with OpenFlyWheel and mine evidence-backed failures with Codex.",
+  "description": "Integrate any Langfuse-connected agent harness with OpenFlyWheel and mine evidence-backed failures with Codex.",
   "author": {
     "name": "OpenFlyWheel"
   },
@@ -9,13 +9,13 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "OpenFlyWheel",
-    "shortDescription": "Integrate Hermes and mine its failures",
-    "longDescription": "Codex workflows for integrating a Hermes codebase with OpenFlyWheel and mining observable failures from full Langfuse trajectories.",
+    "shortDescription": "Integrate agent harnesses and mine failures",
+    "longDescription": "Codex workflows for integrating any Langfuse-connected agent harness with OpenFlyWheel and mining observable failures from full trajectories.",
     "developerName": "OpenFlyWheel",
     "category": "Developer Tools",
     "capabilities": ["Read", "Write"],
     "defaultPrompt": [
-      "Integrate this Hermes codebase with OpenFlyWheel.",
+      "Integrate this agent harness with OpenFlyWheel.",
       "Mine failures from the connected OpenFlyWheel trajectory."
     ]
   }

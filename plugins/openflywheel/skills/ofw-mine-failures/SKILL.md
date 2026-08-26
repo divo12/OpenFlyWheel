@@ -1,20 +1,20 @@
 ---
 name: ofw-mine-failures
-description: Mines observable failures from executed Hermes trajectories through a connected OpenFlyWheel failure-mining MCP server. Use when asked to judge, triage, or mine failures from OFW/Langfuse traces. Do not use for root-cause diagnosis, clustering, eval generation, rubric refinement, or modifying Hermes.
+description: Mines observable failures from any executed agent harness through a connected OpenFlyWheel failure-mining MCP server backed by full Langfuse trajectories. Use when asked to judge, triage, or mine failures from OFW traces. Do not use for root-cause diagnosis, clustering, eval generation, rubric refinement, or modifying the evaluated harness.
 ---
 
-# Mine Hermes failures with OpenFlyWheel
+# Mine agent-harness failures with OpenFlyWheel
 
 Investigate one OFW mining case and return an evidence-grounded failure-mining
-result. Hermes is the executed agent. You are the Codex operator using OFW.
+result. The connected harness is the executed system. You are the Codex operator using OFW.
 Stay at observable behavior; diagnosis and improvement are separate work.
 
 ## Principles
 
-1. **The oracle decides completion.** A Hermes claim is evidence of what it
+1. **The oracle decides completion.** An agent claim is evidence of what it
    claimed, not proof that the task succeeded. Verify every required outcome
    against its declared environment source.
-2. **Recovery matters.** A failed action is not a task failure when Hermes later
+2. **Recovery matters.** A failed action is not a task failure when the agent later
    recovers and every required outcome is completed.
 3. **Use only issued evidence.** Cite observation and environment evidence
    returned by OFW tools. Never invent identifiers, digests, state, or tool
@@ -32,7 +32,7 @@ Stay at observable behavior; diagnosis and improvement are separate work.
 ## Workflow
 
 1. Call `get_mining_case`. Read the task intent, constraints, required outcomes,
-   available Hermes tools, environment sources, observation IDs, and nominated
+   available agent tools, environment sources, observation IDs, and nominated
    signals.
 2. Search the current trajectory with `search_trajectory`:
    - search task-specific entities and required outcomes;
@@ -99,10 +99,10 @@ trajectory evidence. Keep the summary factual and free of causal claims.
 
 ## Decision examples
 
-- A command fails, Hermes retries successfully, and the oracle confirms the
+- A command fails, the agent retries successfully, and the oracle confirms the
   required state: `no_failure`.
-- Hermes says the work is complete, but the oracle shows the required state was
+- The agent says the work is complete, but the oracle shows the required state was
   not reached: `confirmed_failure` with `false_completion` or
   `outcome_mismatch`, depending on the observed behavior.
-- Hermes appears to stop early, but the environment cannot be queried:
+- The agent appears to stop early, but the environment cannot be queried:
   `ambiguous`, not an inferred failure.
