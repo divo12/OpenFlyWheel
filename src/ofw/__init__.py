@@ -21,7 +21,6 @@ from ofw.contracts import (
     RepositorySnapshot,
     Sha256Digest,
 )
-from ofw.mcp import FailureMiningMcpServer
 from ofw.mine import (
     AdaptationRequest,
     AdaptationResult,
@@ -174,7 +173,6 @@ __all__ = [
     "EvidenceRecordId",
     "EvidenceReference",
     "FailureMiningResult",
-    "FailureMiningMcpServer",
     "FailureMiningRun",
     "FailureBehavior",
     "FailureBehaviorKind",
