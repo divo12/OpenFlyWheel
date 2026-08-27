@@ -9,23 +9,30 @@ from typing import Annotated, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from ofw.observability.langfuse.contracts import LangfuseProject
 from ofw.observability.langfuse.trace_query import (
     GetSpanContextInput,
     GetTraceSchemaInput,
+    ListTracesInput,
     QuerySpansInput,
+    SessionIdentifier,
     SpanFilters,
+    TraceListObservation,
     TraceQueryObservation,
     TraceQueryService,
+    TraceTimeRange,
 )
 from ofw.observability.langfuse.transport import LangfuseHttpClient
 
 QueryInput = TypeVar("QueryInput")
+QueryOutput = TypeVar("QueryOutput", bound=BaseModel)
+_QUERY_TIMEOUT_SECONDS = 60.0
 TraceIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 SpanIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 CursorIdentifier = Annotated[str, Field(min_length=1, max_length=4096)]
+TracePageLimit = Annotated[int, Field(strict=True, ge=1, le=50)]
 
 server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped upstream.
     name="openflywheel-trace-query",
@@ -45,18 +52,39 @@ def _client() -> LangfuseHttpClient:
         environment=os.environ.get("LANGFUSE_ENVIRONMENT", "ofw-local"),
         allow_private_network=os.environ.get("LANGFUSE_ALLOW_PRIVATE_NETWORK") == "1",
     )
-    return LangfuseHttpClient(project)
+    return LangfuseHttpClient(project, timeout_seconds=_QUERY_TIMEOUT_SECONDS)
 
 
 def _execute(
     query: QueryInput,
-    operation: Callable[[TraceQueryService, QueryInput], TraceQueryObservation],
-) -> TraceQueryObservation:
+    operation: Callable[[TraceQueryService, QueryInput], QueryOutput],
+) -> QueryOutput:
     client = _client()
     try:
         return operation(TraceQueryService(client), query)
     finally:
         client.close()
+
+
+@server.tool(annotations=read_only, structured_output=True)
+def list_traces(
+    session_id: SessionIdentifier,
+    time_range: TraceTimeRange,
+    environment: TraceIdentifier | None = None,
+    release: TraceIdentifier | None = None,
+    cursor: CursorIdentifier | None = None,
+    limit: TracePageLimit = 20,
+) -> TraceListObservation:
+    """List bounded logical-root traces for one session and time range."""
+    query = ListTracesInput(
+        session_id=session_id,
+        environment=environment,
+        release=release,
+        time_range=time_range,
+        cursor=cursor,
+        limit=limit,
+    )
+    return _execute(query, TraceQueryService.list_traces)
 
 
 @server.tool(annotations=read_only, structured_output=True)

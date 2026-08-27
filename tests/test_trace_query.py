@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from ofw.contracts import Sha256Digest
+from ofw.observability.langfuse.contracts import TraceWindow
 from ofw.observability.langfuse.domain import (
     JsonDocument,
     ObservationContent,
@@ -25,13 +26,18 @@ from ofw.observability.langfuse.trace_query import (
     AppliedSpanFilters,
     GetSpanContextInput,
     GetTraceSchemaInput,
+    ListTracesInput,
     ObservationFieldGroup,
     ObservationRead,
     QueryOrdering,
     QuerySpansInput,
     QueryStatus,
     SpanFilters,
+    SpanTextField,
+    SpanTextFilter,
+    SpanTextMatch,
     TraceQueryService,
+    TraceTimeRange,
 )
 
 
@@ -45,6 +51,11 @@ def _record(
     second: int = 0,
     input_text: str | None = None,
     output_text: str | None = None,
+    trace_id: str = "trace-1",
+    session_id: str = "itsm-session",
+    environment: str = "ofw-local",
+    release: str = "itsm-bench",
+    trace_name: str = "itsm-task",
 ) -> tuple[ObservationRecord, tuple[ObservationContent, ...]]:
     contents = tuple(
         ObservationContent(ObservationContentReference.for_text(text), text)
@@ -61,7 +72,7 @@ def _record(
     return (
         ObservationRecord(
             id=ObservationId(observation_id),
-            trace_id=TraceId("trace-1"),
+            trace_id=TraceId(trace_id),
             start_time=start,
             end_time=start + timedelta(seconds=1),
             project_id=ProjectId("project-1"),
@@ -71,9 +82,9 @@ def _record(
             name=name,
             level=level,
             version=None,
-            environment="ofw-local",
+            environment=environment,
             user_id=None,
-            session_id="itsm-session",
+            session_id=session_id,
             created_at=None,
             updated_at=None,
             metadata=JsonDocument("{}"),
@@ -81,8 +92,8 @@ def _record(
             costs=None,
             total_cost=None,
             tags=(),
-            release="itsm-bench",
-            trace_name="itsm-task",
+            release=release,
+            trace_name=trace_name,
             raw=JsonDocument("{}"),
             digest=Sha256Digest("sha256:" + "0" * 64),
             input_content=input_reference,
@@ -113,6 +124,128 @@ def test_contracts_are_strict_and_bounded() -> None:
         SpanFilters(
             start_time=datetime(2026, 8, 28, tzinfo=UTC),
             end_time=datetime(2026, 8, 27, tzinfo=UTC),
+        )
+
+
+def test_mcp_json_parses_enums_and_datetimes_but_not_scalar_coercions() -> None:
+    query = QuerySpansInput.model_validate_json(
+        """{
+          "trace_id": "trace-1",
+          "filters": {
+            "span_type": "GENERATION",
+            "start_time": "2026-08-27T00:00:00Z",
+            "end_time": "2026-08-28T00:00:00Z",
+            "error": true,
+            "max_results": 5
+          }
+        }"""
+    )
+
+    assert query.filters.span_type is ObservationType.GENERATION
+    assert query.filters.start_time == datetime(2026, 8, 27, tzinfo=UTC)
+    with pytest.raises(ValidationError):
+        QuerySpansInput.model_validate_json(
+            '{"trace_id":"trace-1","filters":{"max_results":"5"}}'
+        )
+    with pytest.raises(ValidationError):
+        QuerySpansInput.model_validate_json(
+            '{"trace_id":"trace-1","filters":{"error":"true"}}'
+        )
+
+
+def test_list_traces_is_bounded_paginated_and_filtered() -> None:
+    newer, _ = _record(
+        "root-b",
+        name="Hermes turn",
+        kind=ObservationType.CHAIN,
+        second=2,
+        trace_id="trace-b",
+        trace_name="task-b",
+        release="release-1",
+    )
+    older, _ = _record(
+        "root-a",
+        name="Hermes turn",
+        kind=ObservationType.CHAIN,
+        second=1,
+        trace_id="trace-a",
+        trace_name="task-a",
+        release="release-1",
+    )
+    client = FakeClient([ObservationPage((older, newer), PageCursor("next-traces"))])
+    time_range = TraceTimeRange(
+        start_time=datetime(2026, 8, 27, tzinfo=UTC),
+        end_time=datetime(2026, 8, 28, tzinfo=UTC),
+    )
+
+    result = TraceQueryService(client).list_traces(
+        ListTracesInput(
+            session_id="itsm-session",
+            environment="ofw-local",
+            release="release-1",
+            time_range=time_range,
+            cursor="current-traces",
+            limit=2,
+        )
+    )
+
+    assert [trace.trace_id for trace in result.traces_found] == ["trace-b", "trace-a"]
+    assert result.next_cursor == "next-traces"
+    assert result.truncated is True
+    assert client.calls == [
+        ObservationRead(
+            trace_id=None,
+            fields=(
+                ObservationFieldGroup.CORE,
+                ObservationFieldGroup.BASIC,
+                ObservationFieldGroup.TRACE_CONTEXT,
+            ),
+            limit=2,
+            window=TraceWindow(time_range.start_time, time_range.end_time),
+            session_id="itsm-session",
+            environment="ofw-local",
+            release="release-1",
+            cursor=PageCursor("current-traces"),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("field", "metadata_key"),
+    (
+        (SpanTextField.INPUT, None),
+        (SpanTextField.OUTPUT, None),
+        (SpanTextField.METADATA, "queue"),
+    ),
+)
+def test_query_spans_applies_typed_text_filter(
+    field: SpanTextField,
+    metadata_key: str | None,
+) -> None:
+    client = FakeClient([ObservationPage((), None)])
+    text_filter = SpanTextFilter(
+        field=field,
+        match=SpanTextMatch.TOKEN_PHRASE,
+        text="refund failed",
+        metadata_key=metadata_key,
+    )
+
+    TraceQueryService(client).query_spans(
+        QuerySpansInput(
+            trace_id="trace-1",
+            filters=SpanFilters(text=text_filter, max_results=5),
+        )
+    )
+
+    assert client.calls[0].text_filter == text_filter
+
+
+def test_metadata_text_filter_requires_a_key() -> None:
+    with pytest.raises(ValidationError):
+        SpanTextFilter(
+            field=SpanTextField.METADATA,
+            match=SpanTextMatch.EXACT,
+            text="production",
         )
 
 
@@ -211,7 +344,7 @@ def test_query_spans_applies_deterministic_server_filters() -> None:
         ObservationRead(
             trace_id=TraceId("trace-1"),
             fields=(ObservationFieldGroup.CORE, ObservationFieldGroup.BASIC),
-            limit=6,
+            limit=5,
             name="Tool: get_ticket",
             observation_type=ObservationType.TOOL,
             error=True,
