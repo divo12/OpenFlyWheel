@@ -1,11 +1,13 @@
 ---
 name: workspace-init
-description: Initialize an OpenFlywheel optimization workspace by inspecting an agent-harness repository, collecting its experiment configuration one field at a time, creating the managed PROGRAM.md placeholder, and handing preparation to workspace_prepare. Use when onboarding a primary harness; do not use for an already-prepared workspace, ordinary trace queries, or outcome recording.
+description: Initialize an OpenFlywheel ITSM-bench optimization workspace by inspecting an agent-harness repository, collecting its experiment configuration one field at a time, creating the managed PROGRAM.md placeholder, and handing preparation to workspace_prepare. Use when onboarding a primary harness for ITSM-bench; do not use for other benchmarks, an already-prepared workspace, ordinary trace queries, or outcome recording.
 ---
 
 # Workspace Init
 
-Initialize one primary agent harness without starting optimization prematurely.
+Initialize one primary agent harness for ITSM-bench without starting optimization
+prematurely. This skill supports only `benchmark: itsm-bench`. Stop and report the
+unsupported benchmark if the user requests anything else.
 
 ## 1. Discover the harness
 
@@ -22,7 +24,7 @@ when the evidence supports one. Collect, in order:
 1. Harness root and explicitly editable files or directories.
 2. Optimization goal, primary metric, target, and stopping condition. Keep quality, cost,
    and latency constraints separate rather than hiding them in one average.
-3. Benchmark kind, root, task selection or split, and expected task count.
+3. ITSM-bench root, Harbor task manifest or selection, and expected task count.
 4. Authoritative verifier, reward interpretation, and pass threshold.
 5. Frozen model, reasoning effort, concurrency, per-task timeout, retry policy, and budget.
 6. Langfuse environment, release, and session naming rule.
@@ -42,7 +44,8 @@ ask whether the existing program should be preserved or replaced.
 
 Do not compose the final program yourself. Call `workspace_prepare` with the confirmed
 experiment configuration. That tool owns validation, baseline execution, result parsing,
-and deterministic composition from the shared and benchmark-specific program templates.
+and deterministic composition from `program_templates/base.md` and
+`program_templates/itsm_bench.md`.
 
 `workspace_prepare` is long-running and re-entrant:
 

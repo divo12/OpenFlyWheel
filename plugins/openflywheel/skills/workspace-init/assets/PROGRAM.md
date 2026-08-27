@@ -3,7 +3,6 @@
 `workspace_prepare()` populates this file from:
 
 - `program_templates/base.md` (shared sections)
-- `program_templates/<benchmark>.md` (benchmark-specific sections, such as
-  `tau_bench.md`, `terminal_bench.md`, `bird_interact.md`, or `itsm_bench.md`)
+- `program_templates/itsm_bench.md` (ITSM-bench sections)
 
-The benchmark is selected by `experiment_config.yaml`.
+`experiment_config.yaml` must select `itsm-bench`.
