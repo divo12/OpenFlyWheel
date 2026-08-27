@@ -26,6 +26,15 @@ from ofw.contracts import (
     Sha256Digest,
     WorkspaceFile,
 )
+from ofw.evaluation import (
+    LangfuseOutcomeStore,
+    OutcomeErrorCode,
+    OutcomeEvaluation,
+    OutcomeEvaluationError,
+    OutcomeScoreSubmission,
+    TaskId,
+    VerifierId,
+)
 from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.observability.langfuse import (
     CollectionError,
@@ -33,12 +42,14 @@ from ofw.observability.langfuse import (
     LangfuseProject,
     TraceWindow,
 )
+from ofw.observability.langfuse.domain import TraceId
 from ofw.runtime import (
     CanaryCase,
     CaseId,
     CommandLoop,
     CommandVerifier,
     E2BSandbox,
+    EvidenceReference,
     ModelFingerprint,
     ProcessCommand,
     ProcessLimits,
@@ -65,6 +76,7 @@ class _OfwNamespace:
     def editable(self, path: Path) -> EditableFile:
         return editable(path)
 
+
 ofw = _OfwNamespace()
 
 __all__ = [
@@ -78,6 +90,7 @@ __all__ = [
     "CommandVerifier",
     "E2BSandbox",
     "EditableFile",
+    "EvidenceReference",
     "GitCommit",
     "Harness",
     "HarnessAsset",
@@ -87,10 +100,15 @@ __all__ = [
     "HarnessRevisionId",
     "HarnessValidationError",
     "Langfuse",
+    "LangfuseOutcomeStore",
     "LangfuseOtelSpanAttributes",
     "LangfuseProject",
     "LangfuseSpan",
     "ModelFingerprint",
+    "OutcomeErrorCode",
+    "OutcomeEvaluation",
+    "OutcomeEvaluationError",
+    "OutcomeScoreSubmission",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
@@ -99,10 +117,13 @@ __all__ = [
     "RunStatus",
     "Sha256Digest",
     "Subagent",
+    "TaskId",
     "Tool",
+    "TraceId",
     "TraceWindow",
     "VerifierResult",
     "VerifierVerdict",
+    "VerifierId",
     "WorkspaceFile",
     "editable",
     "get_client",

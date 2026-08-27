@@ -21,3 +21,12 @@ def test_namespace_keeps_harness_methods() -> None:
     assert callable(ofw.editable)
     assert callable(ofw.E2BSandbox)
     assert callable(ofw.ProcessLimits)
+
+
+def test_namespace_exports_authoritative_outcome_contract() -> None:
+    assert "OutcomeEvaluation" in package.__all__
+    assert "LangfuseOutcomeStore" in package.__all__
+    assert "EvidenceReference" in package.__all__
+    assert "TaskId" in package.__all__
+    assert "TraceId" in package.__all__
+    assert "VerifierId" in package.__all__
