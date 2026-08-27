@@ -1,7 +1,7 @@
 {
   "name": "openflywheel",
-  "version": "0.2.0",
-  "description": "Query Langfuse trajectories and record authoritative verifier outcomes.",
+  "version": "0.3.0",
+  "description": "Initialize ITSM-bench harness workspaces, query Langfuse trajectories, and record authoritative verifier outcomes.",
   "author": {
     "name": "OpenFlyWheel"
   },
@@ -10,14 +10,14 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "OpenFlyWheel",
-    "shortDescription": "Query traces and record verifier outcomes",
-    "longDescription": "Select and inspect bounded Langfuse trajectory evidence, then record authoritative external-verifier outcomes on exact traces.",
+    "shortDescription": "Initialize ITSM workspaces and inspect traces",
+    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, select and inspect bounded Langfuse trajectory evidence, and record authoritative external-verifier outcomes on exact traces.",
     "developerName": "OpenFlyWheel",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
     "defaultPrompt": [
-      "Inspect this Langfuse trace with the fewest bounded queries.",
-      "Record this completed verifier outcome on its exact trace."
+      "Read this repository, identify the primary agent harness the user wants to evaluate with ITSM-bench, and use $workspace-init to collect its experiment configuration and perform the initial setup.",
+      "When PROGRAM.md is ready, read it and continue the optimization loop until its declared goal or stop condition is met."
     ]
   },
   "mcpServers": "./.mcp.json"
