@@ -29,6 +29,7 @@ from ofw.runtime import EvidenceReference, VerifierVerdict
 
 class OpenFlywheelMcpModule(Protocol):
     server: FastMCP[None]
+    OutcomeToolError: type[Exception]
 
     def record_outcome(
         self,
@@ -46,8 +47,11 @@ class _FakeOutcomeStore:
     def __init__(self) -> None:
         self.outcomes: list[OutcomeEvaluation] = []
         self.close_count = 0
+        self.failure: Exception | None = None
 
     def store(self, outcome: OutcomeEvaluation) -> OutcomeScoreSubmission:
+        if self.failure is not None:
+            raise self.failure
         self.outcomes.append(outcome)
         return OutcomeScoreSubmission(ScoreId("score-1"), outcome.trace_id)
 
@@ -166,3 +170,30 @@ def test_invalid_outcome_fails_before_opening_the_store(
         )
 
     assert opened is False
+
+
+def test_provider_failure_is_typed_and_does_not_leak_details(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    store = _FakeOutcomeStore()
+    store.failure = RuntimeError("provider failure containing secret-key")
+
+    def outcome_store() -> _FakeOutcomeStore:
+        return store
+
+    monkeypatch.setattr(module, "_outcome_store", outcome_store)
+
+    with pytest.raises(module.OutcomeToolError) as raised:
+        module.record_outcome(
+            trace_id="trace-1",
+            task_id="task-1",
+            verifier_id="verifier@v1",
+            evaluated_at=datetime(2026, 8, 27, 10, 3, 46, tzinfo=UTC),
+            verdict=VerifierVerdict.PASS,
+            score=1.0,
+            evidence=("artifact://result",),
+        )
+
+    assert str(raised.value) == "outcome_store_failed: trace-1"
+    assert store.close_count == 1

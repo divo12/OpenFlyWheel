@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated, TypeVar
 
 from mcp.server.fastmcp import FastMCP
@@ -68,6 +69,21 @@ record_write = ToolAnnotations(
     idempotentHint=True,
     openWorldHint=True,
 )
+
+
+class OutcomeToolErrorCode(StrEnum):
+    STORE_FAILED = "outcome_store_failed"
+
+
+class OutcomeToolError(Exception):
+    """Sanitized outcome-recording failure returned to the MCP client."""
+
+    __slots__ = ("code", "trace_id")
+
+    def __init__(self, code: OutcomeToolErrorCode, trace_id: str) -> None:
+        self.code = code
+        self.trace_id = trace_id
+        super().__init__(f"{code.value}: {trace_id}")
 
 
 def _project() -> LangfuseProject:
@@ -177,11 +193,14 @@ def record_outcome(
         evaluated_at=evaluated_at,
         result=result,
     )
-    store = _outcome_store()
     try:
-        submission = store.store(outcome)
-    finally:
-        store.close()
+        store = _outcome_store()
+        try:
+            submission = store.store(outcome)
+        finally:
+            store.close()
+    except Exception:
+        raise OutcomeToolError(OutcomeToolErrorCode.STORE_FAILED, trace_id) from None
     return OutcomeStoreObservation(
         status=OutcomeStoreStatus.SUCCESS,
         summary=f"Stored authoritative {verdict.value} outcome on the trace.",
