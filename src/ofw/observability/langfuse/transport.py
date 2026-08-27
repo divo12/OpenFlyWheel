@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import TypeVar
+from typing import Literal, TypeVar
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from ofw.observability.langfuse.contracts import (
     CollectionError,
@@ -22,7 +23,9 @@ from ofw.observability.langfuse.domain import (
     ObservationPage,
     PageCursor,
     ScorePage,
+    TraceId,
 )
+from ofw.observability.langfuse.trace_query import ObservationRead
 from ofw.observability.langfuse.wire import (
     HealthWire,
     ObservationResponseWire,
@@ -37,12 +40,81 @@ class LangfuseEndpoint(StrEnum):
 
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
+_DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
+
+
+class ObservationFilterColumn(StrEnum):
+    ENVIRONMENT = "environment"
+    TRACE_ID = "traceId"
+    OBSERVATION_ID = "id"
+    NAME = "name"
+    TYPE = "type"
+    LEVEL = "level"
+    PARENT_ID = "parentObservationId"
+
+
+class ObservationFilterOperator(StrEnum):
+    EQUALS = "="
+    NOT_EQUALS = "<>"
+
+
+class ObservationFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["string"] = "string"
+    column: ObservationFilterColumn
+    operator: ObservationFilterOperator
+    value: str
+
+
+_FILTERS_ADAPTER = TypeAdapter(tuple[ObservationFilter, ...])
+
+_OBSERVATION_FIELD_GROUPS = frozenset(
+    {
+        "core",
+        "basic",
+        "time",
+        "io",
+        "metadata",
+        "model",
+        "usage",
+        "prompt",
+        "metrics",
+        "trace_context",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationOptions:
+    window: TraceWindow | None
+    cursor: PageCursor | None
+    trace_id: TraceId | None
+    observation_id: str | None
+    name: str | None
+    observation_type: str | None
+    error: bool | None
+    parent_observation_id: str | None
+    fields: tuple[str, ...]
+    limit: int
 
 
 class LangfuseHttpClient:
     """Only the two GET operations required by PR2 are exposed."""
 
-    def __init__(self, project: LangfuseProject, *, timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        project: LangfuseProject,
+        *,
+        timeout_seconds: float = 15.0,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    ) -> None:
+        if not 1 <= max_response_bytes <= _MAX_RESPONSE_BYTES:
+            raise CollectionError(
+                CollectionErrorCode.INVALID_CONTENT_QUERY,
+                "max_response_bytes",
+            )
         manifest = project.manifest()
         credentials = project.credentials()
         _validate_dns(manifest.base_url.value, manifest.allow_private_network)
@@ -55,6 +127,7 @@ class LangfuseHttpClient:
             timeout=timeout_seconds,
         )
         self._environment = manifest.environment.value
+        self._max_response_bytes = max_response_bytes
 
     def close(self) -> None:
         self._client.close()
@@ -69,23 +142,62 @@ class LangfuseHttpClient:
 
     def get_observations(
         self,
-        window: TraceWindow,
+        window: TraceWindow | None = None,
         cursor: PageCursor | None = None,
+        *,
+        trace_id: TraceId | None = None,
+        observation_id: str | None = None,
+        name: str | None = None,
+        observation_type: str | None = None,
+        error: bool | None = None,
+        parent_observation_id: str | None = None,
+        fields: tuple[str, ...] = (
+            "core",
+            "basic",
+            "time",
+            "io",
+            "metadata",
+            "model",
+            "usage",
+            "prompt",
+            "metrics",
+            "trace_context",
+        ),
+        limit: int = 1000,
     ) -> ObservationPage:
-        field_groups = "core,basic,time,io,metadata,model,usage,prompt,metrics,trace_context"
-        parameters = (
-            ("fields", field_groups),
-            ("limit", "1000"),
-            ("environment", self._environment),
-            ("fromStartTime", _utc_text(window.start)),
-            ("toStartTime", _utc_text(window.end)),
-        ) + (() if cursor is None else (("cursor", cursor.value),))
+        options = ObservationOptions(
+            window=window,
+            cursor=cursor,
+            trace_id=trace_id,
+            observation_id=observation_id,
+            name=name,
+            observation_type=observation_type,
+            error=error,
+            parent_observation_id=parent_observation_id,
+            fields=fields,
+            limit=limit,
+        )
+        _validate_options(options)
         response = self._get(
             LangfuseEndpoint.OBSERVATIONS,
-            parameters,
+            _observation_parameters(self._environment, options),
             TypeAdapter(ObservationResponseWire),
         )
         return response.normalize()
+
+    def read_observations(self, query: ObservationRead) -> ObservationPage:
+        return self.get_observations(
+            query.window,
+            query.cursor,
+            trace_id=query.trace_id,
+            observation_id=query.observation_id,
+            name=query.name,
+            observation_type=query.observation_type,
+            error=query.error,
+            parent_observation_id=query.parent_observation_id,
+            fields=tuple(group.value for group in query.fields),
+            limit=query.limit,
+        )
 
     def get_scores(
         self,
@@ -114,22 +226,168 @@ class LangfuseHttpClient:
     ) -> ResponseModel:
         _validate_dns(self._base_url, self._allow_private_network)
         try:
-            response = self._client.get(endpoint.value, params=parameters)
+            with self._client.stream("GET", endpoint.value, params=parameters) as response:
+                _validate_response_status(response, endpoint)
+                content = _bounded_content(response, endpoint, self._max_response_bytes)
         except httpx.TimeoutException as error:
             raise CollectionError(CollectionErrorCode.REQUEST_TIMEOUT, endpoint.value) from error
         except httpx.HTTPError as error:
             raise CollectionError(CollectionErrorCode.REQUEST_FAILED, endpoint.value) from error
-        if 300 <= response.status_code < 400:
-            raise CollectionError(CollectionErrorCode.REDIRECT_BLOCKED, endpoint.value)
-        if response.status_code != 200:
-            raise CollectionError(
-                CollectionErrorCode.HTTP_STATUS,
-                f"{endpoint.value}:{response.status_code}",
-            )
         try:
-            return adapter.validate_json(response.content)
+            return adapter.validate_json(content)
         except ValidationError as error:
             raise CollectionError(CollectionErrorCode.INVALID_RESPONSE, endpoint.value) from error
+
+
+def _validate_response_status(response: httpx.Response, endpoint: LangfuseEndpoint) -> None:
+    if 300 <= response.status_code < 400:
+        raise CollectionError(CollectionErrorCode.REDIRECT_BLOCKED, endpoint.value)
+    if response.status_code != 200:
+        raise CollectionError(
+            CollectionErrorCode.HTTP_STATUS,
+            f"{endpoint.value}:{response.status_code}",
+        )
+
+
+def _bounded_content(
+    response: httpx.Response,
+    endpoint: LangfuseEndpoint,
+    maximum_bytes: int,
+) -> bytes:
+    content = bytearray()
+    for chunk in response.iter_bytes():
+        if len(content) + len(chunk) > maximum_bytes:
+            raise CollectionError(CollectionErrorCode.RESPONSE_TOO_LARGE, endpoint.value)
+        content.extend(chunk)
+    return bytes(content)
+
+
+def _validate_options(options: ObservationOptions) -> None:
+    _validate_limit(options.limit)
+    _validate_fields(options.fields)
+
+
+def _validate_limit(limit: int) -> None:
+    if not 1 <= limit <= 1000:
+        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, str(limit))
+
+
+def _validate_fields(fields: tuple[str, ...]) -> None:
+    if not fields or not set(fields) <= _OBSERVATION_FIELD_GROUPS:
+        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, "fields")
+
+
+def _observation_parameters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[tuple[str, str], ...]:
+    base = (
+        ("fields", ",".join(options.fields)),
+        ("limit", str(options.limit)),
+    )
+    return (
+        base
+        + _window_parameters(options.window)
+        + _scope_parameters(environment, options)
+        + _cursor_parameter(options.cursor)
+    )
+
+
+def _window_parameters(window: TraceWindow | None) -> tuple[tuple[str, str], ...]:
+    if window is None:
+        return ()
+    return (
+        ("fromStartTime", _utc_text(window.start)),
+        ("toStartTime", _utc_text(window.end)),
+    )
+
+
+def _scope_parameters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[tuple[str, str], ...]:
+    if _uses_advanced_filter(options):
+        filters = _advanced_filters(environment, options)
+        return (("filter", _FILTERS_ADAPTER.dump_json(filters).decode()),)
+    return _direct_parameters(environment, options)
+
+
+def _uses_advanced_filter(options: ObservationOptions) -> bool:
+    return any(
+        value is not None
+        for value in (
+            options.observation_id,
+            options.error,
+        )
+    )
+
+
+def _direct_parameters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[tuple[str, str], ...]:
+    return (
+        (("environment", environment),)
+        + _parameter("traceId", _trace_id(options.trace_id))
+        + _parameter("name", options.name)
+        + _parameter("type", options.observation_type)
+        + _parameter("parentObservationId", options.parent_observation_id)
+    )
+
+
+def _trace_id(trace_id: TraceId | None) -> str | None:
+    return None if trace_id is None else trace_id.value
+
+
+def _parameter(name: str, value: str | None) -> tuple[tuple[str, str], ...]:
+    return () if value is None else ((name, value),)
+
+
+def _cursor_parameter(cursor: PageCursor | None) -> tuple[tuple[str, str], ...]:
+    return _parameter("cursor", None if cursor is None else cursor.value)
+
+
+def _advanced_filters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[ObservationFilter, ...]:
+    candidates = (
+        _filter(ObservationFilterColumn.ENVIRONMENT, environment),
+        _filter(ObservationFilterColumn.TRACE_ID, _trace_id(options.trace_id)),
+        _filter(ObservationFilterColumn.OBSERVATION_ID, options.observation_id),
+        _filter(ObservationFilterColumn.NAME, options.name),
+        _filter(ObservationFilterColumn.TYPE, options.observation_type),
+        _error_filter(options.error),
+        _filter(ObservationFilterColumn.PARENT_ID, options.parent_observation_id),
+    )
+    return tuple(candidate for candidate in candidates if candidate is not None)
+
+
+def _filter(
+    column: ObservationFilterColumn,
+    value: str | None,
+) -> ObservationFilter | None:
+    if value is None:
+        return None
+    return ObservationFilter(
+        column=column,
+        operator=ObservationFilterOperator.EQUALS,
+        value=value,
+    )
+
+
+def _error_filter(error: bool | None) -> ObservationFilter | None:
+    if error is None:
+        return None
+    return ObservationFilter(
+        column=ObservationFilterColumn.LEVEL,
+        operator=(
+            ObservationFilterOperator.EQUALS
+            if error
+            else ObservationFilterOperator.NOT_EQUALS
+        ),
+        value="ERROR",
+    )
 
 
 def _utc_text(value: datetime) -> str:

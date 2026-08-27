@@ -20,7 +20,18 @@ from ofw import (
     LangfuseProject,
     TraceWindow,
 )
-from ofw.observability.langfuse.domain import ObservationType, ScoreDataType, ScoreSubjectKind
+from ofw.observability.langfuse.domain import (
+    ObservationType,
+    ScoreDataType,
+    ScoreSubjectKind,
+    TraceId,
+)
+from ofw.observability.langfuse.trace_query import (
+    QuerySpansInput,
+    QueryStatus,
+    SpanFilters,
+    TraceQueryService,
+)
 from ofw.observability.langfuse.transport import LangfuseHttpClient
 from ofw.observability.langfuse.wire import ObservationResponseWire, ScoreResponseWire
 
@@ -306,6 +317,59 @@ def test_full_input_and_output_are_preserved_without_redaction_or_truncation(
     assert input_content.reference.byte_count == len(input_content.text.encode())
 
 
+def test_structural_filters_stay_server_side_and_skip_io(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
+    try:
+        client.get_observations(
+            trace_id=TraceId("trace-1"),
+            name="Tool: get_ticket",
+            observation_type=ObservationType.TOOL,
+            error=True,
+            fields=("core", "basic"),
+            limit=6,
+        )
+    finally:
+        client.close()
+
+    request = langfuse_server.state.requests[-1]
+    encoded_filter = next(value for name, value in request.query if name == "filter")
+    assert '"column":"traceId","operator":"=","value":"trace-1"' in encoded_filter
+    assert '"column":"name","operator":"=","value":"Tool: get_ticket"' in encoded_filter
+    assert '"column":"type","operator":"=","value":"TOOL"' in encoded_filter
+    assert '"column":"level","operator":"=","value":"ERROR"' in encoded_filter
+    assert ("fields", "core,basic") in request.query
+    assert langfuse_server.state.writes == 0
+
+
+def test_trace_query_integration_is_read_only_and_ambiguity_makes_no_request(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
+    service = TraceQueryService(client)
+    try:
+        ambiguous = service.query_spans(QuerySpansInput(trace_id="trace-1"))
+        assert langfuse_server.state.requests == []
+
+        result = service.query_spans(
+            QuerySpansInput(
+                trace_id="trace-1",
+                filters=SpanFilters(span_type=ObservationType.AGENT),
+            )
+        )
+    finally:
+        client.close()
+
+    assert ambiguous.status is QueryStatus.NEEDS_INPUT
+    assert result.status is QueryStatus.SUCCESS
+    assert len(langfuse_server.state.requests) == 1
+    assert langfuse_server.state.requests[0].path == "/api/public/v2/observations"
+    assert langfuse_server.state.writes == 0
+
+
 def test_persisted_observation_and_score_changes_produce_new_digests() -> None:
     first_observation = (
         ObservationResponseWire.model_validate_json(OBSERVATIONS_RESPONSE).normalize().records[0]
@@ -448,6 +512,23 @@ def test_timeout_is_typed_and_does_not_leak_credentials(
     assert raised.value.code is CollectionErrorCode.REQUEST_TIMEOUT
     assert "pk-test" not in str(raised.value)
     assert "sk-test" not in str(raised.value)
+
+
+def test_response_body_has_a_hard_memory_bound(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = LangfuseHttpClient(
+        _project(langfuse_server, monkeypatch),
+        max_response_bytes=64,
+    )
+    try:
+        with pytest.raises(CollectionError) as raised:
+            client.get_observations(_window())
+    finally:
+        client.close()
+
+    assert raised.value.code is CollectionErrorCode.RESPONSE_TOO_LARGE
 
 
 def test_langfuse_v3_fails_with_explicit_version_error(
