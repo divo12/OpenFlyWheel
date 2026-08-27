@@ -130,19 +130,3 @@ def test_observability_connection_changes_harness_revision_without_persisting_se
     assert connected.observability == project.manifest()
     assert "pk-sensitive" not in connected.to_json()
     assert "sk-sensitive" not in connected.to_json()
-
-
-def test_collect_requires_connected_observability(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)
-    harness = Harness("fixture-agent", root=root)
-    harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    revision = harness.process()
-    start = datetime(2026, 8, 22, tzinfo=UTC)
-
-    with pytest.raises(CollectionError) as raised:
-        ofw.collect(
-            revision,
-            window=TraceWindow(start=start, end=start + timedelta(hours=1)),
-        )
-
-    assert raised.value.code is CollectionErrorCode.OBSERVABILITY_NOT_CONNECTED

@@ -22,7 +22,6 @@ class CollectionErrorCode(StrEnum):
     INVALID_ENVIRONMENT = "invalid_environment"
     INVALID_ENVIRONMENT_VARIABLE = "invalid_environment_variable"
     INVALID_WINDOW = "invalid_window"
-    OBSERVABILITY_NOT_CONNECTED = "observability_not_connected"
     MISSING_CREDENTIAL = "missing_credential"
     DNS_RESOLUTION_FAILED = "dns_resolution_failed"
     PRIVATE_RESOLUTION = "private_resolution"
@@ -32,12 +31,8 @@ class CollectionErrorCode(StrEnum):
     RESPONSE_TOO_LARGE = "response_too_large"
     HTTP_STATUS = "http_status"
     INVALID_RESPONSE = "invalid_response"
-    DATABASE_ERROR = "database_error"
-    UNSUPPORTED_SCHEMA = "unsupported_schema"
-    CURSOR_LOOP = "cursor_loop"
     UNSUPPORTED_LANGFUSE_VERSION = "unsupported_langfuse_version"
     INVALID_CONTENT_QUERY = "invalid_content_query"
-    CONTENT_NOT_CAPTURED = "content_not_captured"
 
 
 class CollectionError(Exception):
