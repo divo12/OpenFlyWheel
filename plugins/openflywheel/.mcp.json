@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "openflywheel": {
+      "command": "sh",
+      "args": [
+        "-c",
+        "exec uv run --project \"${OPENFLYWHEEL_ROOT:-$PWD}\" --extra plugin python \"$PLUGIN_ROOT/scripts/mcp_server.py\""
+      ]
+    }
+  }
+}

@@ -18,10 +18,10 @@ jobs:
         run: |
           python -m pip install uv
           uv python install 3.11
-          uv sync --extra dev --extra trace-query
+          uv sync --extra dev --extra plugin
       - name: Ruff
-        run: uv run ruff check src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
+        run: uv run ruff check src tests plugins/openflywheel/scripts/mcp_server.py
       - name: mypy
-        run: uv run mypy src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
+        run: uv run mypy src tests plugins/openflywheel/scripts/mcp_server.py
       - name: Tests and coverage
         run: uv run pytest --cov=ofw --cov-report=term-missing --cov-fail-under=90 -q

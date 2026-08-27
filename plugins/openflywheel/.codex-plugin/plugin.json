@@ -1,0 +1,24 @@
+{
+  "name": "openflywheel",
+  "version": "0.2.0",
+  "description": "Query Langfuse trajectories and record authoritative verifier outcomes.",
+  "author": {
+    "name": "OpenFlyWheel"
+  },
+  "license": "MIT",
+  "keywords": ["agents", "evaluation", "langfuse", "traces"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "OpenFlyWheel",
+    "shortDescription": "Query traces and record verifier outcomes",
+    "longDescription": "Select and inspect bounded Langfuse trajectory evidence, then record authoritative external-verifier outcomes on exact traces.",
+    "developerName": "OpenFlyWheel",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Inspect this Langfuse trace with the fewest bounded queries.",
+      "Record this completed verifier outcome on its exact trace."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}
