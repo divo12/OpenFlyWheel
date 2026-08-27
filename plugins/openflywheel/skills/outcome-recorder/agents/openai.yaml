@@ -1,0 +1,4 @@
+interface:
+  display_name: "Outcome Recorder"
+  short_description: "Record verified outcomes on Langfuse traces"
+  default_prompt: "Record this completed verifier result on its exact Langfuse trace."

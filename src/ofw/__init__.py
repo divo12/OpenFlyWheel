@@ -32,6 +32,8 @@ from ofw.evaluation import (
     OutcomeEvaluation,
     OutcomeEvaluationError,
     OutcomeScoreSubmission,
+    OutcomeStoreObservation,
+    OutcomeStoreStatus,
     TaskId,
     VerifierId,
 )
@@ -109,6 +111,8 @@ __all__ = [
     "OutcomeEvaluation",
     "OutcomeEvaluationError",
     "OutcomeScoreSubmission",
+    "OutcomeStoreObservation",
+    "OutcomeStoreStatus",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",

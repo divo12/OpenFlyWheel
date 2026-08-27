@@ -64,13 +64,14 @@ These instructions apply to the entire repository.
 ## Verification commands
 
 ```bash
-uv sync --extra dev --extra trace-query
-uv run ruff check src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
-uv run mypy src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
+uv sync --extra dev --extra plugin
+uv run ruff check src tests plugins/openflywheel/scripts/mcp_server.py
+uv run mypy src tests plugins/openflywheel/scripts/mcp_server.py
 uv run pytest --cov=ofw --cov-report=term-missing --cov-fail-under=90 -q
-uvx --from radon radon cc -s -a src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
-python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/openflywheel-trace-query/skills/trace-query-planner
-python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/openflywheel-trace-query
+uvx --from radon radon cc -s -a src tests plugins/openflywheel/scripts/mcp_server.py
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/openflywheel/skills/trace-query-planner
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/openflywheel/skills/outcome-recorder
+python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/openflywheel
 ```
 
 ## Repository hygiene

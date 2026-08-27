@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from langfuse import Langfuse
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from ofw.evaluation.outcome import OutcomeEvaluation
 from ofw.observability.langfuse.contracts import EnvironmentName, LangfuseProject
@@ -15,6 +17,21 @@ from ofw.observability.langfuse.domain import ScoreId, TraceId
 
 OUTCOME_SCORE_NAME = "ofw.outcome"
 _OUTCOME_SCORE_SCHEMA_VERSION = 1
+
+
+class OutcomeStoreStatus(StrEnum):
+    SUCCESS = "success"
+
+
+class OutcomeStoreObservation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: OutcomeStoreStatus
+    summary: StrictStr = Field(max_length=256)
+    next_actions: tuple[StrictStr, ...] = Field(max_length=2)
+    artifacts: tuple[StrictStr, ...] = Field(max_length=2)
+    trace_id: StrictStr = Field(min_length=1, max_length=256)
+    score_id: StrictStr = Field(min_length=1, max_length=256)
 
 
 @dataclass(frozen=True, slots=True)

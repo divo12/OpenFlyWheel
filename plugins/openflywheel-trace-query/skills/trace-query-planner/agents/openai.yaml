@@ -1,4 +1,0 @@
-interface:
-  display_name: "Trace Query Planner"
-  short_description: "Plan minimal read-only ITSM trace queries"
-  default_prompt: "Find the smallest bounded query for this ITSMBench trace."
