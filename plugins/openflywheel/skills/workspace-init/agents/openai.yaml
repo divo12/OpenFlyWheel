@@ -1,0 +1,6 @@
+interface:
+  display_name: "Initialize Harness Workspace"
+  short_description: "Configure an optimization workspace"
+  default_prompt: "Use $workspace-init to inspect this repository, collect the experiment configuration one question at a time, and initialize its primary agent harness."
+policy:
+  allow_implicit_invocation: true
