@@ -6,17 +6,8 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from pathlib import Path
 
-from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
-from ofw.observability.langfuse.contracts import (
-    CollectionError,
-    CollectionErrorCode,
-    LangfuseConnectionId,
-    TraceWindow,
-)
-
-COLLECTION_POLICY_VERSION = 1
+from ofw.contracts import Sha256Digest
 
 
 class ObservationType(StrEnum):
@@ -60,44 +51,6 @@ class ScoreSubjectKind(StrEnum):
     EXPERIMENT = "experiment"
 
 
-class SyncStream(StrEnum):
-    OBSERVATIONS = "observations"
-    SCORES = "scores"
-
-
-class AttributionLevel(StrEnum):
-    EXACT = "exact"
-    MISSING = "missing"
-    AMBIGUOUS = "ambiguous"
-
-
-class TraceGap(StrEnum):
-    MISSING_ROOT = "missing_root"
-    MISSING_PARENT = "missing_parent"
-    MULTIPLE_SESSIONS = "multiple_sessions"
-    MULTIPLE_ENVIRONMENTS = "multiple_environments"
-    MULTIPLE_RELEASES = "multiple_releases"
-
-
-class CollectionCapabilityReason(StrEnum):
-    READY = "ready"
-    NO_TRACES = "no_traces"
-    MISSING_REVISION_ATTRIBUTION = "missing_revision_attribution"
-    AMBIGUOUS_REVISION_ATTRIBUTION = "ambiguous_revision_attribution"
-    INCOMPLETE_TRACE = "incomplete_trace"
-
-
-class ObservationContentField(StrEnum):
-    ANY = "any"
-    INPUT = "input"
-    OUTPUT = "output"
-
-
-class ObservationContentMatch(StrEnum):
-    EXACT = "exact"
-    TOKEN_PHRASE = "token_phrase"  # nosec B105
-
-
 @dataclass(frozen=True, slots=True)
 class ObservationId:
     value: str
@@ -121,35 +74,6 @@ class ScoreId:
 @dataclass(frozen=True, slots=True)
 class PageCursor:
     value: str
-
-
-@dataclass(frozen=True, slots=True)
-class CollectionSyncId:
-    value: str
-
-    @classmethod
-    def for_collection(
-        cls,
-        revision: HarnessRevision,
-        window: TraceWindow,
-        stream: SyncStream,
-    ) -> CollectionSyncId:
-        if revision.observability is None:
-            raise CollectionError(
-                CollectionErrorCode.OBSERVABILITY_NOT_CONNECTED,
-                str(revision.id),
-            )
-        payload = "\0".join(
-            (
-                str(COLLECTION_POLICY_VERSION),
-                str(revision.id),
-                str(revision.observability.id),
-                window.start.isoformat(),
-                window.end.isoformat(),
-                stream.value,
-            )
-        )
-        return cls(f"sync_{hashlib.sha256(payload.encode()).hexdigest()}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,36 +104,6 @@ class ObservationContent:
         expected = ObservationContentReference.for_text(self.text)
         if self.reference != expected:
             raise ValueError("observation content reference mismatch")
-
-
-@dataclass(frozen=True, slots=True)
-class ObservationContentQuery:
-    text: str
-    match: ObservationContentMatch
-    field: ObservationContentField
-    trace_id: TraceId | None
-    limit: int
-    maximum_excerpt_characters: int
-
-    def __post_init__(self) -> None:
-        if (
-            not self.text.strip()
-            or len(self.text) > 1024
-            or not isinstance(self.match, ObservationContentMatch)
-            or not isinstance(self.field, ObservationContentField)
-            or not 1 <= self.limit <= 100
-            or not 1 <= self.maximum_excerpt_characters <= 4096
-        ):
-            raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, self.text)
-
-
-@dataclass(frozen=True, slots=True)
-class ObservationContentHit:
-    observation_id: ObservationId
-    trace_id: TraceId | None
-    field: ObservationContentField
-    reference: ObservationContentReference
-    excerpt: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,41 +184,3 @@ class ObservationPage:
 class ScorePage:
     records: tuple[ScoreRecord, ...]
     cursor: PageCursor | None
-
-
-@dataclass(frozen=True, slots=True)
-class SyncCheckpoint:
-    sync_id: CollectionSyncId
-    stream: SyncStream
-    cursor: PageCursor | None
-    complete: bool
-
-
-@dataclass(frozen=True, slots=True)
-class TraceRecord:
-    id: TraceId
-    observation_ids: tuple[ObservationId, ...]
-    root_observation_ids: tuple[ObservationId, ...]
-    score_ids: tuple[ScoreId, ...]
-    session_id: str | None
-    environment: str | None
-    release: str | None
-    attribution: AttributionLevel
-    gaps: tuple[TraceGap, ...]
-    digest: Sha256Digest
-
-
-@dataclass(frozen=True, slots=True)
-class CollectionResult:
-    revision_id: HarnessRevisionId
-    connection_id: LangfuseConnectionId
-    window: TraceWindow
-    observation_sync_id: CollectionSyncId
-    score_sync_id: CollectionSyncId
-    traces: tuple[TraceRecord, ...]
-    observation_count: int
-    score_count: int
-    gap_count: int
-    snapshot_digest: Sha256Digest
-    capability: CollectionCapabilityReason
-    store_path: Path

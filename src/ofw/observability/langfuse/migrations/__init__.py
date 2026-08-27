@@ -1,1 +1,0 @@
-"""Packaged SQLite collection migrations."""
