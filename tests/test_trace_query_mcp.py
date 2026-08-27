@@ -30,6 +30,7 @@ def test_mcp_lists_only_read_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
     assert [tool.name for tool in tools] == [
+        "list_traces",
         "get_trace_schema",
         "query_spans",
         "get_span_context",

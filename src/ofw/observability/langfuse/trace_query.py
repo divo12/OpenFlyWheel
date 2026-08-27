@@ -7,7 +7,15 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    model_validator,
+)
 
 from ofw.observability.langfuse.contracts import TraceWindow
 from ofw.observability.langfuse.domain import (
@@ -26,7 +34,12 @@ _EXCERPT_LIMIT = 512
 _CURSOR_LIMIT = 4096
 _TYPE_SAMPLE_LIMIT = 3
 
-CursorValue = Annotated[str, Field(min_length=1, max_length=_CURSOR_LIMIT)]
+IdentifierValue = Annotated[StrictStr, Field(min_length=1, max_length=256)]
+SessionIdentifier = Annotated[StrictStr, Field(min_length=1, max_length=199)]
+CursorValue = Annotated[StrictStr, Field(min_length=1, max_length=_CURSOR_LIMIT)]
+PageLimit = Annotated[StrictInt, Field(ge=1, le=_STRUCTURE_LIMIT)]
+TextValue = Annotated[StrictStr, Field(min_length=1, max_length=1024)]
+MetadataKey = Annotated[StrictStr, Field(min_length=1, max_length=200)]
 
 
 class QueryStatus(StrEnum):
@@ -45,20 +58,57 @@ class ObservationFieldGroup(StrEnum):
     CORE = "core"
     BASIC = "basic"
     IO = "io"
+    TRACE_CONTEXT = "trace_context"
+
+
+class SpanTextField(StrEnum):
+    INPUT = "input"
+    OUTPUT = "output"
+    METADATA = "metadata"
+
+
+class SpanTextMatch(StrEnum):
+    EXACT = "exact"
+    TOKEN_PHRASE = "token_phrase"
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TraceTimeRange(StrictModel):
+    start_time: datetime
+    end_time: datetime
+
+    @model_validator(mode="after")
+    def validate_range(self) -> TraceTimeRange:
+        _validate_utc(self.start_time)
+        _validate_utc(self.end_time)
+        _validate_range(self.start_time, self.end_time)
+        return self
+
+
+class SpanTextFilter(StrictModel):
+    field: SpanTextField
+    match: SpanTextMatch
+    text: TextValue
+    metadata_key: MetadataKey | None = None
+
+    @model_validator(mode="after")
+    def validate_metadata_key(self) -> SpanTextFilter:
+        _validate_metadata_key(self.field, self.metadata_key)
+        return self
 
 
 class SpanFilters(StrictModel):
-    observation_id: str | None = Field(default=None, min_length=1, max_length=256)
-    tool_name: str | None = Field(default=None, min_length=1, max_length=256)
+    observation_id: IdentifierValue | None = None
+    tool_name: IdentifierValue | None = None
     span_type: ObservationType | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
-    error: bool | None = None
-    max_results: int = Field(default=20, ge=1, le=50)
+    error: StrictBool | None = None
+    text: SpanTextFilter | None = None
+    max_results: PageLimit = 20
 
     @model_validator(mode="after")
     def validate_timestamps(self) -> SpanFilters:
@@ -81,6 +131,7 @@ class SpanFilters(StrictModel):
                 self.span_type,
                 self.start_time,
                 self.error,
+                self.text,
             )
         )
 
@@ -92,36 +143,77 @@ class SpanFilters(StrictModel):
             start_time=self.start_time,
             end_time=self.end_time,
             error=self.error,
+            text=self.text,
             max_results=self.max_results,
         )
 
 
 class AppliedSpanFilters(StrictModel):
-    observation_id: str | None = None
-    tool_name: str | None = None
+    observation_id: IdentifierValue | None = None
+    tool_name: IdentifierValue | None = None
     span_type: ObservationType | None = None
     start_time: datetime | None = None
     end_time: datetime | None = None
-    error: bool | None = None
-    max_results: int | None = None
-    span_id: str | None = None
+    error: StrictBool | None = None
+    text: SpanTextFilter | None = None
+    max_results: PageLimit | None = None
+    span_id: IdentifierValue | None = None
 
 
 class GetTraceSchemaInput(StrictModel):
-    trace_id: str = Field(min_length=1, max_length=256)
+    trace_id: IdentifierValue
     cursor: CursorValue | None = None
 
 
 class QuerySpansInput(StrictModel):
-    trace_id: str = Field(min_length=1, max_length=256)
+    trace_id: IdentifierValue
     filters: SpanFilters = Field(default_factory=SpanFilters)
     cursor: CursorValue | None = None
 
 
 class GetSpanContextInput(StrictModel):
-    trace_id: str = Field(min_length=1, max_length=256)
-    span_id: str = Field(min_length=1, max_length=256)
+    trace_id: IdentifierValue
+    span_id: IdentifierValue
     cursor: CursorValue | None = None
+
+
+class ListTracesInput(StrictModel):
+    session_id: SessionIdentifier
+    environment: IdentifierValue | None = None
+    release: IdentifierValue | None = None
+    time_range: TraceTimeRange
+    cursor: CursorValue | None = None
+    limit: PageLimit = 20
+
+
+class AppliedTraceFilters(StrictModel):
+    session_id: SessionIdentifier
+    environment: IdentifierValue | None = None
+    release: IdentifierValue | None = None
+    time_range: TraceTimeRange
+    limit: PageLimit
+
+
+class TraceFound(StrictModel):
+    trace_id: IdentifierValue
+    sample_span_id: IdentifierValue
+    label: StrictStr = Field(max_length=600)
+    start_time: datetime
+    environment: IdentifierValue | None = None
+    release: IdentifierValue | None = None
+    session_id: SessionIdentifier | None = None
+
+
+class TraceListObservation(StrictModel):
+    status: QueryStatus
+    summary: StrictStr = Field(max_length=256)
+    next_actions: tuple[StrictStr, ...] = Field(max_length=2)
+    artifacts: tuple[IdentifierValue, ...] = Field(max_length=_STRUCTURE_LIMIT)
+    ordering: QueryOrdering
+    filters_applied: AppliedTraceFilters
+    traces_found: tuple[TraceFound, ...] = Field(max_length=_STRUCTURE_LIMIT)
+    next_cursor: CursorValue | None = None
+    truncated: StrictBool = False
 
 
 class SpanFound(StrictModel):
@@ -154,7 +246,7 @@ class TraceQueryObservation(StrictModel):
 
 @dataclass(frozen=True, slots=True)
 class ObservationRead:
-    trace_id: TraceId
+    trace_id: TraceId | None
     fields: tuple[ObservationFieldGroup, ...]
     limit: int
     window: TraceWindow | None = None
@@ -162,7 +254,12 @@ class ObservationRead:
     name: str | None = None
     observation_type: ObservationType | None = None
     error: bool | None = None
+    text_filter: SpanTextFilter | None = None
     parent_observation_id: str | None = None
+    session_id: str | None = None
+    environment: str | None = None
+    release: str | None = None
+    is_root_observation: bool | None = None
     cursor: PageCursor | None = None
 
 
@@ -173,6 +270,28 @@ class ObservationReader(Protocol):
 class TraceQueryService:
     def __init__(self, reader: ObservationReader) -> None:
         self._reader = reader
+
+    def list_traces(self, query: ListTracesInput) -> TraceListObservation:
+        page = self._reader.read_observations(_trace_list_read(query))
+        traces = _trace_summaries(_ordered(page.records))
+        next_cursor = _next_cursor(page.cursor)
+        return TraceListObservation(
+            status=QueryStatus.SUCCESS,
+            summary=f"Found {len(traces)} logical-root traces for the session page.",
+            next_actions=_trace_list_actions(next_cursor),
+            artifacts=tuple(trace.trace_id for trace in traces),
+            ordering=QueryOrdering.PAGE_START_TIME_DESC_ID_DESC,
+            filters_applied=AppliedTraceFilters(
+                session_id=query.session_id,
+                environment=query.environment,
+                release=query.release,
+                time_range=query.time_range,
+                limit=query.limit,
+            ),
+            traces_found=traces,
+            next_cursor=next_cursor,
+            truncated=next_cursor is not None,
+        )
 
     def get_trace_schema(self, query: GetTraceSchemaInput) -> TraceQueryObservation:
         page = self._reader.read_observations(
@@ -240,17 +359,67 @@ class TraceQueryService:
         )
 
 
+def _trace_list_read(query: ListTracesInput) -> ObservationRead:
+    return ObservationRead(
+        trace_id=None,
+        fields=(
+            ObservationFieldGroup.CORE,
+            ObservationFieldGroup.BASIC,
+            ObservationFieldGroup.TRACE_CONTEXT,
+        ),
+        limit=query.limit,
+        window=TraceWindow(query.time_range.start_time, query.time_range.end_time),
+        session_id=query.session_id,
+        environment=query.environment,
+        release=query.release,
+        is_root_observation=True,
+        cursor=_cursor(query.cursor),
+    )
+
+
+def _trace_summaries(records: tuple[ObservationRecord, ...]) -> tuple[TraceFound, ...]:
+    traces: list[TraceFound] = []
+    seen: set[str] = set()
+    for record in records:
+        if record.trace_id is None or record.trace_id.value in seen:
+            continue
+        seen.add(record.trace_id.value)
+        traces.append(_trace_summary(record))
+    return tuple(traces)
+
+
+def _trace_summary(record: ObservationRecord) -> TraceFound:
+    if record.trace_id is None:
+        raise ValueError("trace summary requires trace_id")
+    return TraceFound(
+        trace_id=record.trace_id.value,
+        sample_span_id=record.id.value,
+        label=(record.trace_name or record.name or record.trace_id.value)[:600],
+        start_time=record.start_time,
+        environment=record.environment,
+        release=record.release,
+        session_id=record.session_id,
+    )
+
+
+def _trace_list_actions(next_cursor: str | None) -> tuple[str, ...]:
+    if next_cursor is not None:
+        return ("Continue with next_cursor using the same session filters.",)
+    return ("Select one trace_id for structural span search.",)
+
+
 def _span_read(query: QuerySpansInput) -> ObservationRead:
     filters = query.filters
     return ObservationRead(
         trace_id=TraceId(query.trace_id),
         fields=(ObservationFieldGroup.CORE, ObservationFieldGroup.BASIC),
-        limit=filters.max_results + 1,
+        limit=filters.max_results,
         window=_window(filters),
         observation_id=filters.observation_id,
         name=_tool_name(filters.tool_name),
         observation_type=_span_type(filters),
         error=filters.error,
+        text_filter=filters.text,
         cursor=_cursor(query.cursor),
     )
 
@@ -447,3 +616,10 @@ def _validate_utc(value: datetime | None) -> None:
 def _validate_range(start: datetime | None, end: datetime | None) -> None:
     if start is not None and end is not None and start >= end:
         raise ValueError("start_time must precede end_time")
+
+
+def _validate_metadata_key(field: SpanTextField, key: str | None) -> None:
+    if field is SpanTextField.METADATA and key is None:
+        raise ValueError("metadata text filters require metadata_key")
+    if field is not SpanTextField.METADATA and key is not None:
+        raise ValueError("metadata_key is only valid for metadata text filters")

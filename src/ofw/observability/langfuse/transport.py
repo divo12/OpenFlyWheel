@@ -7,7 +7,7 @@ import socket
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, TypeVar
+from typing import Literal, TypeAlias, TypeVar
 from urllib.parse import urlsplit
 
 import httpx
@@ -25,7 +25,12 @@ from ofw.observability.langfuse.domain import (
     ScorePage,
     TraceId,
 )
-from ofw.observability.langfuse.trace_query import ObservationRead
+from ofw.observability.langfuse.trace_query import (
+    ObservationRead,
+    SpanTextField,
+    SpanTextFilter,
+    SpanTextMatch,
+)
 from ofw.observability.langfuse.wire import (
     HealthWire,
     ObservationResponseWire,
@@ -48,18 +53,25 @@ class ObservationFilterColumn(StrEnum):
     ENVIRONMENT = "environment"
     TRACE_ID = "traceId"
     OBSERVATION_ID = "id"
+    SESSION_ID = "sessionId"
     NAME = "name"
     TYPE = "type"
     LEVEL = "level"
     PARENT_ID = "parentObservationId"
+    RELEASE = "release"
+    INPUT = "input"
+    OUTPUT = "output"
+    METADATA = "metadata"
+    IS_ROOT_OBSERVATION = "isRootObservation"
 
 
 class ObservationFilterOperator(StrEnum):
     EQUALS = "="
     NOT_EQUALS = "<>"
+    MATCHES = "matches"
 
 
-class ObservationFilter(BaseModel):
+class StringObservationFilter(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     type: Literal["string"] = "string"
@@ -68,6 +80,28 @@ class ObservationFilter(BaseModel):
     value: str
 
 
+class MetadataObservationFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["stringObject"] = "stringObject"
+    column: ObservationFilterColumn = ObservationFilterColumn.METADATA
+    key: str
+    operator: ObservationFilterOperator
+    value: str
+
+
+class BooleanObservationFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["boolean"] = "boolean"
+    column: ObservationFilterColumn = ObservationFilterColumn.IS_ROOT_OBSERVATION
+    operator: ObservationFilterOperator
+    value: bool
+
+
+ObservationFilter: TypeAlias = (
+    StringObservationFilter | MetadataObservationFilter | BooleanObservationFilter
+)
 _FILTERS_ADAPTER = TypeAdapter(tuple[ObservationFilter, ...])
 
 _OBSERVATION_FIELD_GROUPS = frozenset(
@@ -92,10 +126,15 @@ class ObservationOptions:
     cursor: PageCursor | None
     trace_id: TraceId | None
     observation_id: str | None
+    session_id: str | None
+    environment: str | None
     name: str | None
     observation_type: str | None
     error: bool | None
+    text_filter: SpanTextFilter | None
     parent_observation_id: str | None
+    release: str | None
+    is_root_observation: bool | None
     fields: tuple[str, ...]
     limit: int
 
@@ -147,10 +186,15 @@ class LangfuseHttpClient:
         *,
         trace_id: TraceId | None = None,
         observation_id: str | None = None,
+        session_id: str | None = None,
+        environment: str | None = None,
         name: str | None = None,
         observation_type: str | None = None,
         error: bool | None = None,
+        text_filter: SpanTextFilter | None = None,
         parent_observation_id: str | None = None,
+        release: str | None = None,
+        is_root_observation: bool | None = None,
         fields: tuple[str, ...] = (
             "core",
             "basic",
@@ -170,17 +214,22 @@ class LangfuseHttpClient:
             cursor=cursor,
             trace_id=trace_id,
             observation_id=observation_id,
+            session_id=session_id,
+            environment=environment,
             name=name,
             observation_type=observation_type,
             error=error,
+            text_filter=text_filter,
             parent_observation_id=parent_observation_id,
+            release=release,
+            is_root_observation=is_root_observation,
             fields=fields,
             limit=limit,
         )
         _validate_options(options)
         response = self._get(
             LangfuseEndpoint.OBSERVATIONS,
-            _observation_parameters(self._environment, options),
+            _observation_parameters(options),
             TypeAdapter(ObservationResponseWire),
         )
         return response.normalize()
@@ -191,10 +240,15 @@ class LangfuseHttpClient:
             query.cursor,
             trace_id=query.trace_id,
             observation_id=query.observation_id,
+            session_id=query.session_id,
+            environment=query.environment,
             name=query.name,
             observation_type=query.observation_type,
             error=query.error,
+            text_filter=query.text_filter,
             parent_observation_id=query.parent_observation_id,
+            release=query.release,
+            is_root_observation=query.is_root_observation,
             fields=tuple(group.value for group in query.fields),
             limit=query.limit,
         )
@@ -277,10 +331,7 @@ def _validate_fields(fields: tuple[str, ...]) -> None:
         raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, "fields")
 
 
-def _observation_parameters(
-    environment: str,
-    options: ObservationOptions,
-) -> tuple[tuple[str, str], ...]:
+def _observation_parameters(options: ObservationOptions) -> tuple[tuple[str, str], ...]:
     base = (
         ("fields", ",".join(options.fields)),
         ("limit", str(options.limit)),
@@ -288,7 +339,7 @@ def _observation_parameters(
     return (
         base
         + _window_parameters(options.window)
-        + _scope_parameters(environment, options)
+        + _scope_parameters(options)
         + _cursor_parameter(options.cursor)
     )
 
@@ -302,14 +353,11 @@ def _window_parameters(window: TraceWindow | None) -> tuple[tuple[str, str], ...
     )
 
 
-def _scope_parameters(
-    environment: str,
-    options: ObservationOptions,
-) -> tuple[tuple[str, str], ...]:
+def _scope_parameters(options: ObservationOptions) -> tuple[tuple[str, str], ...]:
     if _uses_advanced_filter(options):
-        filters = _advanced_filters(environment, options)
+        filters = _advanced_filters(options.environment, options)
         return (("filter", _FILTERS_ADAPTER.dump_json(filters).decode()),)
-    return _direct_parameters(environment, options)
+    return _direct_parameters(options.environment, options)
 
 
 def _uses_advanced_filter(options: ObservationOptions) -> bool:
@@ -318,16 +366,20 @@ def _uses_advanced_filter(options: ObservationOptions) -> bool:
         for value in (
             options.observation_id,
             options.error,
+            options.text_filter,
+            options.session_id,
+            options.release,
+            options.is_root_observation,
         )
     )
 
 
 def _direct_parameters(
-    environment: str,
+    environment: str | None,
     options: ObservationOptions,
 ) -> tuple[tuple[str, str], ...]:
     return (
-        (("environment", environment),)
+        _parameter("environment", environment)
         + _parameter("traceId", _trace_id(options.trace_id))
         + _parameter("name", options.name)
         + _parameter("type", options.observation_type)
@@ -348,17 +400,21 @@ def _cursor_parameter(cursor: PageCursor | None) -> tuple[tuple[str, str], ...]:
 
 
 def _advanced_filters(
-    environment: str,
+    environment: str | None,
     options: ObservationOptions,
 ) -> tuple[ObservationFilter, ...]:
     candidates = (
         _filter(ObservationFilterColumn.ENVIRONMENT, environment),
         _filter(ObservationFilterColumn.TRACE_ID, _trace_id(options.trace_id)),
         _filter(ObservationFilterColumn.OBSERVATION_ID, options.observation_id),
+        _filter(ObservationFilterColumn.SESSION_ID, options.session_id),
         _filter(ObservationFilterColumn.NAME, options.name),
         _filter(ObservationFilterColumn.TYPE, options.observation_type),
         _error_filter(options.error),
         _filter(ObservationFilterColumn.PARENT_ID, options.parent_observation_id),
+        _filter(ObservationFilterColumn.RELEASE, options.release),
+        _root_filter(options.is_root_observation),
+        _text_filter(options.text_filter),
     )
     return tuple(candidate for candidate in candidates if candidate is not None)
 
@@ -369,7 +425,7 @@ def _filter(
 ) -> ObservationFilter | None:
     if value is None:
         return None
-    return ObservationFilter(
+    return StringObservationFilter(
         column=column,
         operator=ObservationFilterOperator.EQUALS,
         value=value,
@@ -379,7 +435,7 @@ def _filter(
 def _error_filter(error: bool | None) -> ObservationFilter | None:
     if error is None:
         return None
-    return ObservationFilter(
+    return StringObservationFilter(
         column=ObservationFilterColumn.LEVEL,
         operator=(
             ObservationFilterOperator.EQUALS
@@ -388,6 +444,49 @@ def _error_filter(error: bool | None) -> ObservationFilter | None:
         ),
         value="ERROR",
     )
+
+
+def _root_filter(is_root: bool | None) -> ObservationFilter | None:
+    if is_root is None:
+        return None
+    return BooleanObservationFilter(
+        operator=ObservationFilterOperator.EQUALS,
+        value=is_root,
+    )
+
+
+def _text_filter(text_filter: SpanTextFilter | None) -> ObservationFilter | None:
+    if text_filter is None:
+        return None
+    if text_filter.field is SpanTextField.METADATA:
+        return MetadataObservationFilter(
+            key=_metadata_key(text_filter),
+            operator=_text_operator(text_filter.match),
+            value=text_filter.text,
+        )
+    return StringObservationFilter(
+        column=_text_column(text_filter.field),
+        operator=_text_operator(text_filter.match),
+        value=text_filter.text,
+    )
+
+
+def _metadata_key(text_filter: SpanTextFilter) -> str:
+    if text_filter.metadata_key is None:
+        raise ValueError("metadata text filter requires metadata_key")
+    return text_filter.metadata_key
+
+
+def _text_column(field: SpanTextField) -> ObservationFilterColumn:
+    if field is SpanTextField.INPUT:
+        return ObservationFilterColumn.INPUT
+    return ObservationFilterColumn.OUTPUT
+
+
+def _text_operator(match: SpanTextMatch) -> ObservationFilterOperator:
+    if match is SpanTextMatch.EXACT:
+        return ObservationFilterOperator.EQUALS
+    return ObservationFilterOperator.MATCHES
 
 
 def _utc_text(value: datetime) -> str:

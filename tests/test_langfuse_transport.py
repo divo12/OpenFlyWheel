@@ -27,9 +27,14 @@ from ofw.observability.langfuse.domain import (
     TraceId,
 )
 from ofw.observability.langfuse.trace_query import (
+    ObservationFieldGroup,
+    ObservationRead,
     QuerySpansInput,
     QueryStatus,
     SpanFilters,
+    SpanTextField,
+    SpanTextFilter,
+    SpanTextMatch,
     TraceQueryService,
 )
 from ofw.observability.langfuse.transport import LangfuseHttpClient
@@ -340,8 +345,103 @@ def test_structural_filters_stay_server_side_and_skip_io(
     assert '"column":"name","operator":"=","value":"Tool: get_ticket"' in encoded_filter
     assert '"column":"type","operator":"=","value":"TOOL"' in encoded_filter
     assert '"column":"level","operator":"=","value":"ERROR"' in encoded_filter
+    assert '"column":"environment"' not in encoded_filter
     assert ("fields", "core,basic") in request.query
     assert langfuse_server.state.writes == 0
+
+
+def test_trace_listing_filters_session_release_environment_and_time(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
+    try:
+        client.read_observations(
+            ObservationRead(
+                trace_id=None,
+                fields=(
+                    ObservationFieldGroup.CORE,
+                    ObservationFieldGroup.BASIC,
+                    ObservationFieldGroup.TRACE_CONTEXT,
+                ),
+                limit=20,
+                window=_window(),
+                session_id="itsm-session",
+                environment="staging",
+                release="release-1",
+                is_root_observation=True,
+            )
+        )
+    finally:
+        client.close()
+
+    request = langfuse_server.state.requests[-1]
+    encoded_filter = next(value for name, value in request.query if name == "filter")
+    assert '"column":"sessionId","operator":"=","value":"itsm-session"' in encoded_filter
+    assert '"column":"environment","operator":"=","value":"staging"' in encoded_filter
+    assert '"column":"release","operator":"=","value":"release-1"' in encoded_filter
+    assert (
+        '"type":"boolean","column":"isRootObservation","operator":"=","value":true'
+        in encoded_filter
+    )
+    assert ("fields", "core,basic,trace_context") in request.query
+    assert ("fromStartTime", "2026-08-22T00:00:00Z") in request.query
+    assert ("toStartTime", "2026-08-22T01:00:00Z") in request.query
+
+
+@pytest.mark.parametrize(
+    ("text_filter", "expected"),
+    (
+        (
+            SpanTextFilter(
+                field=SpanTextField.INPUT,
+                match=SpanTextMatch.TOKEN_PHRASE,
+                text="refund failed",
+            ),
+            '"type":"string","column":"input","operator":"matches",'
+        ),
+        (
+            SpanTextFilter(
+                field=SpanTextField.OUTPUT,
+                match=SpanTextMatch.EXACT,
+                text="done",
+            ),
+            '"type":"string","column":"output","operator":"=",'
+        ),
+        (
+            SpanTextFilter(
+                field=SpanTextField.METADATA,
+                match=SpanTextMatch.TOKEN_PHRASE,
+                text="priority one",
+                metadata_key="queue",
+            ),
+            '"type":"stringObject","column":"metadata","key":"queue","operator":"matches",'
+        ),
+    ),
+)
+def test_text_filters_are_serialized_for_langfuse_search(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+    text_filter: SpanTextFilter,
+    expected: str,
+) -> None:
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
+    try:
+        client.read_observations(
+            ObservationRead(
+                trace_id=TraceId("trace-1"),
+                fields=(ObservationFieldGroup.CORE, ObservationFieldGroup.BASIC),
+                limit=10,
+                text_filter=text_filter,
+            )
+        )
+    finally:
+        client.close()
+
+    encoded_filter = next(
+        value for name, value in langfuse_server.state.requests[-1].query if name == "filter"
+    )
+    assert expected in encoded_filter
 
 
 def test_trace_query_integration_is_read_only_and_ambiguity_makes_no_request(
