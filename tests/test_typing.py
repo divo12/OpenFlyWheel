@@ -30,3 +30,11 @@ def test_namespace_exports_authoritative_outcome_contract() -> None:
     assert "TaskId" in package.__all__
     assert "TraceId" in package.__all__
     assert "VerifierId" in package.__all__
+
+
+def test_namespace_exports_workspace_preparation_contract() -> None:
+    assert "PreparationErrorCode" in package.__all__
+    assert "PreparationPhase" in package.__all__
+    assert "PreparationStatus" in package.__all__
+    assert "PrepareWorkspaceInput" in package.__all__
+    assert "WorkspacePreparationObservation" in package.__all__

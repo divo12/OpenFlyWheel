@@ -7,6 +7,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Annotated, TypeVar
 
 from mcp.server.fastmcp import FastMCP
@@ -34,11 +35,20 @@ from ofw.observability.langfuse.trace_query import (
     TraceTimeRange,
 )
 from ofw.observability.langfuse.transport import LangfuseHttpClient
+from ofw.preparation import (
+    PrepareWorkspaceInput,
+    WorkspacePreparationObservation,
+    WorkspacePreparationService,
+)
+from ofw.preparation.harbor import HarborBaselineRunner
+from ofw.preparation.worktree import GitWorktreeGateway
 from ofw.runtime import EvidenceReference, VerifierResult, VerifierVerdict
 
 QueryInput = TypeVar("QueryInput")
 QueryOutput = TypeVar("QueryOutput", bound=BaseModel)
 _QUERY_TIMEOUT_SECONDS = 60.0
+_PROGRAM_TEMPLATE_LIMIT_BYTES = 128 * 1024
+_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 TraceIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 SpanIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 CursorIdentifier = Annotated[str, Field(min_length=1, max_length=4096)]
@@ -52,8 +62,9 @@ OutcomeEvidence = Annotated[tuple[EvidenceIdentifier, ...], Field(min_length=1, 
 server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped upstream.
     name="openflywheel",
     instructions=(
-        "Read bounded Langfuse trace evidence and record only authoritative external-verifier "
-        "outcomes. Never infer outcomes or mutate traces."
+        "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
+        "record only authoritative external-verifier outcomes. Never infer outcomes or mutate "
+        "traces."
     ),
     log_level="DEBUG",
 )
@@ -101,6 +112,22 @@ def _outcome_store() -> LangfuseOutcomeStore:
     return LangfuseOutcomeStore.from_project(_project())
 
 
+def _preparation_service() -> WorkspacePreparationService:
+    return WorkspacePreparationService(
+        runner=HarborBaselineRunner(),
+        workspace=GitWorktreeGateway(),
+        base_program=_program_template("base.md"),
+        itsm_program=_program_template("itsm.md"),
+    )
+
+
+def _program_template(name: str) -> str:
+    path = _PLUGIN_ROOT / "program_templates" / name
+    if path.stat().st_size > _PROGRAM_TEMPLATE_LIMIT_BYTES:
+        raise ValueError(f"program template exceeds byte bound: {name}")
+    return path.read_text(encoding="utf-8")
+
+
 def _execute(
     query: QueryInput,
     operation: Callable[[TraceQueryService, QueryInput], QueryOutput],
@@ -110,6 +137,12 @@ def _execute(
         return operation(TraceQueryService(client), query)
     finally:
         client.close()
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def prepare_workspace(config: PrepareWorkspaceInput) -> WorkspacePreparationObservation:
+    """Create or poll one isolated ITSM experiment worktree and baseline."""
+    return _preparation_service().prepare(config)
 
 
 @server.tool(annotations=read_only, structured_output=True)

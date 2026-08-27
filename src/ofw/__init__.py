@@ -45,6 +45,13 @@ from ofw.observability.langfuse import (
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import TraceId
+from ofw.preparation import (
+    PreparationErrorCode,
+    PreparationPhase,
+    PreparationStatus,
+    PrepareWorkspaceInput,
+    WorkspacePreparationObservation,
+)
 from ofw.runtime import (
     CanaryCase,
     CaseId,
@@ -113,6 +120,10 @@ __all__ = [
     "OutcomeScoreSubmission",
     "OutcomeStoreObservation",
     "OutcomeStoreStatus",
+    "PreparationErrorCode",
+    "PreparationPhase",
+    "PreparationStatus",
+    "PrepareWorkspaceInput",
     "RepositorySnapshot",
     "ProcessCommand",
     "ProcessLimits",
@@ -129,6 +140,7 @@ __all__ = [
     "VerifierVerdict",
     "VerifierId",
     "WorkspaceFile",
+    "WorkspacePreparationObservation",
     "editable",
     "get_client",
     "is_default_export_span",

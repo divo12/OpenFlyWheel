@@ -1,6 +1,6 @@
 ---
 name: workspace-init
-description: Initialize an OpenFlywheel ITSM-bench optimization workspace by inspecting an agent-harness repository, collecting its experiment configuration one field at a time, creating the managed PROGRAM.md placeholder, and handing preparation to workspace_prepare. Use when onboarding a primary harness for ITSM-bench; do not use for other benchmarks, an already-prepared workspace, ordinary trace queries, or outcome recording.
+description: Initialize an OpenFlywheel ITSM-bench optimization workspace by inspecting an agent-harness repository, collecting its experiment configuration one field at a time, and handing isolated branch, worktree, PROGRAM.md, and baseline creation to prepare_workspace. Use when onboarding a primary harness for ITSM-bench; do not use for other benchmarks, an already-prepared workspace, ordinary trace queries, or outcome recording.
 ---
 
 # Workspace Init
@@ -21,48 +21,51 @@ different harnesses without confirmation.
 Ask one focused question at a time. Infer repository facts first and recommend a default
 when the evidence supports one. Collect, in order:
 
-1. Harness root and explicitly editable files or directories.
+1. Harness root, Git base ref, sibling worktree parent, and explicitly editable files or
+   directories.
 2. Optimization goal, primary metric, target, and stopping condition. Keep quality, cost,
    and latency constraints separate rather than hiding them in one average.
-3. ITSM-bench root, Harbor task manifest or selection, and expected task count.
-4. Authoritative verifier, reward interpretation, and pass threshold.
-5. Frozen model, reasoning effort, concurrency, per-task timeout, retry policy, and budget.
-6. Langfuse environment, release, and session naming rule.
+3. ITSM-bench root, Harbor executable, Harbor configuration, and expected task count.
+4. Experiment ID and maximum baseline duration.
+
+Read and report the frozen model from the Harbor configuration. `prepare_workspace` fixes
+concurrency to one and retries to zero for deterministic trace mapping, uses ITSM-bench as
+the authoritative verifier, fixes the Langfuse environment to `itsm-bench`, derives the
+session from the experiment ID, and derives the release from the initialization commit. Do
+not ask the user to restate those derived values.
 
 Never request secret values in chat or write them into configuration. Check only whether
 the required environment-variable names are present.
 
 Summarize the complete proposed experiment and obtain confirmation before writing files or
-starting a potentially costly baseline. Then create `<harness-root>/experiment_config.yaml`
-using only the confirmed values.
+starting a potentially costly baseline. Pass only those confirmed values to
+`prepare_workspace`.
 
-## 3. Create the managed program placeholder
+## 3. Prepare the isolated workspace
 
-Copy [assets/PROGRAM.md](assets/PROGRAM.md) byte-for-byte to
-`<harness-root>/PROGRAM.md`. Do not overwrite an existing different `PROGRAM.md`; stop and
-ask whether the existing program should be preserved or replaced.
+Do not modify or switch the user's original checkout. Call `prepare_workspace` with the
+confirmed experiment configuration. That tool owns validation, creation of an isolated
+`ofw/<experiment-id>` branch and sibling Git worktree, deterministic composition of
+`PROGRAM.md` from `program_templates/base.md` and `program_templates/itsm.md`, creation of
+`experiment_config.yaml`, the initialization commit, baseline execution, and result parsing.
 
-Do not compose the final program yourself. Call `workspace_prepare` with the confirmed
-experiment configuration. That tool owns validation, baseline execution, result parsing,
-and deterministic composition from `program_templates/base.md` and
-`program_templates/itsm.md`.
-
-`workspace_prepare` is long-running and re-entrant:
+`prepare_workspace` is long-running and re-entrant:
 
 - On `running`, retain the preparation ID and poll the same request after the returned
   interval. Never start a second baseline.
 - On `failed`, report its typed recovery instruction and stop at its declared stop
   condition.
 - On `ready`, retain the baseline artifacts and confirm that `PROGRAM.md` is no longer the
-  placeholder.
+  placeholder. Use the returned worktree path for every later Codex action.
 
-If `workspace_prepare` is unavailable, stop after the confirmed configuration and
-placeholder. Report that workspace preparation is not installed. Do not replace the tool
-with an improvised shell command.
+If `prepare_workspace` is unavailable, stop after confirming the configuration. Report that
+workspace preparation is not installed. Do not replace the tool with an improvised shell
+command.
 
 ## 4. Hand off to the optimization program
 
-When preparation is `ready`, start a fresh Codex session with exactly this task:
+When preparation is `ready`, start a fresh Codex session in the returned worktree with
+exactly this task:
 
 ```text
 Read PROGRAM.md and start the optimization loop.
