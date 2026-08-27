@@ -29,6 +29,7 @@ packages = ["src/ofw"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["live_langfuse: requires Langfuse credentials and a trace ID"]
 
 [tool.ruff]
 target-version = "py311"

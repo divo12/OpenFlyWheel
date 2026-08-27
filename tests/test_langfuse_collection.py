@@ -29,15 +29,17 @@ from ofw import (
 from ofw.observability.langfuse.domain import (
     AttributionLevel,
     CollectionCapabilityReason,
+    CollectionSyncId,
+    SyncStream,
     TraceId,
 )
+from ofw.observability.langfuse.store import CollectionStore
 
 
 @dataclass(frozen=True, slots=True)
 class RequestRecord:
     path: str
     cursor: str | None
-    query: tuple[tuple[str, str], ...]
 
 
 @dataclass(slots=True)
@@ -169,12 +171,11 @@ def _handler(state: CollectionFixtureState) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             parsed = urlsplit(self.path)
-            query = tuple(parse_qsl(parsed.query))
             cursor = next(
-                (value for key, value in query if key == "cursor"),
+                (value for key, value in parse_qsl(parsed.query) if key == "cursor"),
                 None,
             )
-            state.requests.append(RequestRecord(parsed.path, cursor, query))
+            state.requests.append(RequestRecord(parsed.path, cursor))
             if (
                 parsed.path == "/api/public/v2/observations"
                 and cursor == "obs-page-2"
@@ -269,30 +270,33 @@ def _window() -> TraceWindow:
     return TraceWindow(start, start + timedelta(hours=1))
 
 
-def test_collects_full_remote_window_in_memory_without_local_persistence(
+def test_refreshes_completed_window_without_stale_membership(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.revision_id = str(revision.id)
+    store_path = tmp_path / "collection.sqlite"
 
-    result = ofw.collect(revision, window=_window())
+    first = ofw.collect(revision, window=_window(), store_path=store_path)
+    collection_server.state.observation_count = 1002
+    repeated = ofw.collect(revision, window=_window(), store_path=store_path)
+    collection_server.state.observation_count = 1
+    collection_server.state.score_count = 0
+    reduced = ofw.collect(revision, window=_window(), store_path=store_path)
 
-    assert result.observation_count == 1001
-    assert result.score_count == 1
-    assert len(result.observations) == 1001
-    assert len(result.contents) == 2002
-    assert len(result.traces) == 1
-    assert len(result.traces[0].observation_ids) == 1001
-    assert result.traces[0].root_observation_ids[0].value == "obs-0000"
-    assert result.traces[0].score_ids[0].value == "score-1"
-    assert result.traces[0].attribution is AttributionLevel.EXACT
-    assert len(result.sessions) == 1
-    assert result.sessions[0].id.value == "session-1"
-    assert result.sessions[0].trace_ids == (TraceId("trace-1"),)
-    assert result.capability is CollectionCapabilityReason.READY
-    assert not (revision.root / ".ofw" / "collection.sqlite").exists()
+    assert first.observation_count == 1001
+    assert repeated.observation_count == 1002
+    assert first.score_count == 1
+    assert len(first.traces) == 1
+    assert len(first.traces[0].observation_ids) == 1001
+    assert first.traces[0].root_observation_ids[0].value == "obs-0000"
+    assert first.traces[0].score_ids[0].value == "score-1"
+    assert first.traces[0].attribution is AttributionLevel.EXACT
+    assert first.capability is CollectionCapabilityReason.READY
+    assert reduced.observation_count == 1
+    assert reduced.score_count == 0
     assert collection_server.state.writes == 0
 
 
@@ -304,7 +308,11 @@ def test_missing_revision_metadata_is_collected_but_not_fit_ready(
     collection_server.state.observation_count = 2
     revision = _revision(tmp_path, collection_server, monkeypatch)
 
-    result = ofw.collect(revision, window=_window())
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
 
     assert result.observation_count == 2
     assert result.capability is CollectionCapabilityReason.MISSING_REVISION_ATTRIBUTION
@@ -319,7 +327,11 @@ def test_native_langfuse_release_attributes_trace_without_custom_metadata(
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.release = str(revision.id)
 
-    result = ofw.collect(revision, window=_window())
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
 
     assert result.traces[0].attribution is AttributionLevel.EXACT
     assert result.capability is CollectionCapabilityReason.READY
@@ -335,7 +347,11 @@ def test_logical_root_may_have_parent_outside_langfuse_project(
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.release = str(revision.id)
 
-    result = ofw.collect(revision, window=_window())
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
 
     assert result.traces[0].root_observation_ids[0].value == "obs-0000"
     assert not result.traces[0].gaps
@@ -351,7 +367,11 @@ def test_wrong_revision_metadata_is_ambiguous_and_not_fit_ready(
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.revision_id = "ofw-different-revision"
 
-    result = ofw.collect(revision, window=_window())
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
 
     assert result.traces[0].attribution is AttributionLevel.AMBIGUOUS
     assert result.capability is CollectionCapabilityReason.AMBIGUOUS_REVISION_ATTRIBUTION
@@ -365,14 +385,18 @@ def test_empty_window_reports_no_traces(
     collection_server.state.observation_count = 0
     revision = _revision(tmp_path, collection_server, monkeypatch)
 
-    result = ofw.collect(revision, window=_window())
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
 
     assert result.observation_count == 0
     assert not result.traces
     assert result.capability is CollectionCapabilityReason.NO_TRACES
 
 
-def test_failed_page_leaves_no_checkpoint_and_next_attempt_restarts(
+def test_failed_second_page_resumes_from_committed_cursor(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
@@ -380,43 +404,60 @@ def test_failed_page_leaves_no_checkpoint_and_next_attempt_restarts(
     collection_server.state.fail_second_observation_page_once = True
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.revision_id = str(revision.id)
-    with pytest.raises(CollectionError):
-        ofw.collect(revision, window=_window())
+    store_path = tmp_path / "collection.sqlite"
 
-    result = ofw.collect(revision, window=_window())
+    with pytest.raises(CollectionError):
+        ofw.collect(revision, window=_window(), store_path=store_path)
+
+    store = CollectionStore(store_path)
+    try:
+        observation_sync = CollectionSyncId.for_collection(
+            revision,
+            _window(),
+            SyncStream.OBSERVATIONS,
+        )
+        checkpoint = store.checkpoint(observation_sync, SyncStream.OBSERVATIONS)
+        assert checkpoint is not None
+        assert checkpoint.cursor is not None
+        assert checkpoint.cursor.value == "obs-page-2"
+        assert len(store.observations(observation_sync)) == 1000
+    finally:
+        store.close()
+
+    resumed = ofw.collect(revision, window=_window(), store_path=store_path)
     observation_requests = tuple(
         request
         for request in collection_server.state.requests
         if request.path == "/api/public/v2/observations"
     )
-    assert result.observation_count == 1001
-    assert tuple(request.cursor for request in observation_requests) == (
-        None,
-        "obs-page-2",
-        None,
-        "obs-page-2",
-    )
-    assert not (revision.root / ".ofw" / "collection.sqlite").exists()
+    assert resumed.observation_count == 1001
+    assert observation_requests[-1].cursor == "obs-page-2"
 
 
-def test_repeated_collection_reads_current_langfuse_state_without_stale_local_snapshot(
+def test_failed_refresh_keeps_previous_snapshot_and_resumes(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.revision_id = str(revision.id)
-    first = ofw.collect(revision, window=_window())
+    store_path = tmp_path / "collection.sqlite"
+    first = ofw.collect(revision, window=_window(), store_path=store_path)
     collection_server.state.observation_count = 1002
-    refreshed = ofw.collect(revision, window=_window())
-    collection_server.state.observation_count = 1
-    collection_server.state.score_count = 0
-    reduced = ofw.collect(revision, window=_window())
+    collection_server.state.fail_second_observation_page_once = True
 
-    assert first.observation_count == 1001
+    with pytest.raises(CollectionError):
+        ofw.collect(revision, window=_window(), store_path=store_path)
+
+    store = CollectionStore(store_path)
+    try:
+        assert len(store.observations(first.observation_sync_id)) == 1001
+    finally:
+        store.close()
+
+    refreshed = ofw.collect(revision, window=_window(), store_path=store_path)
+
     assert refreshed.observation_count == 1002
-    assert reduced.observation_count == 1
-    assert reduced.score_count == 0
 
 
 def test_repeated_cursor_fails_instead_of_looping(
@@ -429,12 +470,16 @@ def test_repeated_cursor_fails_instead_of_looping(
     revision = _revision(tmp_path, collection_server, monkeypatch)
 
     with pytest.raises(CollectionError) as raised:
-        ofw.collect(revision, window=_window())
+        ofw.collect(
+            revision,
+            window=_window(),
+            store_path=tmp_path / "collection.sqlite",
+        )
 
     assert raised.value.code is CollectionErrorCode.CURSOR_LOOP
 
 
-def test_search_trace_and_session_reads_query_langfuse_directly(
+def test_full_trace_content_can_be_searched_and_read_through_bounded_api(
     tmp_path: Path,
     collection_server: CollectionFixtureServer,
     monkeypatch: pytest.MonkeyPatch,
@@ -442,8 +487,11 @@ def test_search_trace_and_session_reads_query_langfuse_directly(
     collection_server.state.observation_count = 2
     revision = _revision(tmp_path, collection_server, monkeypatch)
     collection_server.state.revision_id = str(revision.id)
-    result = ofw.collect(revision, window=_window())
-    requests_before_queries = len(collection_server.state.requests)
+    result = ofw.collect(
+        revision,
+        window=_window(),
+        store_path=tmp_path / "collection.sqlite",
+    )
 
     hits = ofw.search_observation_content(
         result,
@@ -457,26 +505,8 @@ def test_search_trace_and_session_reads_query_langfuse_directly(
         ),
     )
     trajectory = ofw.read_trace_observations(result, TraceId("trace-1"), 10)
-    session = ofw.read_session_observations(result, "session-1", 10)
     content = ofw.read_observation_content(result, hits[0].reference)
-    query_requests = collection_server.state.requests[requests_before_queries:]
-    observation_queries = tuple(
-        request.query
-        for request in query_requests
-        if request.path == "/api/public/v2/observations"
-    )
 
     assert len(hits) == 2
     assert len(trajectory) == 2
-    assert len(session) == 2
     assert content.text.startswith("request obs-")
-    assert any(("traceId", "trace-1") in query for query in observation_queries)
-    assert any(
-        any(key == "filter" and '"column":"input"' in value for key, value in query)
-        for query in observation_queries
-    )
-    assert any(
-        any(key == "filter" and '"column":"sessionId"' in value for key, value in query)
-        for query in observation_queries
-    )
-    assert not (revision.root / ".ofw" / "collection.sqlite").exists()

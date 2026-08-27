@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [fresh]
+  push:
+    branches: [fresh]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
+        with:
+          enable-cache: true
+      - name: Install Python and dependencies
+        run: |
+          uv python install 3.11
+          uv sync --extra dev --extra trace-query
+      - name: Ruff
+        run: uv run ruff check src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
+      - name: mypy
+        run: uv run mypy src tests plugins/openflywheel-trace-query/scripts/mcp_server.py
+      - name: Tests and coverage
+        run: uv run pytest --cov=ofw --cov-report=term-missing --cov-fail-under=90 -q

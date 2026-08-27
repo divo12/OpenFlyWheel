@@ -6,15 +6,17 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 
-from ofw.contracts import HarnessRevisionId, Sha256Digest
+from ofw.contracts import HarnessRevision, HarnessRevisionId, Sha256Digest
 from ofw.observability.langfuse.contracts import (
     CollectionError,
     CollectionErrorCode,
     LangfuseConnectionId,
-    LangfuseConnectionManifest,
     TraceWindow,
 )
+
+COLLECTION_POLICY_VERSION = 1
 
 
 class ObservationType(StrEnum):
@@ -56,6 +58,11 @@ class ScoreSubjectKind(StrEnum):
     OBSERVATION = "observation"
     SESSION = "session"
     EXPERIMENT = "experiment"
+
+
+class SyncStream(StrEnum):
+    OBSERVATIONS = "observations"
+    SCORES = "scores"
 
 
 class AttributionLevel(StrEnum):
@@ -102,11 +109,6 @@ class TraceId:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionId:
-    value: str
-
-
-@dataclass(frozen=True, slots=True)
 class ProjectId:
     value: str
 
@@ -119,6 +121,35 @@ class ScoreId:
 @dataclass(frozen=True, slots=True)
 class PageCursor:
     value: str
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionSyncId:
+    value: str
+
+    @classmethod
+    def for_collection(
+        cls,
+        revision: HarnessRevision,
+        window: TraceWindow,
+        stream: SyncStream,
+    ) -> CollectionSyncId:
+        if revision.observability is None:
+            raise CollectionError(
+                CollectionErrorCode.OBSERVABILITY_NOT_CONNECTED,
+                str(revision.id),
+            )
+        payload = "\0".join(
+            (
+                str(COLLECTION_POLICY_VERSION),
+                str(revision.id),
+                str(revision.observability.id),
+                window.start.isoformat(),
+                window.end.isoformat(),
+                stream.value,
+            )
+        )
+        return cls(f"sync_{hashlib.sha256(payload.encode()).hexdigest()}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +293,14 @@ class ScorePage:
 
 
 @dataclass(frozen=True, slots=True)
+class SyncCheckpoint:
+    sync_id: CollectionSyncId
+    stream: SyncStream
+    cursor: PageCursor | None
+    complete: bool
+
+
+@dataclass(frozen=True, slots=True)
 class TraceRecord:
     id: TraceId
     observation_ids: tuple[ObservationId, ...]
@@ -276,36 +315,16 @@ class TraceRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class SessionRecord:
-    id: SessionId
-    trace_ids: tuple[TraceId, ...]
-    observation_ids: tuple[ObservationId, ...]
-    score_ids: tuple[ScoreId, ...]
-    digest: Sha256Digest
-
-
-@dataclass(frozen=True, slots=True)
 class CollectionResult:
     revision_id: HarnessRevisionId
-    connection: LangfuseConnectionManifest
+    connection_id: LangfuseConnectionId
     window: TraceWindow
-    observations: tuple[ObservationRecord, ...]
-    contents: tuple[ObservationContent, ...]
-    scores: tuple[ScoreRecord, ...]
+    observation_sync_id: CollectionSyncId
+    score_sync_id: CollectionSyncId
     traces: tuple[TraceRecord, ...]
-    sessions: tuple[SessionRecord, ...]
+    observation_count: int
+    score_count: int
     gap_count: int
     snapshot_digest: Sha256Digest
     capability: CollectionCapabilityReason
-
-    @property
-    def connection_id(self) -> LangfuseConnectionId:
-        return self.connection.id
-
-    @property
-    def observation_count(self) -> int:
-        return len(self.observations)
-
-    @property
-    def score_count(self) -> int:
-        return len(self.scores)
+    store_path: Path

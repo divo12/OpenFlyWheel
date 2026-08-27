@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Annotated, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -16,18 +16,29 @@ from ofw.observability.langfuse.domain import (
     ObservationPage,
     ObservationRecord,
     ObservationType,
+    PageCursor,
     TraceId,
 )
 
 _STRUCTURE_LIMIT = 50
 _CONTEXT_CHILD_LIMIT = 10
 _EXCERPT_LIMIT = 512
+_CURSOR_LIMIT = 4096
+_TYPE_SAMPLE_LIMIT = 3
+
+CursorValue = Annotated[str, Field(min_length=1, max_length=_CURSOR_LIMIT)]
 
 
 class QueryStatus(StrEnum):
     SUCCESS = "success"
     NEEDS_INPUT = "needs_input"
     NOT_FOUND = "not_found"
+
+
+class QueryOrdering(StrEnum):
+    NONE = "none"
+    PAGE_START_TIME_DESC_ID_DESC = "page_start_time_desc_id_desc"
+    PARENT_ANCHOR_CHILDREN_DESC = "parent_anchor_children_desc"
 
 
 class ObservationFieldGroup(StrEnum):
@@ -98,16 +109,19 @@ class AppliedSpanFilters(StrictModel):
 
 class GetTraceSchemaInput(StrictModel):
     trace_id: str = Field(min_length=1, max_length=256)
+    cursor: CursorValue | None = None
 
 
 class QuerySpansInput(StrictModel):
     trace_id: str = Field(min_length=1, max_length=256)
     filters: SpanFilters = Field(default_factory=SpanFilters)
+    cursor: CursorValue | None = None
 
 
 class GetSpanContextInput(StrictModel):
     trace_id: str = Field(min_length=1, max_length=256)
     span_id: str = Field(min_length=1, max_length=256)
+    cursor: CursorValue | None = None
 
 
 class SpanFound(StrictModel):
@@ -117,15 +131,24 @@ class SpanFound(StrictModel):
     output_excerpt: str | None = Field(default=None, max_length=_EXCERPT_LIMIT)
 
 
+class SpanTypeSummary(StrictModel):
+    span_type: ObservationType
+    count: int = Field(ge=1, le=_STRUCTURE_LIMIT)
+    sample_span_ids: tuple[str, ...] = Field(max_length=_TYPE_SAMPLE_LIMIT)
+
+
 class TraceQueryObservation(StrictModel):
     status: QueryStatus
     summary: str = Field(max_length=256)
     next_actions: tuple[str, ...] = Field(max_length=2)
     artifacts: tuple[str, ...] = Field(max_length=_STRUCTURE_LIMIT)
     trace_id: str = Field(max_length=256)
+    ordering: QueryOrdering
     filters_applied: AppliedSpanFilters
     spans_found: tuple[SpanFound, ...] = Field(max_length=_STRUCTURE_LIMIT)
+    span_types: tuple[SpanTypeSummary, ...] = Field(max_length=len(ObservationType))
     missing_fields: tuple[str, ...] = Field(default=(), max_length=1)
+    next_cursor: CursorValue | None = None
     truncated: bool = False
 
 
@@ -140,6 +163,7 @@ class ObservationRead:
     observation_type: ObservationType | None = None
     error: bool | None = None
     parent_observation_id: str | None = None
+    cursor: PageCursor | None = None
 
 
 class ObservationReader(Protocol):
@@ -155,17 +179,18 @@ class TraceQueryService:
             ObservationRead(
                 trace_id=TraceId(query.trace_id),
                 fields=(ObservationFieldGroup.CORE, ObservationFieldGroup.BASIC),
-                limit=_STRUCTURE_LIMIT + 1,
+                limit=_STRUCTURE_LIMIT,
+                cursor=_cursor(query.cursor),
             )
         )
-        records = page.records[:_STRUCTURE_LIMIT]
         return _success(
             query.trace_id,
             AppliedSpanFilters(),
-            records,
+            _ordered(page.records),
             (),
             "Trace structure loaded without span input or output.",
-            len(page.records) > _STRUCTURE_LIMIT,
+            _next_cursor(page.cursor),
+            QueryOrdering.PAGE_START_TIME_DESC_ID_DESC,
         )
 
     def query_spans(self, query: QuerySpansInput) -> TraceQueryObservation:
@@ -173,14 +198,14 @@ class TraceQueryService:
         if missing_field is not None:
             return _needs_input(query.trace_id, query.filters.applied(), missing_field)
         page = self._reader.read_observations(_span_read(query))
-        records = page.records[: query.filters.max_results]
         return _success(
             query.trace_id,
             query.filters.applied(),
-            records,
+            _ordered(page.records),
             (),
-            f"Found {len(records)} spans using exact structural filters.",
-            len(page.records) > query.filters.max_results,
+            f"Found {len(page.records)} spans using exact structural filters.",
+            _next_cursor(page.cursor),
+            QueryOrdering.PAGE_START_TIME_DESC_ID_DESC,
         )
 
     def get_span_context(self, query: GetSpanContextInput) -> TraceQueryObservation:
@@ -190,7 +215,8 @@ class TraceQueryService:
         anchor = anchor_page.records[0]
         parent_page = self._parent_page(query, anchor)
         child_page = self._reader.read_observations(_children_read(query))
-        records = parent_page.records[:1] + (anchor,) + child_page.records[:_CONTEXT_CHILD_LIMIT]
+        children = _ordered(child_page.records)
+        records = parent_page.records[:1] + (anchor,) + children
         contents = parent_page.contents + anchor_page.contents + child_page.contents
         return _success(
             query.trace_id,
@@ -198,7 +224,8 @@ class TraceQueryService:
             records,
             contents,
             "Loaded the span, its parent, and direct children with bounded raw excerpts.",
-            len(child_page.records) > _CONTEXT_CHILD_LIMIT,
+            _next_cursor(child_page.cursor),
+            QueryOrdering.PARENT_ANCHOR_CHILDREN_DESC,
         )
 
     def _parent_page(
@@ -224,6 +251,7 @@ def _span_read(query: QuerySpansInput) -> ObservationRead:
         name=_tool_name(filters.tool_name),
         observation_type=_span_type(filters),
         error=filters.error,
+        cursor=_cursor(query.cursor),
     )
 
 
@@ -246,7 +274,12 @@ def _anchor_read(query: GetSpanContextInput) -> ObservationRead:
 
 
 def _children_read(query: GetSpanContextInput) -> ObservationRead:
-    return _context_read(query.trace_id, parent_observation_id=query.span_id, limit=11)
+    return _context_read(
+        query.trace_id,
+        parent_observation_id=query.span_id,
+        limit=_CONTEXT_CHILD_LIMIT,
+        cursor=_cursor(query.cursor),
+    )
 
 
 def _context_read(
@@ -255,6 +288,7 @@ def _context_read(
     observation_id: str | None = None,
     parent_observation_id: str | None = None,
     limit: int = 2,
+    cursor: PageCursor | None = None,
 ) -> ObservationRead:
     return ObservationRead(
         trace_id=TraceId(trace_id),
@@ -266,6 +300,7 @@ def _context_read(
         limit=limit,
         observation_id=observation_id,
         parent_observation_id=parent_observation_id,
+        cursor=cursor,
     )
 
 
@@ -280,8 +315,10 @@ def _needs_input(
         next_actions=(f"Provide {missing_field}.",),
         artifacts=(),
         trace_id=trace_id,
+        ordering=QueryOrdering.NONE,
         filters_applied=filters,
         spans_found=(),
+        span_types=(),
         missing_fields=(missing_field,),
     )
 
@@ -293,8 +330,10 @@ def _not_found(query: GetSpanContextInput) -> TraceQueryObservation:
         next_actions=("Verify span_id with get_trace_schema or query_spans.",),
         artifacts=(),
         trace_id=query.trace_id,
+        ordering=QueryOrdering.NONE,
         filters_applied=AppliedSpanFilters(span_id=query.span_id),
         spans_found=(),
+        span_types=(),
         missing_fields=("span_id",),
     )
 
@@ -305,26 +344,69 @@ def _success(
     records: tuple[ObservationRecord, ...],
     contents: tuple[ObservationContent, ...],
     summary: str,
-    truncated: bool,
+    next_cursor: str | None,
+    ordering: QueryOrdering,
 ) -> TraceQueryObservation:
     content_lookup = tuple((content.reference, content.text) for content in contents)
     spans = tuple(_span(record, content_lookup) for record in records)
     return TraceQueryObservation(
         status=QueryStatus.SUCCESS,
         summary=summary,
-        next_actions=_next_actions(truncated),
+        next_actions=_next_actions(next_cursor),
         artifacts=tuple(span.span_id for span in spans),
         trace_id=trace_id,
+        ordering=ordering,
         filters_applied=filters,
         spans_found=spans,
-        truncated=truncated,
+        span_types=_span_types(records),
+        next_cursor=next_cursor,
+        truncated=next_cursor is not None,
     )
 
 
-def _next_actions(truncated: bool) -> tuple[str, ...]:
-    if truncated:
-        return ("Narrow filters before requesting more context.",)
+def _next_actions(next_cursor: str | None) -> tuple[str, ...]:
+    if next_cursor is not None:
+        return ("Continue with next_cursor, or narrow the filters.",)
     return ("Stop, or expand one span with get_span_context if its raw context is needed.",)
+
+
+def _ordered(records: tuple[ObservationRecord, ...]) -> tuple[ObservationRecord, ...]:
+    return tuple(sorted(records, key=_ordering_key, reverse=True))
+
+
+def _ordering_key(record: ObservationRecord) -> tuple[datetime, str]:
+    return (record.start_time, record.id.value)
+
+
+def _span_types(records: tuple[ObservationRecord, ...]) -> tuple[SpanTypeSummary, ...]:
+    summaries: list[SpanTypeSummary] = []
+    for span_type in ObservationType:
+        summary = _span_type_summary(records, span_type)
+        if summary is not None:
+            summaries.append(summary)
+    return tuple(summaries)
+
+
+def _span_type_summary(
+    records: tuple[ObservationRecord, ...],
+    span_type: ObservationType,
+) -> SpanTypeSummary | None:
+    matching = tuple(record for record in records if record.type is span_type)
+    if not matching:
+        return None
+    return SpanTypeSummary(
+        span_type=span_type,
+        count=len(matching),
+        sample_span_ids=tuple(record.id.value for record in matching[:_TYPE_SAMPLE_LIMIT]),
+    )
+
+
+def _cursor(value: str | None) -> PageCursor | None:
+    return None if value is None else PageCursor(value)
+
+
+def _next_cursor(cursor: PageCursor | None) -> str | None:
+    return None if cursor is None else cursor.value
 
 
 def _span(

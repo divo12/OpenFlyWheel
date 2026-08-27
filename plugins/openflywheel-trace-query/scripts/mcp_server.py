@@ -25,6 +25,7 @@ from ofw.observability.langfuse.transport import LangfuseHttpClient
 QueryInput = TypeVar("QueryInput")
 TraceIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 SpanIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
+CursorIdentifier = Annotated[str, Field(min_length=1, max_length=4096)]
 
 server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped upstream.
     name="openflywheel-trace-query",
@@ -59,18 +60,27 @@ def _execute(
 
 
 @server.tool(annotations=read_only, structured_output=True)
-def get_trace_schema(trace_id: TraceIdentifier) -> TraceQueryObservation:
+def get_trace_schema(
+    trace_id: TraceIdentifier,
+    cursor: CursorIdentifier | None = None,
+) -> TraceQueryObservation:
     """Skim bounded trace structure without loading span input or output."""
-    return _execute(GetTraceSchemaInput(trace_id=trace_id), TraceQueryService.get_trace_schema)
+    query = GetTraceSchemaInput(trace_id=trace_id, cursor=cursor)
+    return _execute(query, TraceQueryService.get_trace_schema)
 
 
 @server.tool(annotations=read_only, structured_output=True)
 def query_spans(
     trace_id: TraceIdentifier,
     filters: SpanFilters | None = None,
+    cursor: CursorIdentifier | None = None,
 ) -> TraceQueryObservation:
     """Find bounded span IDs using exact structural filters."""
-    query = QuerySpansInput(trace_id=trace_id, filters=filters or SpanFilters())
+    query = QuerySpansInput(
+        trace_id=trace_id,
+        filters=filters or SpanFilters(),
+        cursor=cursor,
+    )
     return _execute(query, TraceQueryService.query_spans)
 
 
@@ -78,9 +88,10 @@ def query_spans(
 def get_span_context(
     trace_id: TraceIdentifier,
     span_id: SpanIdentifier,
+    cursor: CursorIdentifier | None = None,
 ) -> TraceQueryObservation:
     """Read one span, its parent, and up to ten direct children with bounded excerpts."""
-    query = GetSpanContextInput(trace_id=trace_id, span_id=span_id)
+    query = GetSpanContextInput(trace_id=trace_id, span_id=span_id, cursor=cursor)
     return _execute(query, TraceQueryService.get_span_context)
 
 

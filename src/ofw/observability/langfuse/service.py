@@ -1,11 +1,11 @@
-"""Exhaustive in-memory Langfuse collection and direct querying."""
+"""Restart-safe Langfuse collection and trace assembly."""
 
 from __future__ import annotations
 
 import hashlib
-import re
 from datetime import datetime
 from itertools import groupby
+from pathlib import Path
 
 from pydantic import ValidationError
 
@@ -20,25 +20,23 @@ from ofw.observability.langfuse.domain import (
     AttributionLevel,
     CollectionCapabilityReason,
     CollectionResult,
+    CollectionSyncId,
     ObservationContent,
-    ObservationContentField,
     ObservationContentHit,
-    ObservationContentMatch,
     ObservationContentQuery,
     ObservationContentReference,
     ObservationId,
-    ObservationPage,
     ObservationRecord,
     PageCursor,
-    ScoreId,
     ScoreRecord,
     ScoreSubjectKind,
-    SessionId,
-    SessionRecord,
+    SyncCheckpoint,
+    SyncStream,
     TraceGap,
     TraceId,
     TraceRecord,
 )
+from ofw.observability.langfuse.store import CollectionStore
 from ofw.observability.langfuse.transport import LangfuseHttpClient
 from ofw.observability.langfuse.wire import RevisionMetadata
 
@@ -47,108 +45,144 @@ def collect(
     revision: HarnessRevision,
     *,
     window: TraceWindow,
+    store_path: Path | None = None,
 ) -> CollectionResult:
     if revision.observability is None:
         raise CollectionError(
             CollectionErrorCode.OBSERVABILITY_NOT_CONNECTED,
             str(revision.id),
         )
-    project = LangfuseProject.from_manifest(revision.observability)
-    client = LangfuseHttpClient(project)
-    try:
-        client.check_health()
-        observation_page = _query_observations(client, window)
-        scores = _query_scores(client, window)
-    finally:
-        client.close()
-    observations = observation_page.records
-    traces, orphan_count = _assemble_traces(observations, scores, revision.id)
-    sessions = _assemble_sessions(observations, scores)
-    return CollectionResult(
-        revision_id=revision.id,
-        connection=revision.observability,
-        window=window,
-        observations=observations,
-        contents=observation_page.contents,
-        scores=scores,
-        traces=traces,
-        sessions=sessions,
-        gap_count=orphan_count + sum(len(trace.gaps) for trace in traces),
-        snapshot_digest=_snapshot_digest(observations, scores, traces, sessions),
-        capability=_capability(traces),
+    selected_store_path = store_path or revision.root / ".ofw" / "collection.sqlite"
+    observation_sync_id = CollectionSyncId.for_collection(
+        revision,
+        window,
+        SyncStream.OBSERVATIONS,
     )
-
-
-def _query_observations(
-    client: LangfuseHttpClient,
-    window: TraceWindow,
-    *,
-    trace_id: TraceId | None = None,
-    session_id: str | None = None,
-    content_field: ObservationContentField | None = None,
-    content_match: ObservationContentMatch | None = None,
-    content_text: str | None = None,
-    maximum_records: int | None = None,
-) -> ObservationPage:
-    records: list[ObservationRecord] = []
-    contents: list[ObservationContent] = []
-    content_references: set[ObservationContentReference] = set()
-    seen: set[str] = set()
-    cursor: PageCursor | None = None
-    while True:
-        limit = _page_limit(maximum_records, len(records))
-        if limit == 0:
-            return ObservationPage(tuple(records), None, tuple(contents))
-        page = client.get_observations(
-            window,
-            cursor,
-            trace_id=trace_id,
-            session_id=session_id,
-            content_field=content_field,
-            content_match=content_match,
-            content_text=content_text,
-            limit=limit,
+    score_sync_id = CollectionSyncId.for_collection(revision, window, SyncStream.SCORES)
+    store = CollectionStore(selected_store_path)
+    try:
+        observation_checkpoint = store.checkpoint(
+            observation_sync_id,
+            SyncStream.OBSERVATIONS,
         )
-        records.extend(page.records)
-        _append_unique_contents(contents, content_references, page.contents)
-        if page.cursor is None:
-            return ObservationPage(tuple(records), None, tuple(contents))
-        _reject_cursor_loop(page.cursor, seen)
-        cursor = page.cursor
+        score_checkpoint = store.checkpoint(score_sync_id, SyncStream.SCORES)
+        project = LangfuseProject.from_manifest(revision.observability)
+        client = LangfuseHttpClient(project)
+        try:
+            client.check_health()
+            observation_target, observation_cursor = _sync_target(
+                store,
+                observation_sync_id,
+                SyncStream.OBSERVATIONS,
+                observation_checkpoint,
+            )
+            _sync_observations(
+                client,
+                store,
+                str(revision.observability.id),
+                observation_target,
+                window,
+                observation_cursor,
+            )
+            if observation_target != observation_sync_id:
+                store.replace_observation_membership(observation_sync_id, observation_target)
+            score_target, score_cursor = _sync_target(
+                store,
+                score_sync_id,
+                SyncStream.SCORES,
+                score_checkpoint,
+            )
+            _sync_scores(
+                client,
+                store,
+                str(revision.observability.id),
+                score_target,
+                window,
+                score_cursor,
+            )
+            if score_target != score_sync_id:
+                store.replace_score_membership(score_sync_id, score_target)
+        finally:
+            client.close()
+        observations = store.observations(observation_sync_id)
+        scores = store.scores(score_sync_id)
+        traces, orphan_count = _assemble_traces(observations, scores, revision.id)
+        capability = _capability(traces)
+        snapshot_digest = _snapshot_digest(observations, scores, traces)
+        return CollectionResult(
+            revision_id=revision.id,
+            connection_id=revision.observability.id,
+            window=window,
+            observation_sync_id=observation_sync_id,
+            score_sync_id=score_sync_id,
+            traces=traces,
+            observation_count=len(observations),
+            score_count=len(scores),
+            gap_count=orphan_count + sum(len(trace.gaps) for trace in traces),
+            snapshot_digest=snapshot_digest,
+            capability=capability,
+            store_path=selected_store_path,
+        )
+    finally:
+        store.close()
 
 
-def _page_limit(maximum_records: int | None, collected: int) -> int:
-    if maximum_records is None:
-        return 1000
-    return max(0, min(1000, maximum_records - collected))
+def _sync_target(
+    store: CollectionStore,
+    sync_id: CollectionSyncId,
+    stream: SyncStream,
+    checkpoint: SyncCheckpoint | None,
+) -> tuple[CollectionSyncId, PageCursor | None]:
+    if checkpoint is None:
+        return sync_id, None
+    if not checkpoint.complete:
+        return sync_id, checkpoint.cursor
+    refresh_sync_id = CollectionSyncId(f"{sync_id.value}_refresh")
+    refresh_checkpoint = store.checkpoint(refresh_sync_id, stream)
+    cursor = (
+        refresh_checkpoint.cursor
+        if refresh_checkpoint is not None and not refresh_checkpoint.complete
+        else None
+    )
+    return refresh_sync_id, cursor
 
 
-def _append_unique_contents(
-    target: list[ObservationContent],
-    references: set[ObservationContentReference],
-    incoming: tuple[ObservationContent, ...],
-) -> None:
-    for content in incoming:
-        if content.reference in references:
-            continue
-        references.add(content.reference)
-        target.append(content)
-
-
-def _query_scores(
+def _sync_observations(
     client: LangfuseHttpClient,
+    store: CollectionStore,
+    connection_id: str,
+    sync_id: CollectionSyncId,
     window: TraceWindow,
-) -> tuple[ScoreRecord, ...]:
-    records: list[ScoreRecord] = []
-    seen: set[str] = set()
-    cursor: PageCursor | None = None
+    cursor: PageCursor | None,
+) -> None:
+    seen = set() if cursor is None else {cursor.value}
+    current = cursor
     while True:
-        page = client.get_scores(window, cursor)
-        records.extend(page.records)
+        page = client.get_observations(window, current)
+        store.commit_observation_page(connection_id, sync_id, page)
         if page.cursor is None:
-            return tuple(records)
-        _reject_cursor_loop(page.cursor, seen)
-        cursor = page.cursor
+            return
+        current = page.cursor
+        _reject_cursor_loop(current, seen)
+
+
+def _sync_scores(
+    client: LangfuseHttpClient,
+    store: CollectionStore,
+    connection_id: str,
+    sync_id: CollectionSyncId,
+    window: TraceWindow,
+    cursor: PageCursor | None,
+) -> None:
+    seen = set() if cursor is None else {cursor.value}
+    current = cursor
+    while True:
+        page = client.get_scores(window, current)
+        store.commit_score_page(connection_id, sync_id, page)
+        if page.cursor is None:
+            return
+        current = page.cursor
+        _reject_cursor_loop(current, seen)
 
 
 def _reject_cursor_loop(cursor: PageCursor | None, seen: set[str]) -> None:
@@ -269,101 +303,6 @@ def _score_belongs(
     return False
 
 
-def _assemble_sessions(
-    observations: tuple[ObservationRecord, ...],
-    scores: tuple[ScoreRecord, ...],
-) -> tuple[SessionRecord, ...]:
-    attributed = tuple(record for record in observations if record.session_id)
-    ordered = sorted(attributed, key=_session_sort_key)
-    return tuple(
-        _assemble_session(session_id, tuple(grouped), scores)
-        for session_id, grouped in groupby(ordered, key=_session_key)
-    )
-
-
-def _assemble_session(
-    session_id: str,
-    records: tuple[ObservationRecord, ...],
-    scores: tuple[ScoreRecord, ...],
-) -> SessionRecord:
-    observation_ids = tuple(record.id for record in records)
-    trace_ids = _unique_trace_ids(records)
-    score_ids = _session_score_ids(scores, session_id, trace_ids, observation_ids)
-    digest = _session_digest(session_id, trace_ids, records, score_ids)
-    return SessionRecord(
-        id=SessionId(session_id),
-        trace_ids=trace_ids,
-        observation_ids=observation_ids,
-        score_ids=score_ids,
-        digest=digest,
-    )
-
-
-def _session_score_ids(
-    scores: tuple[ScoreRecord, ...],
-    session_id: str,
-    trace_ids: tuple[TraceId, ...],
-    observation_ids: tuple[ObservationId, ...],
-) -> tuple[ScoreId, ...]:
-    return tuple(
-        score.id
-        for score in scores
-        if _score_belongs_session(score, session_id, trace_ids, observation_ids)
-    )
-
-
-def _session_digest(
-    session_id: str,
-    trace_ids: tuple[TraceId, ...],
-    records: tuple[ObservationRecord, ...],
-    score_ids: tuple[ScoreId, ...],
-) -> Sha256Digest:
-    payload = "\0".join(
-        (
-            session_id,
-            *(trace_id.value for trace_id in trace_ids),
-            *(str(record.digest) for record in records),
-            *(score_id.value for score_id in score_ids),
-        )
-    )
-    return Sha256Digest(f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}")
-
-
-def _unique_trace_ids(records: tuple[ObservationRecord, ...]) -> tuple[TraceId, ...]:
-    trace_ids: list[TraceId] = []
-    for record in records:
-        if record.trace_id is not None and record.trace_id not in trace_ids:
-            trace_ids.append(record.trace_id)
-    return tuple(trace_ids)
-
-
-def _session_sort_key(record: ObservationRecord) -> tuple[str, datetime, str]:
-    return (_session_key(record), record.start_time, record.id.value)
-
-
-def _session_key(record: ObservationRecord) -> str:
-    if not record.session_id:
-        raise ValueError("session assembly requires a session id")
-    return record.session_id
-
-
-def _score_belongs_session(
-    score: ScoreRecord,
-    session_id: str,
-    trace_ids: tuple[TraceId, ...],
-    observation_ids: tuple[ObservationId, ...],
-) -> bool:
-    if score.subject is None:
-        return False
-    if score.subject.kind is ScoreSubjectKind.SESSION:
-        return score.subject.id == session_id
-    if score.subject.kind is ScoreSubjectKind.TRACE:
-        return any(trace_id.value == score.subject.id for trace_id in trace_ids)
-    if score.subject.kind is ScoreSubjectKind.OBSERVATION:
-        return any(item.value == score.subject.id for item in observation_ids)
-    return False
-
-
 def _attribution(
     observations: tuple[ObservationRecord, ...],
     revision_id: HarnessRevisionId,
@@ -417,14 +356,12 @@ def _snapshot_digest(
     observations: tuple[ObservationRecord, ...],
     scores: tuple[ScoreRecord, ...],
     traces: tuple[TraceRecord, ...],
-    sessions: tuple[SessionRecord, ...],
 ) -> Sha256Digest:
     payload = "\0".join(
         (
             *(str(record.digest) for record in observations),
             *(str(record.digest) for record in scores),
             *(str(record.digest) for record in traces),
-            *(str(record.digest) for record in sessions),
         )
     )
     return Sha256Digest(f"sha256:{hashlib.sha256(payload.encode()).hexdigest()}")
@@ -434,73 +371,11 @@ def search_observation_content(
     collection: CollectionResult,
     query: ObservationContentQuery,
 ) -> tuple[ObservationContentHit, ...]:
-    client = LangfuseHttpClient(LangfuseProject.from_manifest(collection.connection))
+    store = CollectionStore(collection.store_path)
     try:
-        hits: list[ObservationContentHit] = []
-        for field in _content_fields(query.field):
-            page = _query_observations(
-                client,
-                collection.window,
-                trace_id=query.trace_id,
-                content_field=field,
-                content_match=query.match,
-                content_text=query.text,
-                maximum_records=query.limit,
-            )
-            hits.extend(_content_hits(page, field, query, query.limit - len(hits)))
-            if len(hits) == query.limit:
-                return tuple(hits)
-        return tuple(hits)
+        return store.search_content(collection.observation_sync_id, query)
     finally:
-        client.close()
-
-
-def _content_fields(
-    field: ObservationContentField,
-) -> tuple[ObservationContentField, ...]:
-    if field is ObservationContentField.ANY:
-        return (ObservationContentField.INPUT, ObservationContentField.OUTPUT)
-    return (field,)
-
-
-def _content_hits(
-    page: ObservationPage,
-    field: ObservationContentField,
-    query: ObservationContentQuery,
-    limit: int,
-) -> tuple[ObservationContentHit, ...]:
-    hits: list[ObservationContentHit] = []
-    for observation in page.records:
-        content = _observation_content(observation, page.contents, field)
-        if content is None or not _content_matches(content.text, query):
-            continue
-        hits.append(
-            ObservationContentHit(
-                observation.id,
-                observation.trace_id,
-                field,
-                content.reference,
-                _excerpt(content.text, query.text, query.maximum_excerpt_characters),
-            )
-        )
-        if len(hits) == limit:
-            return tuple(hits)
-    return tuple(hits)
-
-
-def _observation_content(
-    observation: ObservationRecord,
-    contents: tuple[ObservationContent, ...],
-    field: ObservationContentField,
-) -> ObservationContent | None:
-    reference = (
-        observation.input_content
-        if field is ObservationContentField.INPUT
-        else observation.output_content
-    )
-    if reference is None:
-        return None
-    return next((content for content in contents if content.reference == reference), None)
+        store.close()
 
 
 def read_trace_observations(
@@ -510,65 +385,19 @@ def read_trace_observations(
 ) -> tuple[ObservationRecord, ...]:
     if not 1 <= limit <= 1000:
         raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, str(limit))
-    client = LangfuseHttpClient(LangfuseProject.from_manifest(collection.connection))
+    store = CollectionStore(collection.store_path)
     try:
-        page = _query_observations(
-            client,
-            collection.window,
-            trace_id=trace_id,
-            maximum_records=limit,
-        )
-        return tuple(sorted(page.records, key=_observation_sort_key))
+        return store.trace_observations(collection.observation_sync_id, trace_id, limit)
     finally:
-        client.close()
-
-
-def read_session_observations(
-    collection: CollectionResult,
-    session_id: str,
-    limit: int,
-) -> tuple[ObservationRecord, ...]:
-    if not session_id or not 1 <= limit <= 1000:
-        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, session_id)
-    client = LangfuseHttpClient(LangfuseProject.from_manifest(collection.connection))
-    try:
-        page = _query_observations(
-            client,
-            collection.window,
-            session_id=session_id,
-            maximum_records=limit,
-        )
-        return tuple(sorted(page.records, key=_observation_sort_key))
-    finally:
-        client.close()
+        store.close()
 
 
 def read_observation_content(
     collection: CollectionResult,
     reference: ObservationContentReference,
 ) -> ObservationContent:
-    content = next(
-        (content for content in collection.contents if content.reference == reference),
-        None,
-    )
-    if content is None:
-        raise CollectionError(CollectionErrorCode.CONTENT_NOT_CAPTURED, str(reference.digest))
-    return content
-
-
-def _content_matches(text: str, query: ObservationContentQuery) -> bool:
-    if query.match is ObservationContentMatch.EXACT:
-        return text == query.text
-    return re.search(
-        rf"(?<!\w){re.escape(query.text)}(?!\w)",
-        text,
-        flags=re.IGNORECASE,
-    ) is not None
-
-
-def _excerpt(text: str, query: str, limit: int) -> str:
-    index = text.casefold().find(query.casefold())
-    if index < 0 or len(text) <= limit:
-        return text[:limit]
-    start = max(0, index - limit // 2)
-    return text[start : start + limit]
+    store = CollectionStore(collection.store_path)
+    try:
+        return store.read_content(collection.observation_sync_id, reference)
+    finally:
+        store.close()

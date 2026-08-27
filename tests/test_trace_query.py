@@ -17,6 +17,7 @@ from ofw.observability.langfuse.domain import (
     ObservationPage,
     ObservationRecord,
     ObservationType,
+    PageCursor,
     ProjectId,
     TraceId,
 )
@@ -26,6 +27,7 @@ from ofw.observability.langfuse.trace_query import (
     GetTraceSchemaInput,
     ObservationFieldGroup,
     ObservationRead,
+    QueryOrdering,
     QuerySpansInput,
     QueryStatus,
     SpanFilters,
@@ -143,17 +145,46 @@ def test_schema_skims_structure_without_io() -> None:
     result = TraceQueryService(client).get_trace_schema(GetTraceSchemaInput(trace_id="trace-1"))
 
     assert [(span.span_id, span.label) for span in result.spans_found] == [
-        ("root", "AGENT · Agent · root"),
         ("tool", "TOOL · Tool: get_ticket · parent=root"),
+        ("root", "AGENT · Agent · root"),
     ]
     assert result.truncated is False
+    assert result.next_cursor is None
+    assert result.ordering is QueryOrdering.PAGE_START_TIME_DESC_ID_DESC
     assert client.calls == [
         ObservationRead(
             trace_id=TraceId("trace-1"),
             fields=(ObservationFieldGroup.CORE, ObservationFieldGroup.BASIC),
-            limit=51,
+            limit=50,
         )
     ]
+
+
+def test_schema_cursor_finds_late_types_and_orders_ties_by_id() -> None:
+    newest_b, _ = _record("b", name="Agent B", kind=ObservationType.AGENT, second=2)
+    newest_a, _ = _record("a", name="Agent A", kind=ObservationType.AGENT, second=2)
+    late, _ = _record("late", name="Guard", kind=ObservationType.GUARDRAIL, second=1)
+    client = FakeClient(
+        [
+            ObservationPage((newest_a, newest_b), PageCursor("page-2")),
+            ObservationPage((late,), None),
+        ]
+    )
+    service = TraceQueryService(client)
+
+    first = service.get_trace_schema(GetTraceSchemaInput(trace_id="trace-1"))
+    second = service.get_trace_schema(
+        GetTraceSchemaInput(trace_id="trace-1", cursor=first.next_cursor)
+    )
+
+    assert [span.span_id for span in first.spans_found] == ["b", "a"]
+    assert first.next_cursor == "page-2"
+    assert first.truncated is True
+    assert first.span_types[0].span_type is ObservationType.AGENT
+    assert first.span_types[0].count == 2
+    assert second.next_cursor is None
+    assert second.span_types[0].span_type is ObservationType.GUARDRAIL
+    assert client.calls[1].cursor == PageCursor("page-2")
 
 
 def test_query_spans_applies_deterministic_server_filters() -> None:
@@ -164,17 +195,18 @@ def test_query_spans_applies_deterministic_server_filters() -> None:
         parent_id="root",
         level=ObservationLevel.ERROR,
     )
-    client = FakeClient([ObservationPage((tool,), None)])
+    client = FakeClient([ObservationPage((tool,), PageCursor("next-page"))])
     filters = SpanFilters(tool_name="get_ticket", error=True, max_results=5)
 
     result = TraceQueryService(client).query_spans(
-        QuerySpansInput(trace_id="trace-1", filters=filters)
+        QuerySpansInput(trace_id="trace-1", filters=filters, cursor="current-page")
     )
 
     assert result.filters_applied == AppliedSpanFilters(
         tool_name="get_ticket", error=True, max_results=5
     )
     assert [span.span_id for span in result.spans_found] == ["tool"]
+    assert result.next_cursor == "next-page"
     assert client.calls == [
         ObservationRead(
             trace_id=TraceId("trace-1"),
@@ -183,6 +215,7 @@ def test_query_spans_applies_deterministic_server_filters() -> None:
             name="Tool: get_ticket",
             observation_type=ObservationType.TOOL,
             error=True,
+            cursor=PageCursor("current-page"),
         )
     ]
 
@@ -210,17 +243,19 @@ def test_span_context_is_bounded_and_includes_raw_excerpts() -> None:
         [
             ObservationPage((anchor,), None, anchor_content),
             ObservationPage((parent,), None, parent_content),
-            ObservationPage((child,), None, child_content),
+            ObservationPage((child,), PageCursor("next-children"), child_content),
         ]
     )
 
     result = TraceQueryService(client).get_span_context(
-        GetSpanContextInput(trace_id="trace-1", span_id="tool")
+        GetSpanContextInput(trace_id="trace-1", span_id="tool", cursor="current-children")
     )
 
     assert [span.span_id for span in result.spans_found] == ["root", "tool", "generation"]
     assert len(result.spans_found[1].input_excerpt or "") == 512
     assert result.spans_found[1].output_excerpt == "ticket found"
+    assert result.next_cursor == "next-children"
+    assert result.ordering is QueryOrdering.PARENT_ANCHOR_CHILDREN_DESC
     assert all(call.limit <= 11 for call in client.calls)
     assert all(
         call.fields
@@ -231,3 +266,4 @@ def test_span_context_is_bounded_and_includes_raw_excerpts() -> None:
         )
         for call in client.calls
     )
+    assert client.calls[-1].cursor == PageCursor("current-children")

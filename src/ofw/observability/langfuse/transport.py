@@ -20,8 +20,6 @@ from ofw.observability.langfuse.contracts import (
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import (
-    ObservationContentField,
-    ObservationContentMatch,
     ObservationPage,
     PageCursor,
     ScorePage,
@@ -42,25 +40,23 @@ class LangfuseEndpoint(StrEnum):
 
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
+_DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 
 
 class ObservationFilterColumn(StrEnum):
     ENVIRONMENT = "environment"
     TRACE_ID = "traceId"
     OBSERVATION_ID = "id"
-    SESSION_ID = "sessionId"
     NAME = "name"
     TYPE = "type"
     LEVEL = "level"
     PARENT_ID = "parentObservationId"
-    INPUT = "input"
-    OUTPUT = "output"
 
 
 class ObservationFilterOperator(StrEnum):
     EQUALS = "="
     NOT_EQUALS = "<>"
-    MATCHES = "matches"
 
 
 class ObservationFilter(BaseModel):
@@ -96,14 +92,10 @@ class ObservationOptions:
     cursor: PageCursor | None
     trace_id: TraceId | None
     observation_id: str | None
-    session_id: str | None
     name: str | None
     observation_type: str | None
     error: bool | None
     parent_observation_id: str | None
-    content_field: ObservationContentField | None
-    content_match: ObservationContentMatch | None
-    content_text: str | None
     fields: tuple[str, ...]
     limit: int
 
@@ -111,7 +103,18 @@ class ObservationOptions:
 class LangfuseHttpClient:
     """Only the two GET operations required by PR2 are exposed."""
 
-    def __init__(self, project: LangfuseProject, *, timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        project: LangfuseProject,
+        *,
+        timeout_seconds: float = 15.0,
+        max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
+    ) -> None:
+        if not 1 <= max_response_bytes <= _MAX_RESPONSE_BYTES:
+            raise CollectionError(
+                CollectionErrorCode.INVALID_CONTENT_QUERY,
+                "max_response_bytes",
+            )
         manifest = project.manifest()
         credentials = project.credentials()
         _validate_dns(manifest.base_url.value, manifest.allow_private_network)
@@ -124,6 +127,7 @@ class LangfuseHttpClient:
             timeout=timeout_seconds,
         )
         self._environment = manifest.environment.value
+        self._max_response_bytes = max_response_bytes
 
     def close(self) -> None:
         self._client.close()
@@ -143,14 +147,10 @@ class LangfuseHttpClient:
         *,
         trace_id: TraceId | None = None,
         observation_id: str | None = None,
-        session_id: str | None = None,
         name: str | None = None,
         observation_type: str | None = None,
         error: bool | None = None,
         parent_observation_id: str | None = None,
-        content_field: ObservationContentField | None = None,
-        content_match: ObservationContentMatch | None = None,
-        content_text: str | None = None,
         fields: tuple[str, ...] = (
             "core",
             "basic",
@@ -170,14 +170,10 @@ class LangfuseHttpClient:
             cursor=cursor,
             trace_id=trace_id,
             observation_id=observation_id,
-            session_id=session_id,
             name=name,
             observation_type=observation_type,
             error=error,
             parent_observation_id=parent_observation_id,
-            content_field=content_field,
-            content_match=content_match,
-            content_text=content_text,
             fields=fields,
             limit=limit,
         )
@@ -192,6 +188,7 @@ class LangfuseHttpClient:
     def read_observations(self, query: ObservationRead) -> ObservationPage:
         return self.get_observations(
             query.window,
+            query.cursor,
             trace_id=query.trace_id,
             observation_id=query.observation_id,
             name=query.name,
@@ -229,28 +226,45 @@ class LangfuseHttpClient:
     ) -> ResponseModel:
         _validate_dns(self._base_url, self._allow_private_network)
         try:
-            response = self._client.get(endpoint.value, params=parameters)
+            with self._client.stream("GET", endpoint.value, params=parameters) as response:
+                _validate_response_status(response, endpoint)
+                content = _bounded_content(response, endpoint, self._max_response_bytes)
         except httpx.TimeoutException as error:
             raise CollectionError(CollectionErrorCode.REQUEST_TIMEOUT, endpoint.value) from error
         except httpx.HTTPError as error:
             raise CollectionError(CollectionErrorCode.REQUEST_FAILED, endpoint.value) from error
-        if 300 <= response.status_code < 400:
-            raise CollectionError(CollectionErrorCode.REDIRECT_BLOCKED, endpoint.value)
-        if response.status_code != 200:
-            raise CollectionError(
-                CollectionErrorCode.HTTP_STATUS,
-                f"{endpoint.value}:{response.status_code}",
-            )
         try:
-            return adapter.validate_json(response.content)
+            return adapter.validate_json(content)
         except ValidationError as error:
             raise CollectionError(CollectionErrorCode.INVALID_RESPONSE, endpoint.value) from error
+
+
+def _validate_response_status(response: httpx.Response, endpoint: LangfuseEndpoint) -> None:
+    if 300 <= response.status_code < 400:
+        raise CollectionError(CollectionErrorCode.REDIRECT_BLOCKED, endpoint.value)
+    if response.status_code != 200:
+        raise CollectionError(
+            CollectionErrorCode.HTTP_STATUS,
+            f"{endpoint.value}:{response.status_code}",
+        )
+
+
+def _bounded_content(
+    response: httpx.Response,
+    endpoint: LangfuseEndpoint,
+    maximum_bytes: int,
+) -> bytes:
+    content = bytearray()
+    for chunk in response.iter_bytes():
+        if len(content) + len(chunk) > maximum_bytes:
+            raise CollectionError(CollectionErrorCode.RESPONSE_TOO_LARGE, endpoint.value)
+        content.extend(chunk)
+    return bytes(content)
 
 
 def _validate_options(options: ObservationOptions) -> None:
     _validate_limit(options.limit)
     _validate_fields(options.fields)
-    _validate_content_filter(options)
 
 
 def _validate_limit(limit: int) -> None:
@@ -261,17 +275,6 @@ def _validate_limit(limit: int) -> None:
 def _validate_fields(fields: tuple[str, ...]) -> None:
     if not fields or not set(fields) <= _OBSERVATION_FIELD_GROUPS:
         raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, "fields")
-
-
-def _validate_content_filter(options: ObservationOptions) -> None:
-    content_values = (
-        options.content_field,
-        options.content_match,
-        options.content_text,
-    )
-    supplied = sum(value is not None for value in content_values)
-    if supplied not in (0, len(content_values)):
-        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, "content filter")
 
 
 def _observation_parameters(
@@ -314,9 +317,7 @@ def _uses_advanced_filter(options: ObservationOptions) -> bool:
         value is not None
         for value in (
             options.observation_id,
-            options.session_id,
             options.error,
-            options.content_field,
         )
     )
 
@@ -354,16 +355,10 @@ def _advanced_filters(
         _filter(ObservationFilterColumn.ENVIRONMENT, environment),
         _filter(ObservationFilterColumn.TRACE_ID, _trace_id(options.trace_id)),
         _filter(ObservationFilterColumn.OBSERVATION_ID, options.observation_id),
-        _filter(ObservationFilterColumn.SESSION_ID, options.session_id),
         _filter(ObservationFilterColumn.NAME, options.name),
         _filter(ObservationFilterColumn.TYPE, options.observation_type),
         _error_filter(options.error),
         _filter(ObservationFilterColumn.PARENT_ID, options.parent_observation_id),
-        _content_filter(
-            options.content_field,
-            options.content_match,
-            options.content_text,
-        ),
     )
     return tuple(candidate for candidate in candidates if candidate is not None)
 
@@ -393,32 +388,6 @@ def _error_filter(error: bool | None) -> ObservationFilter | None:
         ),
         value="ERROR",
     )
-
-
-def _content_filter(
-    field: ObservationContentField | None,
-    match: ObservationContentMatch | None,
-    text: str | None,
-) -> ObservationFilter | None:
-    if field is None or match is None or text is None:
-        return None
-    return ObservationFilter(
-        column=_content_column(field),
-        operator=_content_operator(match),
-        value=text,
-    )
-
-
-def _content_column(field: ObservationContentField) -> ObservationFilterColumn:
-    if field is ObservationContentField.INPUT:
-        return ObservationFilterColumn.INPUT
-    return ObservationFilterColumn.OUTPUT
-
-
-def _content_operator(match: ObservationContentMatch) -> ObservationFilterOperator:
-    if match is ObservationContentMatch.EXACT:
-        return ObservationFilterOperator.EQUALS
-    return ObservationFilterOperator.MATCHES
 
 
 def _utc_text(value: datetime) -> str:

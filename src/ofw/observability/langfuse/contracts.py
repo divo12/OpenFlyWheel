@@ -29,6 +29,7 @@ class CollectionErrorCode(StrEnum):
     REDIRECT_BLOCKED = "redirect_blocked"
     REQUEST_TIMEOUT = "request_timeout"
     REQUEST_FAILED = "request_failed"
+    RESPONSE_TOO_LARGE = "response_too_large"
     HTTP_STATUS = "http_status"
     INVALID_RESPONSE = "invalid_response"
     DATABASE_ERROR = "database_error"
