@@ -205,9 +205,32 @@ def test_list_traces_is_bounded_paginated_and_filtered() -> None:
             session_id="itsm-session",
             environment="ofw-local",
             release="release-1",
+            is_root_observation=True,
             cursor=PageCursor("current-traces"),
         )
     ]
+
+
+def test_list_traces_bounds_provider_owned_labels() -> None:
+    root, _ = _record(
+        "root",
+        name="Hermes turn",
+        kind=ObservationType.CHAIN,
+        trace_name="x" * 601,
+    )
+    client = FakeClient([ObservationPage((root,), None)])
+
+    result = TraceQueryService(client).list_traces(
+        ListTracesInput(
+            session_id="itsm-session",
+            time_range=TraceTimeRange(
+                start_time=datetime(2026, 8, 27, tzinfo=UTC),
+                end_time=datetime(2026, 8, 28, tzinfo=UTC),
+            ),
+        )
+    )
+
+    assert result.traces_found[0].label == "x" * 600
 
 
 @pytest.mark.parametrize(

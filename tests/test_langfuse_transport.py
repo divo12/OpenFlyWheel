@@ -369,6 +369,7 @@ def test_trace_listing_filters_session_release_environment_and_time(
                 session_id="itsm-session",
                 environment="staging",
                 release="release-1",
+                is_root_observation=True,
             )
         )
     finally:
@@ -379,6 +380,10 @@ def test_trace_listing_filters_session_release_environment_and_time(
     assert '"column":"sessionId","operator":"=","value":"itsm-session"' in encoded_filter
     assert '"column":"environment","operator":"=","value":"staging"' in encoded_filter
     assert '"column":"release","operator":"=","value":"release-1"' in encoded_filter
+    assert (
+        '"type":"boolean","column":"isRootObservation","operator":"=","value":true'
+        in encoded_filter
+    )
     assert ("fields", "core,basic,trace_context") in request.query
     assert ("fromStartTime", "2026-08-22T00:00:00Z") in request.query
     assert ("toStartTime", "2026-08-22T01:00:00Z") in request.query

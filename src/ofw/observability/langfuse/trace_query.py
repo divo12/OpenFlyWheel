@@ -259,6 +259,7 @@ class ObservationRead:
     session_id: str | None = None
     environment: str | None = None
     release: str | None = None
+    is_root_observation: bool | None = None
     cursor: PageCursor | None = None
 
 
@@ -276,7 +277,7 @@ class TraceQueryService:
         next_cursor = _next_cursor(page.cursor)
         return TraceListObservation(
             status=QueryStatus.SUCCESS,
-            summary=f"Found {len(traces)} traces for the session page.",
+            summary=f"Found {len(traces)} logical-root traces for the session page.",
             next_actions=_trace_list_actions(next_cursor),
             artifacts=tuple(trace.trace_id for trace in traces),
             ordering=QueryOrdering.PAGE_START_TIME_DESC_ID_DESC,
@@ -371,6 +372,7 @@ def _trace_list_read(query: ListTracesInput) -> ObservationRead:
         session_id=query.session_id,
         environment=query.environment,
         release=query.release,
+        is_root_observation=True,
         cursor=_cursor(query.cursor),
     )
 
@@ -392,7 +394,7 @@ def _trace_summary(record: ObservationRecord) -> TraceFound:
     return TraceFound(
         trace_id=record.trace_id.value,
         sample_span_id=record.id.value,
-        label=record.trace_name or record.name or record.trace_id.value,
+        label=(record.trace_name or record.name or record.trace_id.value)[:600],
         start_time=record.start_time,
         environment=record.environment,
         release=record.release,

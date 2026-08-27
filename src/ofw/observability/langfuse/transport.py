@@ -62,6 +62,7 @@ class ObservationFilterColumn(StrEnum):
     INPUT = "input"
     OUTPUT = "output"
     METADATA = "metadata"
+    IS_ROOT_OBSERVATION = "isRootObservation"
 
 
 class ObservationFilterOperator(StrEnum):
@@ -89,8 +90,17 @@ class MetadataObservationFilter(BaseModel):
     value: str
 
 
+class BooleanObservationFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["boolean"] = "boolean"
+    column: ObservationFilterColumn = ObservationFilterColumn.IS_ROOT_OBSERVATION
+    operator: ObservationFilterOperator
+    value: bool
+
+
 ObservationFilter: TypeAlias = (
-    StringObservationFilter | MetadataObservationFilter
+    StringObservationFilter | MetadataObservationFilter | BooleanObservationFilter
 )
 _FILTERS_ADAPTER = TypeAdapter(tuple[ObservationFilter, ...])
 
@@ -124,6 +134,7 @@ class ObservationOptions:
     text_filter: SpanTextFilter | None
     parent_observation_id: str | None
     release: str | None
+    is_root_observation: bool | None
     fields: tuple[str, ...]
     limit: int
 
@@ -183,6 +194,7 @@ class LangfuseHttpClient:
         text_filter: SpanTextFilter | None = None,
         parent_observation_id: str | None = None,
         release: str | None = None,
+        is_root_observation: bool | None = None,
         fields: tuple[str, ...] = (
             "core",
             "basic",
@@ -210,6 +222,7 @@ class LangfuseHttpClient:
             text_filter=text_filter,
             parent_observation_id=parent_observation_id,
             release=release,
+            is_root_observation=is_root_observation,
             fields=fields,
             limit=limit,
         )
@@ -235,6 +248,7 @@ class LangfuseHttpClient:
             text_filter=query.text_filter,
             parent_observation_id=query.parent_observation_id,
             release=query.release,
+            is_root_observation=query.is_root_observation,
             fields=tuple(group.value for group in query.fields),
             limit=query.limit,
         )
@@ -355,6 +369,7 @@ def _uses_advanced_filter(options: ObservationOptions) -> bool:
             options.text_filter,
             options.session_id,
             options.release,
+            options.is_root_observation,
         )
     )
 
@@ -398,6 +413,7 @@ def _advanced_filters(
         _error_filter(options.error),
         _filter(ObservationFilterColumn.PARENT_ID, options.parent_observation_id),
         _filter(ObservationFilterColumn.RELEASE, options.release),
+        _root_filter(options.is_root_observation),
         _text_filter(options.text_filter),
     )
     return tuple(candidate for candidate in candidates if candidate is not None)
@@ -427,6 +443,15 @@ def _error_filter(error: bool | None) -> ObservationFilter | None:
             else ObservationFilterOperator.NOT_EQUALS
         ),
         value="ERROR",
+    )
+
+
+def _root_filter(is_root: bool | None) -> ObservationFilter | None:
+    if is_root is None:
+        return None
+    return BooleanObservationFilter(
+        operator=ObservationFilterOperator.EQUALS,
+        value=is_root,
     )
 
 
