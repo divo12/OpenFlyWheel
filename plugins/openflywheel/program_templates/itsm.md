@@ -6,10 +6,17 @@ This program supports only `benchmark: itsm-bench`.
 
 Before diagnosing failures, process every terminal Harbor trial from the prepared baseline:
 
-1. Read the trial's `result.json` and verifier artifacts.
-2. When `verifier_result.rewards.reward` exists, map the result directly:
-   - `1.0` -> `pass` with score `1.0`.
-   - `0.0` -> `fail` with score `0.0`.
+1. Read the trial's `result.json`, `exception_info`, verifier status, and verifier artifacts.
+2. Map a reward only when the verifier completed and the trial has no execution or verifier
+   error:
+   - Exact `1.0` -> `pass` with score `1.0`.
+   - Exact `0.0` -> `fail` with score `0.0`.
+   - Any other present reward -> record nothing and report an unsupported-reward mapping
+     blocker.
+   - An explicit authoritative `abstain` or `error` verdict -> preserve that verdict without
+     a score.
+   - An exception, verifier error, or missing verifier result without an explicit authoritative
+     verdict -> record nothing and report the trial as unverified.
 3. Use the task directory name as `task_id`, `itsm-bench@<task_checksum>` as
    `verifier_id`, and the verifier completion time as `evaluated_at`.
 4. Resolve exactly one Langfuse trace using the prepared session, environment, release,
