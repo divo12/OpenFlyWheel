@@ -12,7 +12,7 @@ from langfuse import Langfuse
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 
 from ofw.evaluation.outcome import OutcomeEvaluation
-from ofw.observability.langfuse.contracts import EnvironmentName, LangfuseProject
+from ofw.observability.langfuse.contracts import LangfuseProject
 from ofw.observability.langfuse.domain import ScoreId, TraceId
 
 OUTCOME_SCORE_NAME = "ofw.outcome"
@@ -42,6 +42,16 @@ class OutcomeScoreMetadata:
     normalized_score: float | None
     evidence: tuple[str, ...]
 
+    def provider_payload(self) -> dict[str, object]:
+        """Convert to the plain JSON mapping required by the Langfuse SDK."""
+        return {
+            "schema_version": self.schema_version,
+            "task_id": self.task_id,
+            "verifier_id": self.verifier_id,
+            "normalized_score": self.normalized_score,
+            "evidence": list(self.evidence),
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class OutcomeScoreSubmission:
@@ -59,9 +69,8 @@ class _OutcomeScoreClient(Protocol):
         score_id: str,
         data_type: Literal["CATEGORICAL"],
         comment: str,
-        metadata: OutcomeScoreMetadata,
+        metadata: dict[str, object],
         timestamp: datetime,
-        environment: str,
     ) -> None: ...
 
     def flush(self) -> None: ...
@@ -72,9 +81,8 @@ class _OutcomeScoreClient(Protocol):
 class LangfuseOutcomeStore:
     """Publish outcome evaluations without changing trace-query behavior."""
 
-    def __init__(self, client: _OutcomeScoreClient, *, environment: str) -> None:
+    def __init__(self, client: _OutcomeScoreClient) -> None:
         self._client = client
-        self._environment = EnvironmentName(environment).value
 
     @classmethod
     def from_project(cls, project: LangfuseProject) -> LangfuseOutcomeStore:
@@ -86,7 +94,7 @@ class LangfuseOutcomeStore:
             base_url=manifest.base_url.value,
             environment=manifest.environment.value,
         )
-        return cls(client, environment=manifest.environment.value)
+        return cls(client)
 
     def store(self, outcome: OutcomeEvaluation) -> OutcomeScoreSubmission:
         score_id = _score_id(outcome)
@@ -99,9 +107,8 @@ class LangfuseOutcomeStore:
             comment=(
                 f"Authoritative outcome from {outcome.verifier_id.value}: {outcome.verdict.value}."
             ),
-            metadata=_metadata(outcome),
+            metadata=_metadata(outcome).provider_payload(),
             timestamp=outcome.evaluated_at,
-            environment=self._environment,
         )
         self._client.flush()
         return OutcomeScoreSubmission(score_id, outcome.trace_id)

@@ -9,7 +9,6 @@ from typing import Literal
 from ofw.evaluation.langfuse import (
     OUTCOME_SCORE_NAME,
     LangfuseOutcomeStore,
-    OutcomeScoreMetadata,
 )
 from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
 from ofw.observability.langfuse.domain import TraceId
@@ -26,9 +25,8 @@ class _ScoreCall:
     score_id: str
     data_type: Literal["CATEGORICAL"]
     comment: str
-    metadata: OutcomeScoreMetadata
+    metadata: dict[str, object]
     timestamp: datetime
-    environment: str
 
 
 class _FakeScoreClient:
@@ -46,9 +44,8 @@ class _FakeScoreClient:
         score_id: str,
         data_type: Literal["CATEGORICAL"],
         comment: str,
-        metadata: OutcomeScoreMetadata,
+        metadata: dict[str, object],
         timestamp: datetime,
-        environment: str,
     ) -> None:
         self.calls.append(
             _ScoreCall(
@@ -60,7 +57,6 @@ class _FakeScoreClient:
                 comment,
                 metadata,
                 timestamp,
-                environment,
             )
         )
 
@@ -91,7 +87,7 @@ def _outcome(
 
 def test_stores_categorical_outcome_on_the_trace_with_typed_metadata() -> None:
     client = _FakeScoreClient()
-    store = LangfuseOutcomeStore(client, environment="itsm-bench")
+    store = LangfuseOutcomeStore(client)
 
     submission = store.store(_outcome())
 
@@ -105,15 +101,14 @@ def test_stores_categorical_outcome_on_the_trace_with_typed_metadata() -> None:
             score_id=submission.score_id.value,
             data_type="CATEGORICAL",
             comment="Authoritative outcome from verifier@v1: pass.",
-            metadata=OutcomeScoreMetadata(
-                schema_version=1,
-                task_id="task-1",
-                verifier_id="verifier@v1",
-                normalized_score=1.0,
-                evidence=("artifact://result", "artifact://verifier"),
-            ),
+            metadata={
+                "schema_version": 1,
+                "task_id": "task-1",
+                "verifier_id": "verifier@v1",
+                "normalized_score": 1.0,
+                "evidence": ["artifact://result", "artifact://verifier"],
+            },
             timestamp=_EVALUATED_AT,
-            environment="itsm-bench",
         )
     ]
     assert client.flush_count == 1
@@ -121,22 +116,30 @@ def test_stores_categorical_outcome_on_the_trace_with_typed_metadata() -> None:
 
 def test_score_id_is_stable_and_inconclusive_outcomes_remain_explicit() -> None:
     client = _FakeScoreClient()
-    store = LangfuseOutcomeStore(client, environment="production")
+    store = LangfuseOutcomeStore(client)
     outcome = _outcome(VerifierVerdict.ABSTAIN, None)
 
     first = store.store(outcome)
     second = store.store(outcome)
 
-    assert first.score_id == second.score_id
-    assert client.calls[0].value == "abstain"
-    assert client.calls[0].metadata.normalized_score is None
-    assert client.calls[0].timestamp == client.calls[1].timestamp
-    assert client.flush_count == 2
+    assert (
+        first.score_id,
+        client.calls[0].value,
+        client.calls[0].metadata["normalized_score"],
+        client.calls[0].timestamp,
+        client.flush_count,
+    ) == (
+        second.score_id,
+        "abstain",
+        None,
+        client.calls[1].timestamp,
+        2,
+    )
 
 
 def test_close_shuts_down_the_owned_client() -> None:
     client = _FakeScoreClient()
-    store = LangfuseOutcomeStore(client, environment="production")
+    store = LangfuseOutcomeStore(client)
 
     store.close()
 
