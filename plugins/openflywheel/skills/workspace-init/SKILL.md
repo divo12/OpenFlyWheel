@@ -45,7 +45,7 @@ ask whether the existing program should be preserved or replaced.
 Do not compose the final program yourself. Call `workspace_prepare` with the confirmed
 experiment configuration. That tool owns validation, baseline execution, result parsing,
 and deterministic composition from `program_templates/base.md` and
-`program_templates/itsm_bench.md`.
+`program_templates/itsm.md`.
 
 `workspace_prepare` is long-running and re-entrant:
 

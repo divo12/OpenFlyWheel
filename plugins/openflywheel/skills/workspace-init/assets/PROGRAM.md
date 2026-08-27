@@ -3,6 +3,6 @@
 `workspace_prepare()` populates this file from:
 
 - `program_templates/base.md` (shared sections)
-- `program_templates/itsm_bench.md` (ITSM-bench sections)
+- `program_templates/itsm.md` (ITSM-bench sections)
 
 `experiment_config.yaml` must select `itsm-bench`.
