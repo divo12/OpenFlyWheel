@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import TypeVar
+from typing import Literal, TypeVar
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from ofw.observability.langfuse.contracts import (
     CollectionError,
@@ -19,10 +20,14 @@ from ofw.observability.langfuse.contracts import (
     TraceWindow,
 )
 from ofw.observability.langfuse.domain import (
+    ObservationContentField,
+    ObservationContentMatch,
     ObservationPage,
     PageCursor,
     ScorePage,
+    TraceId,
 )
+from ofw.observability.langfuse.trace_query import ObservationRead
 from ofw.observability.langfuse.wire import (
     HealthWire,
     ObservationResponseWire,
@@ -37,6 +42,70 @@ class LangfuseEndpoint(StrEnum):
 
 
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
+
+
+class ObservationFilterColumn(StrEnum):
+    ENVIRONMENT = "environment"
+    TRACE_ID = "traceId"
+    OBSERVATION_ID = "id"
+    SESSION_ID = "sessionId"
+    NAME = "name"
+    TYPE = "type"
+    LEVEL = "level"
+    PARENT_ID = "parentObservationId"
+    INPUT = "input"
+    OUTPUT = "output"
+
+
+class ObservationFilterOperator(StrEnum):
+    EQUALS = "="
+    NOT_EQUALS = "<>"
+    MATCHES = "matches"
+
+
+class ObservationFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    type: Literal["string"] = "string"
+    column: ObservationFilterColumn
+    operator: ObservationFilterOperator
+    value: str
+
+
+_FILTERS_ADAPTER = TypeAdapter(tuple[ObservationFilter, ...])
+
+_OBSERVATION_FIELD_GROUPS = frozenset(
+    {
+        "core",
+        "basic",
+        "time",
+        "io",
+        "metadata",
+        "model",
+        "usage",
+        "prompt",
+        "metrics",
+        "trace_context",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationOptions:
+    window: TraceWindow | None
+    cursor: PageCursor | None
+    trace_id: TraceId | None
+    observation_id: str | None
+    session_id: str | None
+    name: str | None
+    observation_type: str | None
+    error: bool | None
+    parent_observation_id: str | None
+    content_field: ObservationContentField | None
+    content_match: ObservationContentMatch | None
+    content_text: str | None
+    fields: tuple[str, ...]
+    limit: int
 
 
 class LangfuseHttpClient:
@@ -69,23 +138,69 @@ class LangfuseHttpClient:
 
     def get_observations(
         self,
-        window: TraceWindow,
+        window: TraceWindow | None = None,
         cursor: PageCursor | None = None,
+        *,
+        trace_id: TraceId | None = None,
+        observation_id: str | None = None,
+        session_id: str | None = None,
+        name: str | None = None,
+        observation_type: str | None = None,
+        error: bool | None = None,
+        parent_observation_id: str | None = None,
+        content_field: ObservationContentField | None = None,
+        content_match: ObservationContentMatch | None = None,
+        content_text: str | None = None,
+        fields: tuple[str, ...] = (
+            "core",
+            "basic",
+            "time",
+            "io",
+            "metadata",
+            "model",
+            "usage",
+            "prompt",
+            "metrics",
+            "trace_context",
+        ),
+        limit: int = 1000,
     ) -> ObservationPage:
-        field_groups = "core,basic,time,io,metadata,model,usage,prompt,metrics,trace_context"
-        parameters = (
-            ("fields", field_groups),
-            ("limit", "1000"),
-            ("environment", self._environment),
-            ("fromStartTime", _utc_text(window.start)),
-            ("toStartTime", _utc_text(window.end)),
-        ) + (() if cursor is None else (("cursor", cursor.value),))
+        options = ObservationOptions(
+            window=window,
+            cursor=cursor,
+            trace_id=trace_id,
+            observation_id=observation_id,
+            session_id=session_id,
+            name=name,
+            observation_type=observation_type,
+            error=error,
+            parent_observation_id=parent_observation_id,
+            content_field=content_field,
+            content_match=content_match,
+            content_text=content_text,
+            fields=fields,
+            limit=limit,
+        )
+        _validate_options(options)
         response = self._get(
             LangfuseEndpoint.OBSERVATIONS,
-            parameters,
+            _observation_parameters(self._environment, options),
             TypeAdapter(ObservationResponseWire),
         )
         return response.normalize()
+
+    def read_observations(self, query: ObservationRead) -> ObservationPage:
+        return self.get_observations(
+            query.window,
+            trace_id=query.trace_id,
+            observation_id=query.observation_id,
+            name=query.name,
+            observation_type=query.observation_type,
+            error=query.error,
+            parent_observation_id=query.parent_observation_id,
+            fields=tuple(group.value for group in query.fields),
+            limit=query.limit,
+        )
 
     def get_scores(
         self,
@@ -130,6 +245,180 @@ class LangfuseHttpClient:
             return adapter.validate_json(response.content)
         except ValidationError as error:
             raise CollectionError(CollectionErrorCode.INVALID_RESPONSE, endpoint.value) from error
+
+
+def _validate_options(options: ObservationOptions) -> None:
+    _validate_limit(options.limit)
+    _validate_fields(options.fields)
+    _validate_content_filter(options)
+
+
+def _validate_limit(limit: int) -> None:
+    if not 1 <= limit <= 1000:
+        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, str(limit))
+
+
+def _validate_fields(fields: tuple[str, ...]) -> None:
+    if not fields or not set(fields) <= _OBSERVATION_FIELD_GROUPS:
+        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, "fields")
+
+
+def _validate_content_filter(options: ObservationOptions) -> None:
+    content_values = (
+        options.content_field,
+        options.content_match,
+        options.content_text,
+    )
+    supplied = sum(value is not None for value in content_values)
+    if supplied not in (0, len(content_values)):
+        raise CollectionError(CollectionErrorCode.INVALID_CONTENT_QUERY, "content filter")
+
+
+def _observation_parameters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[tuple[str, str], ...]:
+    base = (
+        ("fields", ",".join(options.fields)),
+        ("limit", str(options.limit)),
+    )
+    return (
+        base
+        + _window_parameters(options.window)
+        + _scope_parameters(environment, options)
+        + _cursor_parameter(options.cursor)
+    )
+
+
+def _window_parameters(window: TraceWindow | None) -> tuple[tuple[str, str], ...]:
+    if window is None:
+        return ()
+    return (
+        ("fromStartTime", _utc_text(window.start)),
+        ("toStartTime", _utc_text(window.end)),
+    )
+
+
+def _scope_parameters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[tuple[str, str], ...]:
+    if _uses_advanced_filter(options):
+        filters = _advanced_filters(environment, options)
+        return (("filter", _FILTERS_ADAPTER.dump_json(filters).decode()),)
+    return _direct_parameters(environment, options)
+
+
+def _uses_advanced_filter(options: ObservationOptions) -> bool:
+    return any(
+        value is not None
+        for value in (
+            options.observation_id,
+            options.session_id,
+            options.error,
+            options.content_field,
+        )
+    )
+
+
+def _direct_parameters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[tuple[str, str], ...]:
+    return (
+        (("environment", environment),)
+        + _parameter("traceId", _trace_id(options.trace_id))
+        + _parameter("name", options.name)
+        + _parameter("type", options.observation_type)
+        + _parameter("parentObservationId", options.parent_observation_id)
+    )
+
+
+def _trace_id(trace_id: TraceId | None) -> str | None:
+    return None if trace_id is None else trace_id.value
+
+
+def _parameter(name: str, value: str | None) -> tuple[tuple[str, str], ...]:
+    return () if value is None else ((name, value),)
+
+
+def _cursor_parameter(cursor: PageCursor | None) -> tuple[tuple[str, str], ...]:
+    return _parameter("cursor", None if cursor is None else cursor.value)
+
+
+def _advanced_filters(
+    environment: str,
+    options: ObservationOptions,
+) -> tuple[ObservationFilter, ...]:
+    candidates = (
+        _filter(ObservationFilterColumn.ENVIRONMENT, environment),
+        _filter(ObservationFilterColumn.TRACE_ID, _trace_id(options.trace_id)),
+        _filter(ObservationFilterColumn.OBSERVATION_ID, options.observation_id),
+        _filter(ObservationFilterColumn.SESSION_ID, options.session_id),
+        _filter(ObservationFilterColumn.NAME, options.name),
+        _filter(ObservationFilterColumn.TYPE, options.observation_type),
+        _error_filter(options.error),
+        _filter(ObservationFilterColumn.PARENT_ID, options.parent_observation_id),
+        _content_filter(
+            options.content_field,
+            options.content_match,
+            options.content_text,
+        ),
+    )
+    return tuple(candidate for candidate in candidates if candidate is not None)
+
+
+def _filter(
+    column: ObservationFilterColumn,
+    value: str | None,
+) -> ObservationFilter | None:
+    if value is None:
+        return None
+    return ObservationFilter(
+        column=column,
+        operator=ObservationFilterOperator.EQUALS,
+        value=value,
+    )
+
+
+def _error_filter(error: bool | None) -> ObservationFilter | None:
+    if error is None:
+        return None
+    return ObservationFilter(
+        column=ObservationFilterColumn.LEVEL,
+        operator=(
+            ObservationFilterOperator.EQUALS
+            if error
+            else ObservationFilterOperator.NOT_EQUALS
+        ),
+        value="ERROR",
+    )
+
+
+def _content_filter(
+    field: ObservationContentField | None,
+    match: ObservationContentMatch | None,
+    text: str | None,
+) -> ObservationFilter | None:
+    if field is None or match is None or text is None:
+        return None
+    return ObservationFilter(
+        column=_content_column(field),
+        operator=_content_operator(match),
+        value=text,
+    )
+
+
+def _content_column(field: ObservationContentField) -> ObservationFilterColumn:
+    if field is ObservationContentField.INPUT:
+        return ObservationFilterColumn.INPUT
+    return ObservationFilterColumn.OUTPUT
+
+
+def _content_operator(match: ObservationContentMatch) -> ObservationFilterOperator:
+    if match is ObservationContentMatch.EXACT:
+        return ObservationFilterOperator.EQUALS
+    return ObservationFilterOperator.MATCHES
 
 
 def _utc_text(value: datetime) -> str:

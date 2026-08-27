@@ -20,7 +20,12 @@ from ofw import (
     LangfuseProject,
     TraceWindow,
 )
-from ofw.observability.langfuse.domain import ObservationType, ScoreDataType, ScoreSubjectKind
+from ofw.observability.langfuse.domain import (
+    ObservationType,
+    ScoreDataType,
+    ScoreSubjectKind,
+    TraceId,
+)
 from ofw.observability.langfuse.transport import LangfuseHttpClient
 from ofw.observability.langfuse.wire import ObservationResponseWire, ScoreResponseWire
 
@@ -304,6 +309,33 @@ def test_full_input_and_output_are_preserved_without_redaction_or_truncation(
         "core,basic,time,io,metadata,model,usage,prompt,metrics,trace_context",
     ) in query
     assert input_content.reference.byte_count == len(input_content.text.encode())
+
+
+def test_structural_filters_stay_server_side_and_skip_io(
+    langfuse_server: FixtureServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = LangfuseHttpClient(_project(langfuse_server, monkeypatch))
+    try:
+        client.get_observations(
+            trace_id=TraceId("trace-1"),
+            name="Tool: get_ticket",
+            observation_type=ObservationType.TOOL,
+            error=True,
+            fields=("core", "basic"),
+            limit=6,
+        )
+    finally:
+        client.close()
+
+    request = langfuse_server.state.requests[-1]
+    encoded_filter = next(value for name, value in request.query if name == "filter")
+    assert '"column":"traceId","operator":"=","value":"trace-1"' in encoded_filter
+    assert '"column":"name","operator":"=","value":"Tool: get_ticket"' in encoded_filter
+    assert '"column":"type","operator":"=","value":"TOOL"' in encoded_filter
+    assert '"column":"level","operator":"=","value":"ERROR"' in encoded_filter
+    assert ("fields", "core,basic") in request.query
+    assert langfuse_server.state.writes == 0
 
 
 def test_persisted_observation_and_score_changes_produce_new_digests() -> None:

@@ -42,11 +42,14 @@ from ofw.observability.langfuse.domain import (
     ObservationContentQuery,
     ObservationContentReference,
     ObservationRecord,
+    SessionId,
+    SessionRecord,
     TraceId,
 )
 from ofw.observability.langfuse.service import (
     collect,
     read_observation_content,
+    read_session_observations,
     read_trace_observations,
     search_observation_content,
 )
@@ -87,9 +90,8 @@ class _OfwNamespace:
         revision: HarnessRevision,
         *,
         window: TraceWindow,
-        store_path: Path | None = None,
     ) -> CollectionResult:
-        return collect(revision, window=window, store_path=store_path)
+        return collect(revision, window=window)
 
     def search_observation_content(
         self,
@@ -112,6 +114,14 @@ class _OfwNamespace:
         reference: ObservationContentReference,
     ) -> ObservationContent:
         return read_observation_content(collection, reference)
+
+    def read_session_observations(
+        self,
+        collection: CollectionResult,
+        session_id: str,
+        limit: int,
+    ) -> tuple[ObservationRecord, ...]:
+        return read_session_observations(collection, session_id, limit)
 
 
 ofw = _OfwNamespace()
@@ -153,6 +163,8 @@ __all__ = [
     "RunErrorCode",
     "RunResult",
     "RunStatus",
+    "SessionId",
+    "SessionRecord",
     "Sha256Digest",
     "Subagent",
     "Tool",
@@ -168,6 +180,7 @@ __all__ = [
     "ofw",
     "propagate_attributes",
     "read_observation_content",
+    "read_session_observations",
     "read_trace_observations",
     "search_observation_content",
 ]
