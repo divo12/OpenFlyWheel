@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -24,12 +24,62 @@ from ofw.evaluation.outcome import (
     VerifierId,
 )
 from ofw.observability.langfuse.domain import ScoreId, TraceId
+from ofw.observability.langfuse.trace_query import (
+    GetSpanContextInput,
+    GetTraceSchemaInput,
+    ListTracesInput,
+    QuerySpansInput,
+    SpanFilters,
+    TraceTimeRange,
+)
+from ofw.preparation import (
+    PreparationPhase,
+    PreparationStatus,
+    PrepareWorkspaceInput,
+    WorkspacePreparationObservation,
+    WorkspacePreparationService,
+)
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
 
 class OpenFlywheelMcpModule(Protocol):
     server: FastMCP[None]
     OutcomeToolError: type[Exception]
+
+    def _preparation_service(self) -> WorkspacePreparationService: ...
+
+    def _program_template(self, name: str) -> str: ...
+
+    def prepare_workspace(
+        self,
+        config: PrepareWorkspaceInput,
+    ) -> WorkspacePreparationObservation: ...
+
+    def list_traces(
+        self,
+        session_id: str,
+        time_range: TraceTimeRange,
+        environment: str | None = None,
+        release: str | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+    ) -> object: ...
+
+    def get_trace_schema(self, trace_id: str, cursor: str | None = None) -> object: ...
+
+    def query_spans(
+        self,
+        trace_id: str,
+        filters: SpanFilters | None = None,
+        cursor: str | None = None,
+    ) -> object: ...
+
+    def get_span_context(
+        self,
+        trace_id: str,
+        span_id: str,
+        cursor: str | None = None,
+    ) -> object: ...
 
     def record_outcome(
         self,
@@ -59,13 +109,18 @@ class _FakeOutcomeStore:
         self.close_count += 1
 
 
+class _FakePreparationService:
+    def __init__(self, observation: WorkspacePreparationObservation) -> None:
+        self.observation = observation
+        self.requests: list[PrepareWorkspaceInput] = []
+
+    def prepare(self, request: PrepareWorkspaceInput) -> WorkspacePreparationObservation:
+        self.requests.append(request)
+        return self.observation
+
+
 def _module() -> OpenFlywheelMcpModule:
-    path = Path(__file__).parents[1] / "plugins/openflywheel/scripts/mcp_server.py"
-    spec = importlib.util.spec_from_file_location("openflywheel_mcp", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return cast(OpenFlywheelMcpModule, module)
+    return cast(OpenFlywheelMcpModule, importlib.import_module("ofw.mcp"))
 
 
 def _server() -> FastMCP[None]:
@@ -86,6 +141,7 @@ def test_mcp_exposes_scoped_read_and_outcome_write_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
     assert [tool.name for tool in tools] == [
+        "prepare_workspace",
         "list_traces",
         "get_trace_schema",
         "query_spans",
@@ -93,12 +149,91 @@ def test_mcp_exposes_scoped_read_and_outcome_write_tools() -> None:
         "record_outcome",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
+        (False, False, True),
         (True, False, True),
         (True, False, True),
         (True, False, True),
         (True, False, True),
         (False, False, True),
     )
+
+
+def test_prepare_workspace_passes_the_strict_config_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    expected = WorkspacePreparationObservation(
+        status=PreparationStatus.WARNING,
+        summary="The isolated ITSM baseline is still running.",
+        next_actions=("Poll prepare_workspace with the identical request.",),
+        artifacts=(str(tmp_path / "worktree"),),
+        preparation_id="demo",
+        phase=PreparationPhase.RUNNING,
+        branch_name="ofw/demo",
+        worktree_path=tmp_path / "worktree",
+        next_poll_after_seconds=30,
+    )
+    service = _FakePreparationService(expected)
+    monkeypatch.setattr(module, "_preparation_service", lambda: service)
+    config = PrepareWorkspaceInput(
+        experiment_id="demo",
+        harness_root=tmp_path / "harness",
+        base_ref="HEAD",
+        worktree_parent=tmp_path / "worktrees",
+        benchmark_root=tmp_path / "itsm",
+        harbor_executable=tmp_path / "harbor",
+        harbor_config=Path("config.json"),
+        expected_task_count=1,
+        editable_paths=(Path("prompt.md"),),
+        goal="Improve verifier-backed ITSM quality.",
+        quality_target=1.0,
+        max_iterations=5,
+        no_improvement_limit=3,
+        max_cost_per_task_usd=1.0,
+        max_latency_seconds=600.0,
+        max_baseline_seconds=3600,
+    )
+
+    result = module.prepare_workspace(config)
+
+    assert result == expected
+    assert service.requests == [config]
+
+
+def test_trace_tools_construct_their_typed_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _module()
+    captured: list[object] = []
+    expected = object()
+
+    def execute(query: object, operation: object) -> object:
+        captured.append(query)
+        return expected
+
+    monkeypatch.setattr(module, "_execute", execute)
+    time_range = TraceTimeRange(
+        start_time=datetime(2026, 8, 27, 10, 0, tzinfo=UTC),
+        end_time=datetime(2026, 8, 27, 11, 0, tzinfo=UTC),
+    )
+    filters = SpanFilters(tool_name="terminal", max_results=3)
+
+    assert module.list_traces("session-1", time_range, "itsm-bench", "release-1") is expected
+    assert module.get_trace_schema("trace-1") is expected
+    assert module.query_spans("trace-1", filters) is expected
+    assert module.get_span_context("trace-1", "span-1") is expected
+    assert isinstance(captured[0], ListTracesInput)
+    assert isinstance(captured[1], GetTraceSchemaInput)
+    assert isinstance(captured[2], QuerySpansInput)
+    assert isinstance(captured[3], GetSpanContextInput)
+
+
+def test_preparation_service_loads_packaged_program_templates() -> None:
+    module = _module()
+
+    service = module._preparation_service()
+
+    assert isinstance(service, WorkspacePreparationService)
+    assert module._program_template("base.md").startswith("# OpenFlywheel Agent Program")
 
 
 def test_record_outcome_maps_the_strict_contract_before_writing(
