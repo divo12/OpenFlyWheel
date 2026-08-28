@@ -71,6 +71,7 @@ uv run pytest --cov=ofw --cov-report=term-missing --cov-fail-under=90 -q
 uvx --from radon radon cc -s -a src tests plugins/openflywheel/scripts/mcp_server.py
 python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/openflywheel/skills/trace-query-planner
 python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/openflywheel/skills/outcome-recorder
+python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py plugins/openflywheel/skills/failure-miner
 python3 ~/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py plugins/openflywheel
 ```
 

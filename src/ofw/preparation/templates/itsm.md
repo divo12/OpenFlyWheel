@@ -38,6 +38,12 @@ Use the trace tools in the smallest sufficient sequence:
    deterministic text filter.
 4. `get_span_context` retrieves bounded raw context only for a selected span.
 
+For every verifier-backed failed outcome, use `$failure-miner` to locate the earliest
+unrecovered causal observation and call `record_failure`. Retain the returned compact artifact
+under `.workspace/failures/` before forming a harness hypothesis. Record an inconclusive
+diagnosis when the evidence is insufficient. Do not copy Langfuse trace payloads into the
+workspace; Langfuse remains their source of truth.
+
 An intermediate tool error is evidence, not an outcome failure, when the agent recovered
 and the verifier passed. A technically clean trajectory is still a failure when the ITSM
 verifier shows that the required environment state was not achieved.
