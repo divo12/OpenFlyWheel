@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openflywheel"
-version = "0.1.0"
+version = "0.4.0"
 description = "A governed self-improving agent harness"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,9 @@ dependencies = [
     "langfuse>=4.7,<5",
     "pydantic>=2.10,<3",
 ]
+
+[project.scripts]
+openflywheel-mcp = "ofw.mcp:main"
 
 [project.optional-dependencies]
 dev = [
