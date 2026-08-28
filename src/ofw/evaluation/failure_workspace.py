@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Never, Protocol
 from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -24,6 +24,7 @@ _ARTIFACT_LIMIT_BYTES = 64 * 1024
 _WORKSPACE_DIRECTORY = ".workspace"
 _FAILURE_DIRECTORY = "failures"
 _IGNORE_CONTENT = "*\n"
+_WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
 
 Identifier = Annotated[
     str,
@@ -175,6 +176,7 @@ class FailureArtifact(StrictModel):
             inconclusive_reason=diagnosis.inconclusive_reason,
         )
 
+
 @dataclass(frozen=True, slots=True)
 class FailureArtifactReceipt:
     artifact_id: str
@@ -229,8 +231,6 @@ class FileFailureWorkspace:
         artifact_id = _artifact_id(diagnosis)
         try:
             return self._store(root, diagnosis, artifact_id)
-        except FailureWorkspaceFailure:
-            raise
         except (OSError, RuntimeError, UnicodeError):
             raise FailureWorkspaceFailure(
                 FailureWorkspaceErrorCode.WRITE_FAILED,
@@ -286,20 +286,21 @@ def _artifact_id(diagnosis: FailureDiagnosis) -> str:
 
 
 def _prepared_root(root: Path) -> Path:
-    try:
-        resolved = root.resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise FailureWorkspaceFailure(
-            FailureWorkspaceErrorCode.INVALID_WORKSPACE,
-            "workspace_root",
-        ) from None
-    markers = (resolved / "PROGRAM.md", resolved / "experiment_config.yaml")
-    if not resolved.is_dir() or any(not marker.is_file() for marker in markers):
-        raise FailureWorkspaceFailure(
-            FailureWorkspaceErrorCode.INVALID_WORKSPACE,
-            "workspace_root",
-        )
+    resolved = _resolve_root(root)
+    if not _is_prepared_root(resolved):
+        _invalid_workspace("workspace_root")
     return resolved
+
+
+def _resolve_root(root: Path) -> Path:
+    try:
+        return root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        _invalid_workspace("workspace_root")
+
+
+def _is_prepared_root(root: Path) -> bool:
+    return root.is_dir() and all((root / name).is_file() for name in _WORKSPACE_MARKERS)
 
 
 def _workspace_paths(root: Path) -> tuple[Path, Path]:
@@ -307,26 +308,31 @@ def _workspace_paths(root: Path) -> tuple[Path, Path]:
     failures = workspace / _FAILURE_DIRECTORY
     _require_contained(root, workspace.resolve(strict=False))
     _require_contained(root, failures.resolve(strict=False))
-    if workspace.exists() and not workspace.is_dir():
-        raise FailureWorkspaceFailure(
-            FailureWorkspaceErrorCode.INVALID_WORKSPACE,
-            _WORKSPACE_DIRECTORY,
-        )
+    _require_directory_if_present(workspace)
     return workspace, failures
+
+
+def _require_directory_if_present(path: Path) -> None:
+    if path.exists() and not path.is_dir():
+        _invalid_workspace(_WORKSPACE_DIRECTORY)
 
 
 def _require_contained(root: Path, path: Path) -> None:
     try:
         path.relative_to(root)
     except ValueError:
-        raise FailureWorkspaceFailure(
-            FailureWorkspaceErrorCode.INVALID_WORKSPACE,
-            _WORKSPACE_DIRECTORY,
-        ) from None
+        _invalid_workspace(_WORKSPACE_DIRECTORY)
+
+
+def _invalid_workspace(subject: str) -> Never:
+    raise FailureWorkspaceFailure(
+        FailureWorkspaceErrorCode.INVALID_WORKSPACE,
+        subject,
+    ) from None
 
 
 def _validate_artifact_size(text: str) -> None:
-    if len(text.encode()) > _ARTIFACT_LIMIT_BYTES:
+    if len(text.encode("utf-8")) > _ARTIFACT_LIMIT_BYTES:
         raise FailureWorkspaceFailure(
             FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE,
             str(_ARTIFACT_LIMIT_BYTES),
@@ -344,16 +350,21 @@ def _prepare_workspace_directories(root: Path, workspace: Path, failures: Path) 
 
 
 def _validate_existing(path: Path, expected: str, artifact_id: str) -> None:
+    actual = _read_existing(path, artifact_id)
+    if actual != expected:
+        raise FailureWorkspaceFailure(
+            FailureWorkspaceErrorCode.ARTIFACT_CONFLICT,
+            artifact_id,
+        )
+
+
+def _read_existing(path: Path, artifact_id: str) -> str:
     if path.stat().st_size > _ARTIFACT_LIMIT_BYTES:
         raise FailureWorkspaceFailure(
             FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE,
             artifact_id,
         )
-    if path.read_text(encoding="utf-8") != expected:
-        raise FailureWorkspaceFailure(
-            FailureWorkspaceErrorCode.ARTIFACT_CONFLICT,
-            artifact_id,
-        )
+    return path.read_text(encoding="utf-8")
 
 
 def _atomic_write(path: Path, text: str) -> None:

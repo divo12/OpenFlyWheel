@@ -129,15 +129,22 @@ def test_failure_workspace_is_ignored_runtime_state(tmp_path: Path) -> None:
     assert _git(root, "status", "--short") == ""
 
 
-def test_recording_is_idempotent_and_conflicting_rewrites_fail_closed(tmp_path: Path) -> None:
+def test_recording_is_idempotent(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    service = FailureWorkspaceService(FileFailureWorkspace())
+    first = service.record(_request(root))
+    artifact_path = root / first.relative_path
+
+    assert service.record(_request(root)) == first
+    assert len(tuple(artifact_path.parent.glob("*.json"))) == 1
+
+
+def test_conflicting_rewrites_fail_closed(tmp_path: Path) -> None:
     root = _prepared_workspace(tmp_path)
     service = FailureWorkspaceService(FileFailureWorkspace())
     first = service.record(_request(root))
     artifact_path = root / first.relative_path
     original = artifact_path.read_text(encoding="utf-8")
-
-    assert service.record(_request(root)) == first
-    assert len(tuple(artifact_path.parent.glob("*.json"))) == 1
 
     with pytest.raises(FailureWorkspaceFailure) as raised:
         service.record(_request(root, "A different diagnosis."))
@@ -176,8 +183,7 @@ def test_record_input_rejects_relative_workspace_and_extra_fields(tmp_path: Path
     assert RecordFailureInput.model_validate_json(request.model_dump_json()) == request
     with pytest.raises(ValidationError):
         RecordFailureInput.model_validate_json(
-            request.model_dump_json().removesuffix("}")
-            + ',"unexpected":"field"}'
+            request.model_dump_json().removesuffix("}") + ',"unexpected":"field"}'
         )
     with pytest.raises(ValidationError):
         RecordFailureInput(
