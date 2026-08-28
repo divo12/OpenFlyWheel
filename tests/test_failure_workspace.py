@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 from pydantic import ValidationError
 
+import ofw.evaluation.failure_workspace as failure_workspace_module
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
 from ofw.evaluation.failure_workspace import (
     FailedOutcomeInput,
@@ -23,6 +26,7 @@ from ofw.evaluation.failure_workspace import (
 )
 
 _EVALUATED_AT = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)
+_ARTIFACT_LIMIT_BYTES = 64 * 1024
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -97,6 +101,45 @@ def _expected_artifact(artifact_id: str) -> FailureArtifact:
     )
 
 
+def _oversized_request(root: Path) -> RecordFailureInput:
+    base = _request(root)
+    large_text = "🧪" * 4000
+    outcome = FailedOutcomeInput(
+        trace_id=base.outcome.trace_id,
+        task_id=base.outcome.task_id,
+        verifier_id=base.outcome.verifier_id,
+        evaluated_at=base.outcome.evaluated_at,
+        score=base.outcome.score,
+        evidence=tuple("🧪" * 1024 for _ in range(10)),
+        outcome_score_id=base.outcome.outcome_score_id,
+    )
+    return RecordFailureInput(
+        workspace_root=base.workspace_root,
+        outcome=outcome,
+        evidence_status=base.evidence_status,
+        issue_type=base.issue_type,
+        expected_outcome=large_text,
+        actual_outcome=large_text,
+        critical_observation_id=base.critical_observation_id,
+        evidence_observation_ids=base.evidence_observation_ids,
+        root_cause=large_text,
+        counterfactual_action=large_text,
+        inconclusive_reason=base.inconclusive_reason,
+    )
+
+
+def _record_after_barrier(
+    service: FailureWorkspaceService,
+    request: RecordFailureInput,
+    barrier: Barrier,
+) -> FailureRecordObservation | FailureWorkspaceErrorCode:
+    barrier.wait()
+    try:
+        return service.record(request)
+    except FailureWorkspaceFailure as error:
+        return error.code
+
+
 def test_records_one_typed_failure_without_dirtying_the_git_worktree(
     tmp_path: Path,
 ) -> None:
@@ -153,6 +196,51 @@ def test_conflicting_rewrites_fail_closed(tmp_path: Path) -> None:
     assert artifact_path.read_text(encoding="utf-8") == original
 
 
+def test_concurrent_conflicting_rewrites_publish_exactly_one_diagnosis(
+    tmp_path: Path,
+) -> None:
+    root = _prepared_workspace(tmp_path)
+    service = FailureWorkspaceService(FileFailureWorkspace())
+    barrier = Barrier(2)
+    requests = (_request(root), _request(root, "A concurrent diagnosis."))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = tuple(
+            executor.submit(_record_after_barrier, service, request, barrier)
+            for request in requests
+        )
+    results = tuple(future.result() for future in futures)
+
+    successes = tuple(
+        result for result in results if isinstance(result, FailureRecordObservation)
+    )
+    assert len(successes) == 1
+    assert results.count(FailureWorkspaceErrorCode.ARTIFACT_CONFLICT) == 1
+
+
+def test_oversized_existing_artifact_fails_closed(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    service = FailureWorkspaceService(FileFailureWorkspace())
+    first = service.record(_request(root))
+    artifact_path = root / first.relative_path
+    artifact_path.write_bytes(b"x" * (_ARTIFACT_LIMIT_BYTES + 1))
+
+    with pytest.raises(FailureWorkspaceFailure) as raised:
+        service.record(_request(root))
+
+    assert raised.value.code is FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE
+
+
+def test_oversized_new_artifact_fails_before_workspace_creation(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+
+    with pytest.raises(FailureWorkspaceFailure) as raised:
+        FailureWorkspaceService(FileFailureWorkspace()).record(_oversized_request(root))
+
+    assert raised.value.code is FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE
+    assert not (root / ".workspace").exists()
+
+
 def test_recording_requires_a_prepared_workspace(tmp_path: Path) -> None:
     root = tmp_path / "ordinary-directory"
     root.mkdir()
@@ -174,6 +262,32 @@ def test_workspace_symlink_cannot_escape_the_prepared_root(tmp_path: Path) -> No
         FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
 
     assert raised.value.code is FailureWorkspaceErrorCode.INVALID_WORKSPACE
+    assert tuple(outside.iterdir()) == ()
+
+
+def test_symlink_swap_after_validation_cannot_redirect_the_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepared_workspace(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original = failure_workspace_module._prepare_workspace_directories
+
+    def prepare_then_swap(prepared_root: Path, workspace: Path, failures: Path) -> None:
+        original(prepared_root, workspace, failures)
+        failures.rmdir()
+        failures.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(
+        failure_workspace_module,
+        "_prepare_workspace_directories",
+        prepare_then_swap,
+    )
+
+    with pytest.raises(FailureWorkspaceFailure):
+        FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
+
     assert tuple(outside.iterdir()) == ()
 
 

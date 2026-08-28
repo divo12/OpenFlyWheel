@@ -47,9 +47,12 @@ and state the missing evidence in `inconclusive_reason`. Never force a category.
 ## Record
 
 Call `record_failure` exactly once with the prepared worktree as `workspace_root`, the exact
-failed outcome receipt, expected and actual outcomes, and cited observation IDs. Retain the
-returned `.workspace/failures/<artifact-id>.json` path. The artifact is compact diagnosis
-state; Langfuse remains the source of trace content.
+failed outcome receipt, `evidence_status`, expected and actual outcomes, and cited observation
+IDs. A supported diagnosis must also pass `issue_type`, `critical_observation_id`,
+`root_cause`, and `counterfactual_action`; an inconclusive diagnosis passes only its
+`inconclusive_reason` for those conditional fields. Retain the returned
+`.workspace/failures/<artifact-id>.json` path. The artifact is compact diagnosis state;
+Langfuse remains the source of trace content.
 
 Do not call `record_outcome`, modify Langfuse, copy trace payloads locally, cluster failures,
 generate datasets, recommend a harness component, edit the harness, or propose a repair while

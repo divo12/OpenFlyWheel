@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import os
-import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Literal, Never, Protocol
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -25,6 +26,9 @@ _WORKSPACE_DIRECTORY = ".workspace"
 _FAILURE_DIRECTORY = "failures"
 _IGNORE_CONTENT = "*\n"
 _WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_CREATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+_READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
 
 Identifier = Annotated[
     str,
@@ -246,16 +250,15 @@ class FileFailureWorkspace:
         prepared_root = _prepared_root(root)
         workspace, failures = _workspace_paths(prepared_root)
         artifact = FailureArtifact.from_diagnosis(artifact_id, diagnosis)
-        text = artifact.model_dump_json(indent=2) + "\n"
-        _validate_artifact_size(text)
+        content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
+        _validate_artifact_size(content)
         _prepare_workspace_directories(prepared_root, workspace, failures)
         path = failures / f"{artifact_id}.json"
         receipt = FailureArtifactReceipt(artifact_id, path.relative_to(prepared_root))
-        if path.exists():
-            _validate_existing(path, text, artifact_id)
-            return receipt
-        # ponytail: single-writer workspace; add per-artifact locks if concurrent miners appear.
-        _atomic_write(path, text)
+        with _directory_handle(failures) as directory:
+            _require_directory_identity(directory, failures)
+            _publish_or_validate(directory, path.name, content, artifact_id)
+            _require_directory_identity(directory, failures)
         return receipt
 
 
@@ -331,8 +334,8 @@ def _invalid_workspace(subject: str) -> Never:
     ) from None
 
 
-def _validate_artifact_size(text: str) -> None:
-    if len(text.encode("utf-8")) > _ARTIFACT_LIMIT_BYTES:
+def _validate_artifact_size(content: bytes) -> None:
+    if len(content) > _ARTIFACT_LIMIT_BYTES:
         raise FailureWorkspaceFailure(
             FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE,
             str(_ARTIFACT_LIMIT_BYTES),
@@ -343,14 +346,67 @@ def _prepare_workspace_directories(root: Path, workspace: Path, failures: Path) 
     failures.mkdir(parents=True, exist_ok=True)
     _require_contained(root, workspace.resolve(strict=True))
     _require_contained(root, failures.resolve(strict=True))
-    ignore_path = workspace / ".gitignore"
-    _require_contained(workspace, ignore_path.resolve(strict=False))
-    if not ignore_path.exists():
-        _atomic_write(ignore_path, _IGNORE_CONTENT)
+    with _directory_handle(workspace) as directory:
+        _require_directory_identity(directory, workspace)
+        _write_ignore_file(directory)
 
 
-def _validate_existing(path: Path, expected: str, artifact_id: str) -> None:
-    actual = _read_existing(path, artifact_id)
+def _write_ignore_file(directory: int) -> None:
+    try:
+        _write_new_file(directory, ".gitignore", _IGNORE_CONTENT.encode("utf-8"))
+    except FileExistsError:
+        return
+
+
+def _publish_or_validate(
+    directory: int,
+    name: str,
+    expected: bytes,
+    artifact_id: str,
+) -> None:
+    try:
+        _publish_new_file(directory, name, expected)
+    except FileExistsError:
+        _validate_existing(directory, name, expected, artifact_id)
+
+
+def _publish_new_file(directory: int, name: str, content: bytes) -> None:
+    temporary_name = f".ofw-{uuid4().hex}.tmp"
+    try:
+        _write_new_file(directory, temporary_name, content)
+        os.link(
+            temporary_name,
+            name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+            follow_symlinks=False,
+        )
+    finally:
+        _unlink_if_present(directory, temporary_name)
+
+
+def _write_new_file(directory: int, name: str, content: bytes) -> None:
+    descriptor = os.open(name, _CREATE_FILE_FLAGS, 0o600, dir_fd=directory)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _unlink_if_present(directory: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        return
+
+
+def _validate_existing(
+    directory: int,
+    name: str,
+    expected: bytes,
+    artifact_id: str,
+) -> None:
+    actual = _read_existing(directory, name, artifact_id)
     if actual != expected:
         raise FailureWorkspaceFailure(
             FailureWorkspaceErrorCode.ARTIFACT_CONFLICT,
@@ -358,23 +414,29 @@ def _validate_existing(path: Path, expected: str, artifact_id: str) -> None:
         )
 
 
-def _read_existing(path: Path, artifact_id: str) -> str:
-    if path.stat().st_size > _ARTIFACT_LIMIT_BYTES:
+def _read_existing(directory: int, name: str, artifact_id: str) -> bytes:
+    descriptor = os.open(name, _READ_FILE_FLAGS, dir_fd=directory)
+    with os.fdopen(descriptor, "rb") as stream:
+        content = stream.read(_ARTIFACT_LIMIT_BYTES + 1)
+    if len(content) > _ARTIFACT_LIMIT_BYTES:
         raise FailureWorkspaceFailure(
             FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE,
             artifact_id,
         )
-    return path.read_text(encoding="utf-8")
+    return content
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(dir=path.parent, prefix=".ofw-")
-    temporary = Path(temporary_name)
+@contextmanager
+def _directory_handle(path: Path) -> Iterator[int]:
+    descriptor = os.open(path, _DIRECTORY_FLAGS)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(text)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        yield descriptor
     finally:
-        temporary.unlink(missing_ok=True)
+        os.close(descriptor)
+
+
+def _require_directory_identity(descriptor: int, path: Path) -> None:
+    opened = os.fstat(descriptor)
+    current = os.stat(path, follow_symlinks=False)
+    if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+        raise OSError("workspace directory changed during failure recording")

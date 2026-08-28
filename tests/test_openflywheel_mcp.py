@@ -463,4 +463,4 @@ def test_record_failure_preserves_typed_workspace_errors(
         module.record_failure(request)
 
     assert raised.value.code is FailureWorkspaceErrorCode.WRITE_FAILED
-    assert "secret" not in str(raised.value)
+    assert str(raised.value) == f"write_failed: {_FAILURE_ARTIFACT_ID}"
