@@ -1,11 +1,28 @@
 {
   "mcpServers": {
     "openflywheel": {
-      "command": "sh",
+      "command": "uvx",
       "args": [
-        "-c",
-        "exec uv run --project \"${OPENFLYWHEEL_ROOT:-$PWD}\" --extra plugin python \"$PLUGIN_ROOT/scripts/mcp_server.py\""
-      ]
+        "--from",
+        "git+https://github.com/divo12/OpenFlyWheel.git@6319f24",
+        "--with",
+        "mcp>=1.13,<2",
+        "openflywheel-mcp"
+      ],
+      "env_vars": [
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_BASE_URL",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+        "HERMES_LANGFUSE_PUBLIC_KEY",
+        "HERMES_LANGFUSE_SECRET_KEY",
+        "HERMES_LANGFUSE_BASE_URL"
+      ],
+      "startup_timeout_sec": 120,
+      "tool_timeout_sec": 120
     }
   }
 }
