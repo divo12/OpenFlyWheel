@@ -80,6 +80,7 @@ class FailureDiagnosis:
         _validate_optional_text(self.counterfactual_action, "counterfactual_action")
         _validate_optional_text(self.inconclusive_reason, "inconclusive_reason")
         _validate_evidence(self)
+        _validate_issue_type(self)
         _validate_status_fields(self)
 
 
@@ -122,11 +123,20 @@ def _validate_evidence(diagnosis: FailureDiagnosis) -> None:
         raise FailureDiagnosisError(FailureErrorCode.INVALID_EVIDENCE, "observations")
 
 
+def _validate_issue_type(diagnosis: FailureDiagnosis) -> None:
+    issue_type = diagnosis.issue_type
+    if issue_type is not None and not isinstance(issue_type, FailureType):
+        raise FailureDiagnosisError(FailureErrorCode.INVALID_STATUS_FIELDS, "issue_type")
+
+
 def _validate_status_fields(diagnosis: FailureDiagnosis) -> None:
     if diagnosis.evidence_status is FailureEvidenceStatus.SUPPORTED:
         _validate_supported(diagnosis)
         return
-    _validate_inconclusive(diagnosis)
+    if diagnosis.evidence_status is FailureEvidenceStatus.INCONCLUSIVE:
+        _validate_inconclusive(diagnosis)
+        return
+    raise FailureDiagnosisError(FailureErrorCode.INVALID_STATUS_FIELDS, "evidence_status")
 
 
 def _validate_supported(diagnosis: FailureDiagnosis) -> None:

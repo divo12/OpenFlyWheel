@@ -88,6 +88,15 @@ def test_supported_diagnosis_requires_complete_attribution() -> None:
     assert raised.value.code is FailureErrorCode.INVALID_STATUS_FIELDS
 
 
+def test_supported_diagnosis_rejects_an_inconclusive_reason() -> None:
+    diagnosis = _supported_diagnosis()
+
+    with pytest.raises(FailureDiagnosisError) as raised:
+        replace(diagnosis, inconclusive_reason="Evidence is incomplete.")
+
+    assert raised.value.code is FailureErrorCode.INVALID_STATUS_FIELDS
+
+
 def test_supported_diagnosis_requires_cited_critical_observation() -> None:
     diagnosis = _supported_diagnosis()
 
@@ -129,6 +138,33 @@ def test_inconclusive_diagnosis_rejects_a_claimed_issue_type() -> None:
             counterfactual_action=None,
             inconclusive_reason="The trace is incomplete.",
         )
+
+    assert raised.value.code is FailureErrorCode.INVALID_STATUS_FIELDS
+
+
+def test_unknown_evidence_status_is_rejected() -> None:
+    diagnosis = _supported_diagnosis()
+
+    with pytest.raises(FailureDiagnosisError) as raised:
+        replace(
+            diagnosis,
+            evidence_status="unknown",  # type: ignore[arg-type]
+            issue_type=None,
+            critical_observation_id=None,
+            evidence_observation_ids=(),
+            root_cause=None,
+            counterfactual_action=None,
+            inconclusive_reason="The trace is incomplete.",
+        )
+
+    assert raised.value.code is FailureErrorCode.INVALID_STATUS_FIELDS
+
+
+def test_unknown_issue_type_is_rejected() -> None:
+    diagnosis = _supported_diagnosis()
+
+    with pytest.raises(FailureDiagnosisError) as raised:
+        replace(diagnosis, issue_type="unknown")  # type: ignore[arg-type]
 
     assert raised.value.code is FailureErrorCode.INVALID_STATUS_FIELDS
 
@@ -191,6 +227,16 @@ def test_evidence_count_has_a_hard_bound() -> None:
         (
             ScoreId("score-1"),
             ObservationId("invalid observation"),
+            FailureErrorCode.INVALID_OBSERVATION_ID,
+        ),
+        (
+            ScoreId("s" * 257),
+            ObservationId("observation-1"),
+            FailureErrorCode.INVALID_OUTCOME_SCORE_ID,
+        ),
+        (
+            ScoreId("score-1"),
+            ObservationId("o" * 257),
             FailureErrorCode.INVALID_OBSERVATION_ID,
         ),
     ],
