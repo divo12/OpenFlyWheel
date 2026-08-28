@@ -32,6 +32,14 @@ def test_namespace_exports_authoritative_outcome_contract() -> None:
     assert "VerifierId" in package.__all__
 
 
+def test_namespace_exports_failure_diagnosis_contract() -> None:
+    assert "FailureDiagnosis" in package.__all__
+    assert "FailureDiagnosisError" in package.__all__
+    assert "FailureErrorCode" in package.__all__
+    assert "FailureEvidenceStatus" in package.__all__
+    assert "FailureType" in package.__all__
+
+
 def test_namespace_exports_workspace_preparation_contract() -> None:
     assert "PreparationErrorCode" in package.__all__
     assert "PreparationPhase" in package.__all__
