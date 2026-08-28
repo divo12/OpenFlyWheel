@@ -303,7 +303,7 @@ def _resolve_root(root: Path) -> Path:
 
 
 def _is_prepared_root(root: Path) -> bool:
-    return root.is_dir() and all((root / name).is_file() for name in _WORKSPACE_MARKERS)
+    return all((root / name).is_file() for name in _WORKSPACE_MARKERS)
 
 
 def _workspace_paths(root: Path) -> tuple[Path, Path]:

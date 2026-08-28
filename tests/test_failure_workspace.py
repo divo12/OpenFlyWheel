@@ -27,6 +27,7 @@ from ofw.evaluation.failure_workspace import (
 
 _EVALUATED_AT = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)
 _ARTIFACT_LIMIT_BYTES = 64 * 1024
+RecordResult = FailureRecordObservation | FailureWorkspaceErrorCode
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -140,6 +141,22 @@ def _record_after_barrier(
         return error.code
 
 
+def _run_concurrent_requests(
+    service: FailureWorkspaceService,
+    first: RecordFailureInput,
+    second: RecordFailureInput,
+    barrier: Barrier,
+) -> tuple[RecordResult, RecordResult]:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_result = executor.submit(_record_after_barrier, service, first, barrier)
+        second_result = executor.submit(_record_after_barrier, service, second, barrier)
+    return first_result.result(), second_result.result()
+
+
+def _success_count(results: tuple[RecordResult, ...]) -> int:
+    return sum(isinstance(result, FailureRecordObservation) for result in results)
+
+
 def test_records_one_typed_failure_without_dirtying_the_git_worktree(
     tmp_path: Path,
 ) -> None:
@@ -204,17 +221,9 @@ def test_concurrent_conflicting_rewrites_publish_exactly_one_diagnosis(
     barrier = Barrier(2)
     requests = (_request(root), _request(root, "A concurrent diagnosis."))
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        futures = tuple(
-            executor.submit(_record_after_barrier, service, request, barrier)
-            for request in requests
-        )
-    results = tuple(future.result() for future in futures)
+    results = _run_concurrent_requests(service, requests[0], requests[1], barrier)
 
-    successes = tuple(
-        result for result in results if isinstance(result, FailureRecordObservation)
-    )
-    assert len(successes) == 1
+    assert _success_count(results) == 1
     assert results.count(FailureWorkspaceErrorCode.ARTIFACT_CONFLICT) == 1
 
 
