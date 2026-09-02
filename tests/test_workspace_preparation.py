@@ -523,6 +523,49 @@ def test_prepare_workspace_input_rejects_nul_and_oversized_editable_paths(tmp_pa
             )
 
 
+def test_prepare_workspace_input_rejects_oversized_raw_path_before_normalization(
+    tmp_path: Path,
+) -> None:
+    redundant = "./" * 600 + "prompt.md"
+    payload = f"""{{
+  "experiment_id": "demo",
+  "harness_root": "{tmp_path}",
+  "base_ref": "HEAD",
+  "worktree_parent": "{tmp_path}",
+  "benchmark_root": "{tmp_path}",
+  "harbor_executable": "{tmp_path / 'harbor'}",
+  "harbor_config": "config.json",
+  "expected_task_count": 1,
+  "editable_paths": ["{redundant}"],
+  "goal": "Improve.",
+  "quality_target": 1.0,
+  "max_iterations": 1,
+  "no_improvement_limit": 1,
+  "max_baseline_seconds": 60
+}}"""
+
+    with pytest.raises(ValidationError):
+        PrepareWorkspaceInput.model_validate_json(payload)
+
+
+def test_legacy_preparation_state_requires_a_fresh_preparation_id(tmp_path: Path) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    control = GitWorktreeGateway().control_directory(harness_root, request.experiment_id)
+    control.mkdir(parents=True)
+    (control / "state.json").write_text('{"schema_version":1}\n', encoding="utf-8")
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED
+    assert result.retry is not None and "new experiment id" in result.retry.lower()
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
 def test_prepare_workspace_input_accepts_json_path_strings(tmp_path: Path) -> None:
     config = PrepareWorkspaceInput.model_validate_json(
         f"""{{
