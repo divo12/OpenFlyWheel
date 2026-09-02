@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -81,7 +82,7 @@ class FileWorkspaceArtifactStore:
     ) -> WorkspaceArtifactReceipt:
         prepared_root = _prepared_root(root)
         workspace, artifacts = _workspace_paths(prepared_root, self.directory_name)
-        _validate_artifact_size(content, str(_ARTIFACT_LIMIT_BYTES))
+        _validate_artifact_size(content, artifact_id)
         identity = _prepare_workspace_directories(prepared_root, workspace, artifacts)
         path = artifacts / f"{artifact_id}.json"
         receipt = WorkspaceArtifactReceipt(artifact_id, path.relative_to(prepared_root))
@@ -109,9 +110,14 @@ def _workspace_paths(root: Path, directory_name: str) -> tuple[Path, Path]:
     artifacts = workspace / directory_name
     _require_contained(root, workspace.resolve(strict=False))
     _require_contained(root, artifacts.resolve(strict=False))
-    if workspace.exists() and not workspace.is_dir():
-        _invalid_workspace(_WORKSPACE_DIRECTORY)
+    _require_directory_if_present(workspace, _WORKSPACE_DIRECTORY)
+    _require_directory_if_present(artifacts, directory_name)
     return workspace, artifacts
+
+
+def _require_directory_if_present(path: Path, subject: str) -> None:
+    if path.is_symlink() or (path.exists() and not path.is_dir()):
+        _invalid_workspace(subject)
 
 
 def _require_contained(root: Path, path: Path) -> None:
@@ -158,7 +164,9 @@ def _write_ignore_file(directory: int) -> None:
     try:
         _write_new_file(directory, ".gitignore", _IGNORE_CONTENT)
     except FileExistsError:
-        return
+        content = _read_existing(directory, ".gitignore", ".gitignore")
+        if b"*" not in {line.strip() for line in content.splitlines()}:
+            _invalid_workspace(".workspace/.gitignore")
 
 
 def _publish_or_validate(
@@ -214,6 +222,12 @@ def _unlink_if_present(directory: int, name: str) -> None:
 
 def _read_existing(directory: int, name: str, artifact_id: str) -> bytes:
     descriptor = os.open(name, _READ_FILE_FLAGS, dir_fd=directory)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("workspace artifact is not a regular file")
+    except OSError:
+        os.close(descriptor)
+        raise
     with os.fdopen(descriptor, "rb") as stream:
         content = stream.read(_ARTIFACT_LIMIT_BYTES + 1)
     _validate_artifact_size(content, artifact_id)

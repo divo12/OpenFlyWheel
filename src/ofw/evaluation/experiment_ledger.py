@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Protocol, Self
 from uuid import NAMESPACE_URL, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ofw.contracts import GitCommit
 from ofw.evaluation.local_workspace import (
@@ -18,9 +19,9 @@ from ofw.evaluation.local_workspace import (
 )
 from ofw.observability.langfuse.domain import ScoreId
 
-_IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@/-]*"
-_REVISION_PATTERN = r"[0-9a-f]{40}"
-_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$"
+_REVISION_PATTERN = r"^[0-9a-f]{40}$"
+_ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _TEXT_LIMIT = 4000
 _RECEIPT_LIMIT = 500
 
@@ -37,6 +38,7 @@ class ExperimentDecision(StrEnum):
 
 
 class ExperimentLedgerErrorCode(StrEnum):
+    INVALID_ATTEMPT = "invalid_attempt"
     INVALID_WORKSPACE = "invalid_workspace"
     ARTIFACT_CONFLICT = "artifact_conflict"
     ARTIFACT_TOO_LARGE = "artifact_too_large"
@@ -56,10 +58,24 @@ class ExperimentLedgerFailure(Exception):
 class ExperimentId:
     value: str
 
+    def __post_init__(self) -> None:
+        if len(self.value) > 256 or re.fullmatch(_IDENTIFIER_PATTERN, self.value) is None:
+            raise ExperimentLedgerFailure(
+                ExperimentLedgerErrorCode.INVALID_ATTEMPT,
+                "experiment_id",
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class ExperimentRunId:
     value: str
+
+    def __post_init__(self) -> None:
+        if len(self.value) > 256 or re.fullmatch(_IDENTIFIER_PATTERN, self.value) is None:
+            raise ExperimentLedgerFailure(
+                ExperimentLedgerErrorCode.INVALID_ATTEMPT,
+                "run_id",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +91,26 @@ class ExperimentAttempt:
     rejection_reason: str | None
     decided_at: datetime
 
+    def __post_init__(self) -> None:
+        try:
+            _ExperimentFields(
+                experiment_id=self.experiment_id.value,
+                run_id=self.run_id.value,
+                parent_revision=self.parent_revision.value,
+                hypothesis=self.hypothesis,
+                verifier_receipts=tuple(receipt.value for receipt in self.verifier_receipts),
+                gate_decision=self.gate_decision,
+                total_cost_usd=self.total_cost_usd,
+                latency_seconds=self.latency_seconds,
+                rejection_reason=self.rejection_reason,
+                decided_at=self.decided_at,
+            )
+        except ValidationError:
+            raise ExperimentLedgerFailure(
+                ExperimentLedgerErrorCode.INVALID_ATTEMPT,
+                "attempt",
+            ) from None
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, allow_inf_nan=False)
@@ -89,7 +125,7 @@ class _ExperimentFields(StrictModel):
     gate_decision: ExperimentDecision
     total_cost_usd: float | None = Field(strict=True, default=None, ge=0.0)
     latency_seconds: float | None = Field(strict=True, default=None, ge=0.0)
-    rejection_reason: LedgerText | None
+    rejection_reason: LedgerText | None = None
     decided_at: datetime
 
     @field_validator("hypothesis", "rejection_reason")
