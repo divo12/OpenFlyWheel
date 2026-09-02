@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import socket
 import threading
 import time
 from collections.abc import Iterator
@@ -548,6 +549,45 @@ def test_public_ipv6_literal_is_supported(monkeypatch: pytest.MonkeyPatch) -> No
 
     client = LangfuseHttpClient(project)
     client.close()
+
+
+@pytest.mark.parametrize(
+    "resolved_address",
+    (
+        "127.0.0.1",
+        "10.0.0.1",
+        "169.254.1.1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "240.0.0.1",
+    ),
+)
+def test_public_client_rejects_non_public_dns_answers(
+    resolved_address: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+
+    def resolve(
+        *_args: object, **_kwargs: object
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        return [(2, 1, 6, "", (resolved_address, 443))]
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        resolve,
+    )
+    project = LangfuseProject.from_env(
+        environment="production",
+        base_url="https://langfuse.example.com",
+    )
+
+    with pytest.raises(CollectionError) as raised:
+        LangfuseHttpClient(project)
+
+    assert raised.value.code is CollectionErrorCode.PRIVATE_RESOLUTION
 
 
 def test_missing_credential_fails_before_request(

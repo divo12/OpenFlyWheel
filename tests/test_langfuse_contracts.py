@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import subprocess
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -12,32 +10,9 @@ import pytest
 from ofw import (
     CollectionError,
     CollectionErrorCode,
-    Harness,
     LangfuseProject,
     TraceWindow,
-    ofw,
 )
-
-
-def _run_git(root: Path, *arguments: str) -> None:
-    subprocess.run(
-        ("git", "-C", str(root), *arguments),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-
-def _harness_root(tmp_path: Path) -> Path:
-    root = tmp_path / "agent"
-    root.mkdir()
-    (root / "prompt.md").write_text("Be accurate.\n", encoding="utf-8")
-    _run_git(root, "init", "-q")
-    _run_git(root, "config", "user.email", "fixture@example.test")
-    _run_git(root, "config", "user.name", "FixtureCo")
-    _run_git(root, "add", ".")
-    _run_git(root, "commit", "-qm", "fixture baseline")
-    return root
 
 
 def test_from_env_keeps_credentials_out_of_manifest_and_repr(
@@ -103,30 +78,3 @@ def test_trace_window_requires_aware_utc_ordering() -> None:
 
     assert naive.value.code is CollectionErrorCode.INVALID_WINDOW
     assert reversed_window.value.code is CollectionErrorCode.INVALID_WINDOW
-
-
-def test_observability_connection_changes_harness_revision_without_persisting_secrets(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = _harness_root(tmp_path)
-    baseline_harness = Harness("fixture-agent", root=root)
-    baseline_harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    baseline = baseline_harness.process()
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-sensitive")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-sensitive")
-    project = LangfuseProject.from_env(
-        environment="production",
-        base_url="https://us.cloud.langfuse.com",
-    )
-    connected_harness = Harness("fixture-agent", root=root)
-    connected_harness.connect_prompt(ofw.editable(Path("prompt.md")))
-    connected_harness.connect_observability(project)
-
-    connected = connected_harness.process()
-
-    assert connected.id != baseline.id
-    assert connected.observability is not None
-    assert connected.observability == project.manifest()
-    assert "pk-sensitive" not in connected.to_json()
-    assert "sk-sensitive" not in connected.to_json()

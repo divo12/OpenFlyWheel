@@ -36,7 +36,14 @@ from ofw.evaluation.langfuse import (
     OutcomeStoreObservation,
     OutcomeStoreStatus,
 )
-from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
+from ofw.evaluation.outcome import (
+    EvidenceReference,
+    OutcomeEvaluation,
+    TaskId,
+    VerifierId,
+    VerifierResult,
+    VerifierVerdict,
+)
 from ofw.observability.langfuse.contracts import LangfuseProject
 from ofw.observability.langfuse.domain import TraceId
 from ofw.observability.langfuse.trace_query import (
@@ -59,7 +66,6 @@ from ofw.preparation import (
 )
 from ofw.preparation.harbor import HarborBaselineRunner
 from ofw.preparation.worktree import GitWorktreeGateway
-from ofw.runtime import EvidenceReference, VerifierResult, VerifierVerdict
 
 QueryInput = TypeVar("QueryInput")
 QueryOutput = TypeVar("QueryOutput", bound=BaseModel)
@@ -256,11 +262,7 @@ def record_outcome(
         result=result,
     )
     try:
-        store = _outcome_store()
-        try:
-            submission = store.store(outcome)
-        finally:
-            store.close()
+        submission = _outcome_store().store(outcome)
     except Exception:
         raise OutcomeToolError(OutcomeToolErrorCode.STORE_FAILED, trace_id) from None
     return OutcomeStoreObservation(

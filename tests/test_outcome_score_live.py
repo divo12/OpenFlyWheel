@@ -15,7 +15,13 @@ from ofw.evaluation.langfuse import (
     LangfuseOutcomeStore,
     OutcomeScoreMetadata,
 )
-from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
+from ofw.evaluation.outcome import (
+    EvidenceReference,
+    OutcomeEvaluation,
+    TaskId,
+    VerifierId,
+    VerifierVerdict,
+)
 from ofw.observability.langfuse.domain import (
     ScoreId,
     ScoreRecord,
@@ -23,7 +29,6 @@ from ofw.observability.langfuse.domain import (
     TraceId,
 )
 from ofw.observability.langfuse.wire import ScoreResponseWire
-from ofw.runtime import EvidenceReference, VerifierVerdict
 
 
 def _live_outcome() -> tuple[LangfuseProject, OutcomeEvaluation, tuple[str, ...]]:

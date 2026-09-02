@@ -18,6 +18,9 @@ baseline.
   is not proof of success.
 - Langfuse is the source of truth for trajectories, usage, cost, and latency.
 - Missing verifier evidence is `unverified`, not failure and not success.
+- Treat an MCP timeout as unknown operation status. Retry only an identical operation
+  documented as idempotent, and only once. If that retry also fails, stop and report the
+  timeout. Never terminate a managed MCP or agent process.
 
 ## Editable and frozen surfaces
 

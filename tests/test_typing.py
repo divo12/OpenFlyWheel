@@ -1,9 +1,9 @@
 """Installed-package typing contract."""
 
+from importlib.util import find_spec
 from pathlib import Path
 
 import ofw as package
-from ofw import ofw
 
 
 def test_package_declares_inline_types() -> None:
@@ -17,10 +17,21 @@ def test_namespace_excludes_removed_collection_api() -> None:
     assert "CollectionResult" not in package.__all__
 
 
-def test_namespace_keeps_harness_methods() -> None:
-    assert callable(ofw.editable)
-    assert callable(ofw.E2BSandbox)
-    assert callable(ofw.ProcessLimits)
+def test_package_excludes_removed_harness_plane() -> None:
+    removed = {
+        "CanaryCase",
+        "CommandLoop",
+        "E2BSandbox",
+        "Harness",
+        "HarnessRevision",
+        "ProcessLimits",
+        "RunResult",
+        "ofw",
+    }
+
+    assert removed.isdisjoint(package.__all__)
+    assert find_spec("ofw.harness") is None
+    assert find_spec("ofw.runtime") is None
 
 
 def test_namespace_exports_authoritative_outcome_contract() -> None:
@@ -30,6 +41,8 @@ def test_namespace_exports_authoritative_outcome_contract() -> None:
     assert "TaskId" in package.__all__
     assert "TraceId" in package.__all__
     assert "VerifierId" in package.__all__
+    assert "VerifierResult" in package.__all__
+    assert "VerifierVerdict" in package.__all__
 
 
 def test_namespace_exports_failure_diagnosis_contract() -> None:

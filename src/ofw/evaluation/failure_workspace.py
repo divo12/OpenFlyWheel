@@ -38,13 +38,14 @@ from ofw.evaluation.failure_patterns import (
     FailurePatternMiningErrorCode,
 )
 from ofw.evaluation.outcome import (
+    EvidenceReference,
     OutcomeEvaluation,
     OutcomeEvaluationError,
     TaskId,
     VerifierId,
+    VerifierVerdict,
 )
 from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
-from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@/-]*"
 _ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -67,10 +68,21 @@ EvidenceReferenceValue = Annotated[str, Field(min_length=1, max_length=1024)]
 DiagnosisText = Annotated[str, Field(min_length=1, max_length=4000)]
 WorkspaceRoot = Annotated[Path, Field(strict=False)]
 ObservationIdentifiers = Annotated[tuple[Identifier, ...], Field(max_length=10)]
+JsonObservationIdentifiers = Annotated[
+    tuple[Identifier, ...],
+    Field(strict=False, max_length=10),
+]
 OutcomeEvidence = Annotated[
     tuple[EvidenceReferenceValue, ...],
     Field(min_length=1, max_length=10),
 ]
+JsonOutcomeEvidence = Annotated[
+    tuple[EvidenceReferenceValue, ...],
+    Field(strict=False, min_length=1, max_length=10),
+]
+JsonTimestamp = Annotated[datetime, Field(strict=False)]
+JsonEvidenceStatus = Annotated[FailureEvidenceStatus, Field(strict=False)]
+JsonFailureType = Annotated[FailureType, Field(strict=False)]
 
 
 class StrictModel(BaseModel):
@@ -81,9 +93,9 @@ class FailedOutcomeInput(StrictModel):
     trace_id: Identifier
     task_id: Identifier
     verifier_id: Identifier
-    evaluated_at: datetime
+    evaluated_at: JsonTimestamp
     score: float = Field(strict=True, ge=0.0, le=1.0)
-    evidence: OutcomeEvidence
+    evidence: JsonOutcomeEvidence
     outcome_score_id: Identifier
 
     @field_validator("evaluated_at")
@@ -108,12 +120,12 @@ class FailedOutcomeInput(StrictModel):
 class RecordFailureInput(StrictModel):
     workspace_root: WorkspaceRoot
     outcome: FailedOutcomeInput
-    evidence_status: FailureEvidenceStatus
-    issue_type: FailureType | None
+    evidence_status: JsonEvidenceStatus
+    issue_type: JsonFailureType | None
     expected_outcome: DiagnosisText
     actual_outcome: DiagnosisText
     critical_observation_id: Identifier | None
-    evidence_observation_ids: ObservationIdentifiers
+    evidence_observation_ids: JsonObservationIdentifiers
     root_cause: DiagnosisText | None
     counterfactual_action: DiagnosisText | None
     inconclusive_reason: DiagnosisText | None
@@ -355,6 +367,7 @@ class FileFailureWorkspace:
         ) as directory:
             return tuple(_read_artifact(directory, artifact_id) for artifact_id in artifact_ids)
 
+
 class FileFailureCurationWorkspace:
     """Read compact diagnoses and store one bounded cross-failure curation."""
 
@@ -425,6 +438,7 @@ class FileFailureCurationWorkspace:
                 FailureCurationErrorCode.SOURCE_NOT_FOUND,
                 missing,
             ) from None
+
 
 def _observation_id(value: str | None) -> ObservationId | None:
     return None if value is None else ObservationId(value)

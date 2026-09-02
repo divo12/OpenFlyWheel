@@ -31,10 +31,15 @@ SourceArtifactIds = Annotated[
     tuple[ArtifactIdentifier, ...],
     Field(min_length=1, max_length=50),
 ]
+JsonSourceArtifactIds = Annotated[
+    tuple[ArtifactIdentifier, ...],
+    Field(strict=False, min_length=1, max_length=50),
+]
 GroupArtifactIds = Annotated[
     tuple[ArtifactIdentifier, ...],
-    Field(min_length=2, max_length=20),
+    Field(strict=False, min_length=2, max_length=20),
 ]
+JsonComponentKind = Annotated[ComponentKind, Field(strict=False)]
 
 
 class StrictModel(BaseModel):
@@ -46,7 +51,7 @@ class FailureGroupInput(StrictModel):
     title: TitleText
     mechanism: ExplanationText
     prevention: ExplanationText
-    target_component: ComponentKind
+    target_component: JsonComponentKind
     failure_artifact_ids: GroupArtifactIds
 
     @field_validator("title", "mechanism", "prevention")
@@ -80,9 +85,9 @@ class DeferredFailureInput(StrictModel):
 
 class RecordFailureCurationInput(StrictModel):
     workspace_root: Path = Field(strict=False)
-    source_artifact_ids: SourceArtifactIds
-    groups: tuple[FailureGroupInput, ...] = Field(max_length=25)
-    deferred: tuple[DeferredFailureInput, ...] = Field(max_length=50)
+    source_artifact_ids: JsonSourceArtifactIds
+    groups: tuple[FailureGroupInput, ...] = Field(strict=False, max_length=25)
+    deferred: tuple[DeferredFailureInput, ...] = Field(strict=False, max_length=50)
 
     @field_validator("workspace_root")
     @classmethod

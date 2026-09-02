@@ -38,6 +38,10 @@ ArtifactIds = Annotated[
     tuple[ArtifactId, ...],
     Field(min_length=1, max_length=_ARTIFACT_LIMIT),
 ]
+JsonArtifactIds = Annotated[
+    tuple[ArtifactId, ...],
+    Field(strict=False, min_length=1, max_length=_ARTIFACT_LIMIT),
+]
 PatternId = Annotated[str, Field(pattern=_PATTERN_ID_PATTERN)]
 Identifier = Annotated[str, Field(min_length=1, max_length=256)]
 
@@ -75,7 +79,7 @@ class FailurePatternMiningError(Exception):
 
 class MineFailurePatternsInput(StrictModel):
     workspace_root: Path = Field(strict=False)
-    artifact_ids: ArtifactIds
+    artifact_ids: JsonArtifactIds
 
     @field_validator("workspace_root")
     @classmethod

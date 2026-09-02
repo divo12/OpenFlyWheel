@@ -11,6 +11,7 @@ from typing import Protocol, cast
 import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool
+from pydantic import BaseModel, JsonValue, TypeAdapter
 
 from ofw.contracts import ComponentKind
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
@@ -43,10 +44,12 @@ from ofw.evaluation.langfuse import (
     OutcomeStoreStatus,
 )
 from ofw.evaluation.outcome import (
+    EvidenceReference,
     OutcomeEvaluation,
     OutcomeEvaluationError,
     TaskId,
     VerifierId,
+    VerifierVerdict,
 )
 from ofw.observability.langfuse.domain import ScoreId, TraceId
 from ofw.observability.langfuse.trace_query import (
@@ -64,11 +67,11 @@ from ofw.preparation import (
     WorkspacePreparationObservation,
     WorkspacePreparationService,
 )
-from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
 _SECOND_FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
 _CURATION_ID = "00000000-0000-0000-0000-000000000003"
+_JSON_OBJECT_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 
 
 class OpenFlywheelMcpModule(Protocol):
@@ -145,6 +148,8 @@ class _FakeOutcomeStore:
         self.failure: Exception | None = None
 
     def store(self, outcome: OutcomeEvaluation) -> OutcomeScoreSubmission:
+        if self.close_count:
+            raise RuntimeError("outcome store is closed")
         if self.failure is not None:
             raise self.failure
         self.outcomes.append(outcome)
@@ -193,6 +198,10 @@ def _module() -> OpenFlywheelMcpModule:
 
 def _server() -> FastMCP[None]:
     return _module().server
+
+
+def _json_request(request: BaseModel) -> dict[str, JsonValue]:
+    return _JSON_OBJECT_ADAPTER.validate_json(request.model_dump_json())
 
 
 def _annotation_flags(tool: Tool) -> tuple[bool | None, bool | None, bool | None]:
@@ -447,7 +456,30 @@ def test_record_outcome_maps_the_strict_contract_before_writing(
             evidence=(EvidenceReference("artifact://result"),),
         )
     ]
-    assert store.close_count == 1
+    assert store.close_count == 0
+
+
+def test_record_outcome_reuses_the_process_store_without_shutting_it_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    store = _FakeOutcomeStore()
+    monkeypatch.setattr(module, "_outcome_store", lambda: store)
+    evaluated_at = datetime(2026, 8, 27, 10, 3, 46, tzinfo=UTC)
+
+    for _ in range(2):
+        module.record_outcome(
+            trace_id="trace-1",
+            task_id="task-1",
+            verifier_id="verifier@v1",
+            evaluated_at=evaluated_at,
+            verdict=VerifierVerdict.PASS,
+            score=1.0,
+            evidence=("artifact://result",),
+        )
+
+    assert len(store.outcomes) == 2
+    assert store.close_count == 0
 
 
 def test_invalid_outcome_fails_before_opening_the_store(
@@ -501,7 +533,7 @@ def test_provider_failure_is_typed_and_does_not_leak_details(
         )
 
     assert str(raised.value) == "outcome_store_failed: trace-1"
-    assert store.close_count == 1
+    assert store.close_count == 0
 
 
 def test_record_failure_passes_one_strict_object_to_the_workspace_service(
@@ -519,6 +551,12 @@ def test_record_failure_passes_one_strict_object_to_the_workspace_service(
 
     assert module.record_failure(request) == expected
     assert service.requests == [request]
+
+
+def test_record_failure_accepts_mcp_json_mapping(tmp_path: Path) -> None:
+    request = _supported_failure_request(tmp_path)
+
+    assert RecordFailureInput.model_validate(_json_request(request)) == request
 
 
 def test_record_failure_preserves_typed_workspace_errors(
@@ -568,6 +606,15 @@ def test_mine_failure_patterns_passes_one_bounded_object_to_the_service(
     assert result.inconclusive_artifact_ids == (recorded.artifact_id,)
 
 
+def test_mine_failure_patterns_accepts_mcp_json_mapping(tmp_path: Path) -> None:
+    request = MineFailurePatternsInput(
+        workspace_root=tmp_path,
+        artifact_ids=(_FAILURE_ARTIFACT_ID,),
+    )
+
+    assert MineFailurePatternsInput.model_validate(_json_request(request)) == request
+
+
 def test_record_failure_curation_passes_one_strict_object_to_the_service(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -580,3 +627,9 @@ def test_record_failure_curation_passes_one_strict_object_to_the_service(
 
     assert module.record_failure_curation(request) == expected
     assert service.requests == [request]
+
+
+def test_record_failure_curation_accepts_mcp_json_mapping(tmp_path: Path) -> None:
+    request = _curation_request(tmp_path)
+
+    assert RecordFailureCurationInput.model_validate(_json_request(request)) == request

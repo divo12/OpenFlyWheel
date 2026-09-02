@@ -58,3 +58,12 @@ def test_failure_pattern_miner_skill_is_packaged() -> None:
 
     assert skill.is_file()
     assert "mine_failure_patterns" in skill.read_text(encoding="utf-8")
+
+
+def test_base_program_stops_after_repeated_managed_mcp_timeout() -> None:
+    content = files("ofw.preparation.templates").joinpath("base.md").read_text(encoding="utf-8")
+    content = " ".join(content.split())
+
+    assert "unknown operation status" in content
+    assert "Never terminate a managed MCP or agent process" in content
+    assert "stop and report the timeout" in content

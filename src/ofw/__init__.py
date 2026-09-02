@@ -1,6 +1,4 @@
-"""Public OpenFlyWheel harness API."""
-
-from pathlib import Path
+"""Public OpenFlyWheel optimization API."""
 
 from langfuse import (
     Langfuse,
@@ -12,22 +10,10 @@ from langfuse import (
     propagate_attributes,
 )
 
-from ofw.contracts import (
-    AssetAccess,
-    ComponentKind,
-    GitCommit,
-    HarnessAsset,
-    HarnessComponent,
-    HarnessErrorCode,
-    HarnessRevision,
-    HarnessRevisionId,
-    HarnessValidationError,
-    RepositorySnapshot,
-    Sha256Digest,
-    WorkspaceFile,
-)
+from ofw.contracts import ComponentKind, Sha256Digest
 from ofw.evaluation import (
     DeferredFailure,
+    EvidenceReference,
     FailureCuration,
     FailureCurationErrorCode,
     FailureCurationFailure,
@@ -55,8 +41,9 @@ from ofw.evaluation import (
     OutcomeStoreStatus,
     TaskId,
     VerifierId,
+    VerifierResult,
+    VerifierVerdict,
 )
-from ofw.harness import EditableFile, Harness, Subagent, Tool, editable
 from ofw.observability.langfuse import (
     CollectionError,
     CollectionErrorCode,
@@ -71,54 +58,12 @@ from ofw.preparation import (
     PrepareWorkspaceInput,
     WorkspacePreparationObservation,
 )
-from ofw.runtime import (
-    CanaryCase,
-    CaseId,
-    CommandLoop,
-    CommandVerifier,
-    E2BSandbox,
-    EvidenceReference,
-    ModelFingerprint,
-    ProcessCommand,
-    ProcessLimits,
-    RunErrorCode,
-    RunResult,
-    RunStatus,
-    VerifierResult,
-    VerifierVerdict,
-)
-
-
-class _OfwNamespace:
-    __slots__ = ()
-
-    E2BSandbox = E2BSandbox
-    ProcessLimits = ProcessLimits
-    ProcessCommand = ProcessCommand
-    CommandLoop = CommandLoop
-    ModelFingerprint = ModelFingerprint
-    CommandVerifier = CommandVerifier
-    CanaryCase = CanaryCase
-    CaseId = CaseId
-
-    def editable(self, path: Path) -> EditableFile:
-        return editable(path)
-
-
-ofw = _OfwNamespace()
 
 __all__ = [
-    "AssetAccess",
-    "CanaryCase",
-    "CaseId",
-    "ComponentKind",
     "CollectionError",
     "CollectionErrorCode",
-    "CommandLoop",
-    "CommandVerifier",
+    "ComponentKind",
     "DeferredFailure",
-    "E2BSandbox",
-    "EditableFile",
     "EvidenceReference",
     "FailureCuration",
     "FailureCurationErrorCode",
@@ -137,20 +82,11 @@ __all__ = [
     "FailurePatternSummary",
     "FailureSource",
     "FailureType",
-    "GitCommit",
-    "Harness",
-    "HarnessAsset",
-    "HarnessComponent",
-    "HarnessErrorCode",
-    "HarnessRevision",
-    "HarnessRevisionId",
-    "HarnessValidationError",
     "Langfuse",
-    "LangfuseOutcomeStore",
     "LangfuseOtelSpanAttributes",
+    "LangfuseOutcomeStore",
     "LangfuseProject",
     "LangfuseSpan",
-    "ModelFingerprint",
     "MineFailurePatternsInput",
     "OutcomeErrorCode",
     "OutcomeEvaluation",
@@ -162,27 +98,16 @@ __all__ = [
     "PreparationPhase",
     "PreparationStatus",
     "PrepareWorkspaceInput",
-    "RepositorySnapshot",
-    "ProcessCommand",
-    "ProcessLimits",
-    "RunErrorCode",
-    "RunResult",
-    "RunStatus",
     "Sha256Digest",
-    "Subagent",
     "TaskId",
-    "Tool",
     "TraceId",
     "TraceWindow",
+    "VerifierId",
     "VerifierResult",
     "VerifierVerdict",
-    "VerifierId",
-    "WorkspaceFile",
     "WorkspacePreparationObservation",
-    "editable",
     "get_client",
     "is_default_export_span",
     "observe",
-    "ofw",
     "propagate_attributes",
 ]

@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 
 from ofw.observability.langfuse.domain import TraceId
-from ofw.runtime import EvidenceReference, VerifierResult, VerifierVerdict
 
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]*")
 _IDENTIFIER_LIMIT = 256
@@ -35,6 +34,26 @@ class OutcomeEvaluationError(Exception):
         self.code = code
         self.subject = subject
         super().__init__(f"{code.value}: {subject}")
+
+
+class VerifierVerdict(StrEnum):
+    PASS = "pass"  # nosec B105
+    FAIL = "fail"
+    ABSTAIN = "abstain"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceReference:
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class VerifierResult:
+    verdict: VerifierVerdict
+    score: float | None
+    feedback: str
+    evidence: tuple[EvidenceReference, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

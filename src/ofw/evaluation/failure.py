@@ -6,9 +6,8 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ofw.evaluation.outcome import OutcomeEvaluation
+from ofw.evaluation.outcome import OutcomeEvaluation, VerifierVerdict
 from ofw.observability.langfuse.domain import ObservationId, ScoreId
-from ofw.runtime import VerifierVerdict
 
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]*")
 _IDENTIFIER_LIMIT = 256

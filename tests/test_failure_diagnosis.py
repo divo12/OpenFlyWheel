@@ -14,9 +14,14 @@ from ofw.evaluation.failure import (
     FailureEvidenceStatus,
     FailureType,
 )
-from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
+from ofw.evaluation.outcome import (
+    EvidenceReference,
+    OutcomeEvaluation,
+    TaskId,
+    VerifierId,
+    VerifierVerdict,
+)
 from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
-from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _EVALUATED_AT = datetime(2026, 8, 28, 2, 0, tzinfo=UTC)
 

@@ -496,25 +496,45 @@ def _utc_text(value: datetime) -> str:
 def _validate_dns(base_url: str, allow_private_network: bool) -> None:
     if allow_private_network:
         return
-    host = urlsplit(base_url).hostname
+    host, port = _dns_endpoint(base_url)
+    for address in _resolve_addresses(host, port):
+        if _is_non_public_address(address):
+            raise CollectionError(CollectionErrorCode.PRIVATE_RESOLUTION, host)
+
+
+def _dns_endpoint(base_url: str) -> tuple[str, int]:
+    parsed = urlsplit(base_url)
+    host = parsed.hostname
     if host is None:
         raise CollectionError(CollectionErrorCode.UNSAFE_HOST, base_url)
+    return host, parsed.port or _default_port(parsed.scheme)
+
+
+def _default_port(scheme: str) -> int:
+    return 443 if scheme == "https" else 80
+
+
+def _resolve_addresses(
+    host: str,
+    port: int,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
     try:
-        port = urlsplit(base_url).port or (443 if base_url.startswith("https:") else 80)
         addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError as error:
         raise CollectionError(CollectionErrorCode.DNS_RESOLUTION_FAILED, host) from error
     if not addresses:
         raise CollectionError(CollectionErrorCode.DNS_RESOLUTION_FAILED, host)
-    for address in addresses:
-        raw_address = address[4][0]
-        resolved_address = ipaddress.ip_address(raw_address)
-        if (
-            resolved_address.is_private
-            or resolved_address.is_loopback
-            or resolved_address.is_link_local
-            or resolved_address.is_reserved
-            or resolved_address.is_unspecified
-            or resolved_address.is_multicast
-        ):
-            raise CollectionError(CollectionErrorCode.PRIVATE_RESOLUTION, host)
+    return tuple(ipaddress.ip_address(address[4][0]) for address in addresses)
+
+
+def _is_non_public_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+            address.is_reserved,
+            address.is_unspecified,
+            address.is_multicast,
+        )
+    )

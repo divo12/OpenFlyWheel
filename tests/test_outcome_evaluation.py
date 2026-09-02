@@ -7,14 +7,16 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from ofw.evaluation.outcome import (
+    EvidenceReference,
     OutcomeErrorCode,
     OutcomeEvaluation,
     OutcomeEvaluationError,
     TaskId,
     VerifierId,
+    VerifierResult,
+    VerifierVerdict,
 )
 from ofw.observability.langfuse.domain import TraceId
-from ofw.runtime import EvidenceReference, VerifierResult, VerifierVerdict
 
 _EVALUATED_AT = datetime(2026, 8, 27, 10, 3, 46, tzinfo=UTC)
 

@@ -32,15 +32,19 @@ from ofw.evaluation.langfuse import (
     OutcomeStoreStatus,
 )
 from ofw.evaluation.outcome import (
+    EvidenceReference,
     OutcomeErrorCode,
     OutcomeEvaluation,
     OutcomeEvaluationError,
     TaskId,
     VerifierId,
+    VerifierResult,
+    VerifierVerdict,
 )
 
 __all__ = [
     "DeferredFailure",
+    "EvidenceReference",
     "FailureCuration",
     "FailureCurationErrorCode",
     "FailureCurationFailure",
@@ -68,4 +72,6 @@ __all__ = [
     "OutcomeStoreStatus",
     "TaskId",
     "VerifierId",
+    "VerifierResult",
+    "VerifierVerdict",
 ]

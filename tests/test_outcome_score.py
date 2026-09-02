@@ -10,9 +10,14 @@ from ofw.evaluation.langfuse import (
     OUTCOME_SCORE_NAME,
     LangfuseOutcomeStore,
 )
-from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
+from ofw.evaluation.outcome import (
+    EvidenceReference,
+    OutcomeEvaluation,
+    TaskId,
+    VerifierId,
+    VerifierVerdict,
+)
 from ofw.observability.langfuse.domain import TraceId
-from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _EVALUATED_AT = datetime(2026, 8, 27, 10, 3, 46, tzinfo=UTC)
 
