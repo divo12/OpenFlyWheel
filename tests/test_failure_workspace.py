@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -227,6 +229,33 @@ def test_concurrent_conflicting_rewrites_publish_exactly_one_diagnosis(
     assert results.count(FailureWorkspaceErrorCode.ARTIFACT_CONFLICT) == 1
 
 
+def test_published_artifact_fsyncs_the_failure_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepared_workspace(tmp_path)
+    failures = root / ".workspace/failures"
+    original = os.fsync
+    synced_after_publication = False
+
+    def fsync(descriptor: int) -> None:
+        nonlocal synced_after_publication
+        opened = os.fstat(descriptor)
+        if stat.S_ISDIR(opened.st_mode) and failures.exists():
+            current = failures.stat()
+            if (opened.st_dev, opened.st_ino) == (current.st_dev, current.st_ino):
+                synced_after_publication = any(failures.glob("*.json")) and not any(
+                    failures.glob(".ofw-*.tmp")
+                )
+        original(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+
+    FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
+
+    assert synced_after_publication
+
+
 def test_oversized_existing_artifact_fails_closed(tmp_path: Path) -> None:
     root = _prepared_workspace(tmp_path)
     service = FailureWorkspaceService(FileFailureWorkspace())
@@ -283,10 +312,15 @@ def test_symlink_swap_after_validation_cannot_redirect_the_artifact(
     outside.mkdir()
     original = failure_workspace_module._prepare_workspace_directories
 
-    def prepare_then_swap(prepared_root: Path, workspace: Path, failures: Path) -> None:
-        original(prepared_root, workspace, failures)
+    def prepare_then_swap(
+        prepared_root: Path,
+        workspace: Path,
+        failures: Path,
+    ) -> failure_workspace_module._DirectoryChainIdentity:
+        identity = original(prepared_root, workspace, failures)
         failures.rmdir()
         failures.symlink_to(outside, target_is_directory=True)
+        return identity
 
     monkeypatch.setattr(
         failure_workspace_module,
@@ -298,6 +332,40 @@ def test_symlink_swap_after_validation_cannot_redirect_the_artifact(
         FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
 
     assert tuple(outside.iterdir()) == ()
+
+
+def test_workspace_directory_swap_after_validation_cannot_receive_the_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _prepared_workspace(tmp_path)
+    replacement = tmp_path / "replacement"
+    displaced = tmp_path / "validated-workspace"
+    (replacement / "failures").mkdir(parents=True)
+    original = failure_workspace_module._prepare_workspace_directories
+
+    def prepare_then_swap(
+        prepared_root: Path,
+        workspace: Path,
+        failures: Path,
+    ) -> failure_workspace_module._DirectoryChainIdentity:
+        identity = original(prepared_root, workspace, failures)
+        workspace.rename(displaced)
+        replacement.rename(workspace)
+        return identity
+
+    monkeypatch.setattr(
+        failure_workspace_module,
+        "_prepare_workspace_directories",
+        prepare_then_swap,
+    )
+
+    with pytest.raises(FailureWorkspaceFailure) as raised:
+        FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
+
+    assert raised.value.code is FailureWorkspaceErrorCode.WRITE_FAILED
+    assert not tuple(displaced.rglob("*.json"))
+    assert not tuple((root / ".workspace").rglob("*.json"))
 
 
 def test_record_input_rejects_relative_workspace_and_extra_fields(tmp_path: Path) -> None:

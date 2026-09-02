@@ -187,6 +187,13 @@ class FailureArtifactReceipt:
     relative_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class _DirectoryChainIdentity:
+    root: tuple[int, int]
+    workspace: tuple[int, int]
+    failures: tuple[int, int]
+
+
 class FailureWorkspaceErrorCode(StrEnum):
     INVALID_WORKSPACE = "invalid_workspace"
     ARTIFACT_CONFLICT = "artifact_conflict"
@@ -252,13 +259,18 @@ class FileFailureWorkspace:
         artifact = FailureArtifact.from_diagnosis(artifact_id, diagnosis)
         content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
         _validate_artifact_size(content)
-        _prepare_workspace_directories(prepared_root, workspace, failures)
+        directory_identity = _prepare_workspace_directories(
+            prepared_root,
+            workspace,
+            failures,
+        )
         path = failures / f"{artifact_id}.json"
         receipt = FailureArtifactReceipt(artifact_id, path.relative_to(prepared_root))
-        with _directory_handle(failures) as directory:
-            _require_directory_identity(directory, failures)
+        with _failure_directory_handle(
+            prepared_root,
+            directory_identity,
+        ) as directory:
             _publish_or_validate(directory, path.name, content, artifact_id)
-            _require_directory_identity(directory, failures)
         return receipt
 
 
@@ -342,13 +354,22 @@ def _validate_artifact_size(content: bytes) -> None:
         )
 
 
-def _prepare_workspace_directories(root: Path, workspace: Path, failures: Path) -> None:
+def _prepare_workspace_directories(
+    root: Path,
+    workspace: Path,
+    failures: Path,
+) -> _DirectoryChainIdentity:
     failures.mkdir(parents=True, exist_ok=True)
     _require_contained(root, workspace.resolve(strict=True))
     _require_contained(root, failures.resolve(strict=True))
     with _directory_handle(workspace) as directory:
         _require_directory_identity(directory, workspace)
         _write_ignore_file(directory)
+    return _DirectoryChainIdentity(
+        root=_path_identity(root),
+        workspace=_path_identity(workspace),
+        failures=_path_identity(failures),
+    )
 
 
 def _write_ignore_file(directory: int) -> None:
@@ -372,6 +393,7 @@ def _publish_or_validate(
 
 def _publish_new_file(directory: int, name: str, content: bytes) -> None:
     temporary_name = f".ofw-{uuid4().hex}.tmp"
+    published = False
     try:
         _write_new_file(directory, temporary_name, content)
         os.link(
@@ -381,8 +403,11 @@ def _publish_new_file(directory: int, name: str, content: bytes) -> None:
             dst_dir_fd=directory,
             follow_symlinks=False,
         )
+        published = True
     finally:
         _unlink_if_present(directory, temporary_name)
+        if published:
+            os.fsync(directory)
 
 
 def _write_new_file(directory: int, name: str, content: bytes) -> None:
@@ -435,8 +460,84 @@ def _directory_handle(path: Path) -> Iterator[int]:
         os.close(descriptor)
 
 
-def _require_directory_identity(descriptor: int, path: Path) -> None:
-    opened = os.fstat(descriptor)
-    current = os.stat(path, follow_symlinks=False)
-    if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+@contextmanager
+def _child_directory_handle(parent: int, name: str) -> Iterator[int]:
+    descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _failure_directory_handle(
+    root: Path,
+    expected: _DirectoryChainIdentity,
+) -> Iterator[int]:
+    with (
+        _directory_handle(root) as root_directory,
+        _child_directory_handle(root_directory, _WORKSPACE_DIRECTORY) as workspace,
+        _child_directory_handle(workspace, _FAILURE_DIRECTORY) as failures,
+    ):
+        _require_directory_chain(
+            root,
+            root_directory,
+            workspace,
+            failures,
+            expected,
+        )
+        yield failures
+        _require_directory_chain(
+            root,
+            root_directory,
+            workspace,
+            failures,
+            expected,
+        )
+
+
+def _require_directory_chain(
+    root: Path,
+    root_directory: int,
+    workspace: int,
+    failures: int,
+    expected: _DirectoryChainIdentity,
+) -> None:
+    _require_directory_identity(root_directory, root, expected.root)
+    _require_child_identity(root_directory, _WORKSPACE_DIRECTORY, workspace, expected.workspace)
+    _require_child_identity(workspace, _FAILURE_DIRECTORY, failures, expected.failures)
+
+
+def _require_directory_identity(
+    descriptor: int,
+    path: Path,
+    expected: tuple[int, int] | None = None,
+) -> None:
+    opened = _descriptor_identity(descriptor)
+    current = _path_identity(path)
+    if opened != current or (expected is not None and opened != expected):
         raise OSError("workspace directory changed during failure recording")
+
+
+def _require_child_identity(
+    parent: int,
+    name: str,
+    descriptor: int,
+    expected: tuple[int, int],
+) -> None:
+    opened = _descriptor_identity(descriptor)
+    current = _stat_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
+    if opened != current or opened != expected:
+        raise OSError("workspace directory changed during failure recording")
+
+
+def _descriptor_identity(descriptor: int) -> tuple[int, int]:
+    return _stat_identity(os.fstat(descriptor))
+
+
+def _path_identity(path: Path) -> tuple[int, int]:
+    return _stat_identity(os.stat(path, follow_symlinks=False))
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
