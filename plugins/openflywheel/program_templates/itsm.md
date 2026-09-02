@@ -44,6 +44,11 @@ under `.workspace/failures/` before forming a harness hypothesis. Record an inco
 diagnosis when the evidence is insufficient. Do not copy Langfuse trace payloads into the
 workspace; Langfuse remains their source of truth.
 
+After recording the diagnoses for one bounded run, use `$failure-pattern-miner` and call
+`mine_failure_patterns` with only the returned artifact IDs from that run. It groups by failure
+type and exact normalized root cause; results are not semantic clusters. Keep inconclusive
+diagnoses separate, and reread each supporting diagnosis before forming a shared hypothesis.
+
 An intermediate tool error is evidence, not an outcome failure, when the agent recovered
 and the verifier passed. A technically clean trajectory is still a failure when the ITSM
 verifier shows that the required environment state was not achieved.

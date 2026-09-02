@@ -29,3 +29,27 @@ def test_itsm_program_routes_failure_mining_to_local_workspace_artifacts(
     content = files("ofw.preparation.templates").joinpath("itsm.md").read_text(encoding="utf-8")
 
     assert required_instruction in content
+
+
+@pytest.mark.parametrize(
+    "required_instruction",
+    (
+        "$failure-pattern-miner",
+        "mine_failure_patterns",
+        "exact normalized root cause",
+        "not semantic clusters",
+    ),
+)
+def test_itsm_program_routes_recorded_diagnoses_to_bounded_pattern_mining(
+    required_instruction: str,
+) -> None:
+    content = files("ofw.preparation.templates").joinpath("itsm.md").read_text(encoding="utf-8")
+
+    assert required_instruction in content
+
+
+def test_failure_pattern_miner_skill_is_packaged() -> None:
+    skill = Path(__file__).parents[1] / "plugins/openflywheel/skills/failure-pattern-miner/SKILL.md"
+
+    assert skill.is_file()
+    assert "mine_failure_patterns" in skill.read_text(encoding="utf-8")

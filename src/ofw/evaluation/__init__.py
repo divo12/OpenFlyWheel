@@ -7,6 +7,15 @@ from ofw.evaluation.failure import (
     FailureEvidenceStatus,
     FailureType,
 )
+from ofw.evaluation.failure_patterns import (
+    FailurePatternMiningError,
+    FailurePatternMiningErrorCode,
+    FailurePatternMiningObservation,
+    FailurePatternMiningStatus,
+    FailurePatternOrdering,
+    FailurePatternSummary,
+    MineFailurePatternsInput,
+)
 from ofw.evaluation.langfuse import (
     LangfuseOutcomeStore,
     OutcomeScoreSubmission,
@@ -26,8 +35,15 @@ __all__ = [
     "FailureDiagnosisError",
     "FailureErrorCode",
     "FailureEvidenceStatus",
+    "FailurePatternMiningError",
+    "FailurePatternMiningErrorCode",
+    "FailurePatternMiningObservation",
+    "FailurePatternMiningStatus",
+    "FailurePatternOrdering",
+    "FailurePatternSummary",
     "FailureType",
     "LangfuseOutcomeStore",
+    "MineFailurePatternsInput",
     "OutcomeErrorCode",
     "OutcomeEvaluation",
     "OutcomeEvaluationError",

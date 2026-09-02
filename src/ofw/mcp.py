@@ -14,6 +14,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
+from ofw.evaluation.failure_patterns import (
+    FailurePatternMiningObservation,
+    FailurePatternMiningService,
+    MineFailurePatternsInput,
+)
 from ofw.evaluation.failure_workspace import (
     FailureRecordObservation,
     FailureWorkspaceService,
@@ -68,8 +73,8 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     name="openflywheel",
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
-        "record authoritative outcomes plus compact failure diagnoses. Never infer outcomes, "
-        "mutate traces, or copy trace payloads into local storage."
+        "record authoritative outcomes plus compact failure diagnoses and exact patterns. "
+        "Never infer outcomes, mutate traces, or copy trace payloads into local storage."
     ),
     log_level="DEBUG",
 )
@@ -128,6 +133,10 @@ def _preparation_service() -> WorkspacePreparationService:
 
 def _failure_service() -> FailureWorkspaceService:
     return FailureWorkspaceService(FileFailureWorkspace())
+
+
+def _failure_pattern_service() -> FailurePatternMiningService:
+    return FailurePatternMiningService(FileFailureWorkspace())
 
 
 def _program_template(name: str) -> str:
@@ -257,6 +266,14 @@ def record_outcome(
 def record_failure(request: RecordFailureInput) -> FailureRecordObservation:
     """Store one bounded diagnosis under a prepared harness's local .workspace."""
     return _failure_service().record(request)
+
+
+@server.tool(annotations=read_only, structured_output=True)
+def mine_failure_patterns(
+    request: MineFailurePatternsInput,
+) -> FailurePatternMiningObservation:
+    """Group explicit compact diagnoses by exact normalized root cause."""
+    return _failure_pattern_service().mine(request)
 
 
 def main() -> None:

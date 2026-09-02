@@ -1,7 +1,7 @@
 {
   "name": "openflywheel",
-  "version": "0.5.0",
-  "description": "Initialize ITSM-bench harness workspaces, query Langfuse trajectories, and record outcomes and compact failure diagnoses.",
+  "version": "0.6.0",
+  "description": "Initialize ITSM-bench harness workspaces, query Langfuse trajectories, and mine compact failure diagnoses and exact patterns.",
   "author": {
     "name": "OpenFlyWheel"
   },
@@ -10,8 +10,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "OpenFlyWheel",
-    "shortDescription": "Prepare ITSM workspaces and mine failures",
-    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, inspect bounded Langfuse trajectory evidence, record authoritative outcomes, and persist compact failure diagnoses in the prepared local workspace.",
+    "shortDescription": "Diagnose and mine ITSM failure patterns",
+    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, inspect bounded Langfuse evidence, record authoritative outcomes and compact diagnoses, and mine exact recurring patterns without copying trace payloads.",
     "developerName": "OpenFlyWheel",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
