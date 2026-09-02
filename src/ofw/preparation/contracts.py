@@ -28,13 +28,19 @@ def _numeric_float(value: object, field: str) -> float:
     return float(value)
 
 
+def _bounded_path_input(value: object) -> object:
+    if isinstance(value, str) and ("\x00" in value or len(value.encode("utf-8")) > 1024):
+        raise ValueError("path input must be bounded text")
+    return value
+
+
 ExperimentIdentifier = Annotated[
     str,
     Field(min_length=1, max_length=80, pattern=_EXPERIMENT_PATTERN),
 ]
 GitReference = Annotated[str, Field(min_length=1, max_length=256, pattern=_REF_PATTERN)]
 GoalText = Annotated[str, Field(min_length=1, max_length=2000)]
-PathValue = Annotated[Path, Field(strict=False)]
+PathValue = Annotated[Path, BeforeValidator(_bounded_path_input), Field(strict=False)]
 TaskCount = Annotated[int, Field(strict=True, ge=1, le=500)]
 IterationCount = Annotated[int, Field(strict=True, ge=1, le=100)]
 DurationSeconds = Annotated[int, Field(strict=True, ge=60, le=172800)]
@@ -134,6 +140,7 @@ class PreparationErrorCode(StrEnum):
     PREPARATION_BUSY = "preparation_busy"
     GIT_FAILED = "git_failed"
     POLICY_CONFLICT = "policy_conflict"
+    POLICY_SNAPSHOT_REQUIRED = "policy_snapshot_required"
     POLICY_WRITE_FAILED = "policy_write_failed"
 
 

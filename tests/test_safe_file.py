@@ -41,8 +41,10 @@ def test_directory_open_rejects_a_symlinked_ancestor(tmp_path: Path) -> None:
     linked_parent = tmp_path / "linked"
     linked_parent.symlink_to(real_parent, target_is_directory=True)
 
-    with pytest.raises((OSError, SafeFileFailure)), open_directory(linked_parent / "control"):
+    with pytest.raises(SafeFileFailure) as raised, open_directory(linked_parent / "control"):
         pytest.fail("symlinked ancestor was followed")
+
+    assert raised.value.code is SafeFileErrorCode.INVALID_FILE
 
 
 def test_directory_swap_is_detected_without_redirecting_publication(tmp_path: Path) -> None:

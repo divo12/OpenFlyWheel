@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ofw.preparation.contracts import (
     BaselineConfiguration,
@@ -39,7 +39,7 @@ _COMMIT_PATTERN = r"[0-9a-f]{40}"
 
 
 class _PreparationStateWire(StrictModel):
-    schema_version: int = Field(default=1, ge=1, le=1)
+    schema_version: int = Field(default=2, ge=2, le=2)
     request_digest: str = Field(pattern=r"sha256:[0-9a-f]{64}")
     phase: PreparationPhase
     branch_name: str
@@ -64,6 +64,12 @@ class _PreparationStateWire(StrictModel):
     unverified_trials: int | None = Field(default=None, ge=0, le=500)
     unsupported_reward_trials: int | None = Field(default=None, ge=0, le=500)
     error_code: PreparationErrorCode | None = None
+
+
+class _StateVersionWire(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+
+    schema_version: int = Field(strict=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,8 +302,31 @@ def _read_state(state_directory: Path) -> _PreparationStateWire | None:
     if not path.exists():
         return None
     try:
-        return _PreparationStateWire.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        content = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "state.json",
+        ) from error
+    return _parse_state(content)
+
+
+def _parse_state(content: str) -> _PreparationStateWire:
+    try:
+        version = _StateVersionWire.model_validate_json(content)
+    except (ValidationError, ValueError) as error:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "state.json",
+        ) from error
+    if version.schema_version != 2:
+        raise PreparationFailure(
+            PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED,
+            "state.json",
+        )
+    try:
+        return _PreparationStateWire.model_validate_json(content)
+    except (ValidationError, ValueError) as error:
         raise PreparationFailure(
             PreparationErrorCode.INVALID_BASELINE_RESULT,
             "state.json",
@@ -573,6 +602,8 @@ def _failure_observation(
 def _root_cause(code: PreparationErrorCode) -> str:
     if code is PreparationErrorCode.POLICY_CONFLICT:
         return "The experiment already has different immutable policy bytes."
+    if code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED:
+        return "The existing preparation predates the canonical policy snapshot."
     specific = _specific_root_cause(code)
     if specific is not None:
         return specific
@@ -598,6 +629,8 @@ def _retry(code: PreparationErrorCode) -> str:
         return "Inspect the bounded baseline log, then use a new experiment ID if rerunning."
     if code is PreparationErrorCode.POLICY_CONFLICT:
         return "Do not retry this experiment ID with different policy content."
+    if code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED:
+        return "Use a new experiment ID and prepare again; do not infer policy from YAML."
     return "Correct the reported configuration boundary, then retry without forcing Git state."
 
 

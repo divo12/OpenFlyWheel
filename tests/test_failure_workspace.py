@@ -186,9 +186,25 @@ def _oversized_curation() -> FailureCuration:
 
 
 def _expected_artifact(artifact_id: str) -> FailureArtifact:
-    return FailureArtifact.from_diagnosis(
-        artifact_id,
-        _request(Path("/")).to_diagnosis(),
+    return FailureArtifact(
+        artifact_id=artifact_id,
+        content_digest="sha256:e712d9d50d334533c1dd8ec75011478d588392d806a1e99633e386aede9e5ba8",
+        trace_id="trace-1",
+        task_id="task-1",
+        verifier_id="itsm-bench@v1",
+        evaluated_at=_EVALUATED_AT,
+        normalized_score=0.0,
+        outcome_score_id="outcome-score-1",
+        outcome_evidence=("harbor://trial-1/verifier/result",),
+        evidence_status=FailureEvidenceStatus.SUPPORTED,
+        issue_type=FailureType.CONTROL_FLOW_FAILURE,
+        expected_outcome="Incident INC-123 is closed.",
+        actual_outcome="Incident INC-123 remains open.",
+        critical_observation_id="observation-7",
+        evidence_observation_ids=("observation-7", "observation-9"),
+        root_cause="The agent finalized before reading state.",
+        counterfactual_action="Read the incident state before finalizing.",
+        inconclusive_reason=None,
     )
 
 
