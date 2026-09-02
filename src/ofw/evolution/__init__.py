@@ -1,5 +1,20 @@
 """Prepared-experiment evolution contracts."""
 
+from ofw.evolution.candidate import (
+    CandidateBlocker,
+    CandidateBlockerCode,
+    CandidateErrorCode,
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateFailure,
+    CandidateId,
+    CandidateOutcomeReceipt,
+    CandidatePhase,
+    CandidateStatus,
+)
+from ofw.evolution.candidate_git import CandidateGitGateway
+from ofw.evolution.candidate_langfuse import LangfuseCandidateTraceLocator
+from ofw.evolution.candidate_service import CandidateExecutionService
 from ofw.evolution.hypothesis import (
     FailurePatternReference,
     FailurePatternReferenceInput,
@@ -17,6 +32,18 @@ from ofw.evolution.hypothesis import (
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
 
 __all__ = [
+    "CandidateBlocker",
+    "CandidateBlockerCode",
+    "CandidateErrorCode",
+    "CandidateExecutionInput",
+    "CandidateExecutionObservation",
+    "CandidateExecutionService",
+    "CandidateFailure",
+    "CandidateGitGateway",
+    "CandidateId",
+    "CandidateOutcomeReceipt",
+    "CandidatePhase",
+    "CandidateStatus",
     "FailurePatternReference",
     "FailurePatternReferenceInput",
     "FileHypothesisRepository",
@@ -29,5 +56,6 @@ __all__ = [
     "HypothesisObservation",
     "HypothesisService",
     "HypothesisStatus",
+    "LangfuseCandidateTraceLocator",
     "RecordHypothesisInput",
 ]

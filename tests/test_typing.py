@@ -99,3 +99,16 @@ def test_namespace_exports_policy_and_hypothesis_contracts_without_legacy_owners
 
     assert expected <= set(package.__all__)
     assert {"AssetAccess", "HarnessRevision", "HarnessRevisionId"}.isdisjoint(package.__all__)
+
+
+def test_namespace_exports_candidate_contracts_without_restoring_runtime_plane() -> None:
+    expected = {
+        "CandidateExecutionInput",
+        "CandidateExecutionObservation",
+        "CandidateId",
+        "CandidatePhase",
+        "CandidateStatus",
+    }
+
+    assert expected <= set(package.__all__)
+    assert {"E2BSandbox", "CanaryCase", "CommandLoop"}.isdisjoint(package.__all__)

@@ -6,6 +6,8 @@ import stat
 import subprocess  # nosec B404
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from ofw.evolution.hypothesis import (
     HarnessHypothesis,
     HypothesisArtifact,
@@ -21,6 +23,7 @@ from ofw.safe_file import (
     SafeFileFailure,
     open_directory_chain,
     publish_idempotent,
+    read_bounded,
 )
 
 _HYPOTHESIS_LIMIT_BYTES = 64 * 1024
@@ -32,6 +35,27 @@ class FileHypothesisRepository:
 
     def load_policy(self, root: Path, experiment_id: str) -> ExperimentPolicySnapshot:
         return FileExperimentPolicyRepository().load(root, experiment_id)
+
+    def load(self, root: Path, hypothesis_id: str) -> HarnessHypothesis:
+        prepared_root = _prepared_root(root)
+        try:
+            with open_directory_chain(
+                prepared_root,
+                (".workspace", "hypotheses"),
+                create=False,
+            ) as directory:
+                content = read_bounded(
+                    directory,
+                    f"{hypothesis_id}.json",
+                    maximum_bytes=_HYPOTHESIS_LIMIT_BYTES,
+                    subject=hypothesis_id,
+                )
+            artifact = HypothesisArtifact.model_validate_json(content)
+        except (FileNotFoundError, SafeFileFailure, ValidationError, ValueError, OSError):
+            raise HypothesisFailure(HypothesisErrorCode.STALE_POLICY, hypothesis_id) from None
+        if artifact.hypothesis_id != hypothesis_id:
+            raise HypothesisFailure(HypothesisErrorCode.STALE_POLICY, hypothesis_id)
+        return artifact.to_hypothesis()
 
     def validate_workspace(
         self,

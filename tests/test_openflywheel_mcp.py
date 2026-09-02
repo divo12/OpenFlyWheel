@@ -52,6 +52,11 @@ from ofw.evaluation.outcome import (
     VerifierVerdict,
 )
 from ofw.evolution import (
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateExecutionService,
+    CandidatePhase,
+    CandidateStatus,
     FailurePatternReferenceInput,
     HarnessChangeTargetInput,
     HypothesisObservation,
@@ -96,6 +101,8 @@ class OpenFlywheelMcpModule(Protocol):
     def _curation_service(self) -> FailureCurationService: ...
 
     def _hypothesis_service(self) -> HypothesisService: ...
+
+    def _candidate_service(self) -> CandidateExecutionService: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -155,6 +162,11 @@ class OpenFlywheelMcpModule(Protocol):
 
     def record_hypothesis(self, request: RecordHypothesisInput) -> HypothesisObservation: ...
 
+    def execute_candidate(
+        self,
+        request: CandidateExecutionInput,
+    ) -> CandidateExecutionObservation: ...
+
 
 class _FakeOutcomeStore:
     def __init__(self) -> None:
@@ -213,6 +225,16 @@ class _FakeHypothesisService:
         self.requests: list[RecordHypothesisInput] = []
 
     def record(self, request: RecordHypothesisInput) -> HypothesisObservation:
+        self.requests.append(request)
+        return self.observation
+
+
+class _FakeCandidateService:
+    def __init__(self, observation: CandidateExecutionObservation) -> None:
+        self.observation = observation
+        self.requests: list[CandidateExecutionInput] = []
+
+    def execute(self, request: CandidateExecutionInput) -> CandidateExecutionObservation:
         self.requests.append(request)
         return self.observation
 
@@ -388,6 +410,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "mine_failure_patterns",
         "record_failure_curation",
         "record_hypothesis",
+        "execute_candidate",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -398,6 +421,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (False, False, True),
         (False, False, True),
         (True, False, True),
+        (False, False, True),
         (False, False, True),
         (False, False, True),
     )
@@ -719,3 +743,38 @@ def test_record_hypothesis_accepts_mcp_json_mapping(tmp_path: Path) -> None:
     request = _hypothesis_request(tmp_path)
 
     assert RecordHypothesisInput.model_validate(_json_request(request)) == request
+
+
+def test_execute_candidate_passes_one_strict_object_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    request = CandidateExecutionInput(
+        workspace_root=tmp_path / "accepted",
+        worktree_parent=tmp_path / "candidates",
+        benchmark_root=tmp_path / "benchmark",
+        harbor_executable=tmp_path / "harbor",
+        harbor_config=Path("config.json"),
+        experiment_id="experiment-one",
+        hypothesis_id=_HYPOTHESIS_ID,
+    )
+    expected = CandidateExecutionObservation(
+        status=CandidateStatus.WARNING,
+        summary="The isolated candidate worktree is ready for the hypothesis edit.",
+        next_actions=("Edit the candidate, then poll.",),
+        artifacts=(str(tmp_path / "candidate"),),
+        phase=CandidatePhase.EDITING,
+        experiment_id="experiment-one",
+        hypothesis_id=_HYPOTHESIS_ID,
+        source_commit=_COMMIT,
+        worktree_path=tmp_path / "candidate",
+        outcome_receipts=(),
+        blockers=(),
+    )
+    service = _FakeCandidateService(expected)
+    monkeypatch.setattr(module, "_candidate_service", lambda: service)
+
+    assert module.execute_candidate(request) == expected
+    assert service.requests == [request]
+    assert CandidateExecutionInput.model_validate(_json_request(request)) == request

@@ -45,9 +45,14 @@ from ofw.evaluation.outcome import (
     VerifierVerdict,
 )
 from ofw.evolution import (
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateExecutionService,
+    CandidateGitGateway,
     FileHypothesisRepository,
     HypothesisObservation,
     HypothesisService,
+    LangfuseCandidateTraceLocator,
     RecordHypothesisInput,
 )
 from ofw.observability.langfuse.contracts import LangfuseProject
@@ -70,7 +75,7 @@ from ofw.preparation import (
     WorkspacePreparationObservation,
     WorkspacePreparationService,
 )
-from ofw.preparation.harbor import HarborBaselineRunner
+from ofw.preparation.harbor import HarborBaselineRunner, HarborExperimentRunner
 from ofw.preparation.worktree import GitWorktreeGateway
 
 QueryInput = TypeVar("QueryInput")
@@ -92,8 +97,8 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
         "record authoritative outcomes, compact failure diagnoses, exact patterns, and "
-        "evidence-backed hypotheses. Never infer outcomes, mutate traces, copy trace payloads "
-        "into local storage, or edit candidates while recording a hypothesis."
+        "evidence-backed hypotheses and isolated candidates. Never infer outcomes, mutate "
+        "traces, copy trace payloads into local storage, or broaden candidate edit authority."
     ),
     log_level="DEBUG",
 )
@@ -167,6 +172,17 @@ def _hypothesis_service() -> HypothesisService:
     return HypothesisService(
         pattern_miner=FailurePatternMiningService(workspace),
         repository=FileHypothesisRepository(),
+    )
+
+
+def _candidate_service() -> CandidateExecutionService:
+    client = _client()
+    return CandidateExecutionService(
+        workspace=CandidateGitGateway(),
+        hypotheses=FileHypothesisRepository(),
+        runner=HarborExperimentRunner(),
+        trace_locator=LangfuseCandidateTraceLocator(client),
+        outcome_store=_outcome_store(),
     )
 
 
@@ -315,6 +331,14 @@ def record_failure_curation(
 def record_hypothesis(request: RecordHypothesisInput) -> HypothesisObservation:
     """Record one exact evidence-backed hypothesis, then stop before candidate editing."""
     return _hypothesis_service().record(request)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def execute_candidate(
+    request: CandidateExecutionInput,
+) -> CandidateExecutionObservation:
+    """Create, seal, launch, or poll one exact hypothesis candidate."""
+    return _candidate_service().execute(request)
 
 
 def main() -> None:
