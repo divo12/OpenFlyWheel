@@ -12,6 +12,15 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool
 
+from ofw.evaluation.experiment_ledger import (
+    ExperimentDecision,
+    ExperimentLedgerErrorCode,
+    ExperimentLedgerFailure,
+    ExperimentLedgerService,
+    ExperimentRecordObservation,
+    ExperimentRecordStatus,
+    RecordExperimentInput,
+)
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
 from ofw.evaluation.failure_patterns import (
     FailurePatternMiningObservation,
@@ -59,6 +68,7 @@ from ofw.preparation import (
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
+_EXPERIMENT_ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
 
 
 class OpenFlywheelMcpModule(Protocol):
@@ -68,6 +78,8 @@ class OpenFlywheelMcpModule(Protocol):
     def _preparation_service(self) -> WorkspacePreparationService: ...
 
     def _failure_service(self) -> FailureWorkspaceService: ...
+
+    def _experiment_service(self) -> ExperimentLedgerService: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -120,6 +132,11 @@ class OpenFlywheelMcpModule(Protocol):
         request: MineFailurePatternsInput,
     ) -> FailurePatternMiningObservation: ...
 
+    def record_experiment(
+        self,
+        request: RecordExperimentInput,
+    ) -> ExperimentRecordObservation: ...
+
 
 class _FakeOutcomeStore:
     def __init__(self) -> None:
@@ -154,6 +171,19 @@ class _FakeFailureService:
         self.failure: FailureWorkspaceFailure | None = None
 
     def record(self, request: RecordFailureInput) -> FailureRecordObservation:
+        if self.failure is not None:
+            raise self.failure
+        self.requests.append(request)
+        return self.observation
+
+
+class _FakeExperimentService:
+    def __init__(self, observation: ExperimentRecordObservation) -> None:
+        self.observation = observation
+        self.requests: list[RecordExperimentInput] = []
+        self.failure: ExperimentLedgerFailure | None = None
+
+    def record(self, request: RecordExperimentInput) -> ExperimentRecordObservation:
         if self.failure is not None:
             raise self.failure
         self.requests.append(request)
@@ -241,6 +271,37 @@ def _inconclusive_failure_request(root: Path) -> RecordFailureInput:
     )
 
 
+def _experiment_request(root: Path) -> RecordExperimentInput:
+    return RecordExperimentInput(
+        workspace_root=root,
+        experiment_id="itsm-demo",
+        run_id="run-001",
+        parent_revision="a" * 40,
+        hypothesis="Confirm state before finalizing.",
+        verifier_receipts=("score-1",),
+        gate_decision=ExperimentDecision.ADMIT,
+        total_cost_usd=0.12,
+        latency_seconds=45.0,
+        rejection_reason=None,
+        decided_at=datetime(2026, 9, 2, 8, 30, tzinfo=UTC),
+    )
+
+
+def _experiment_observation() -> ExperimentRecordObservation:
+    relative_path = Path(f".workspace/experiments/{_EXPERIMENT_ARTIFACT_ID}.json")
+    return ExperimentRecordObservation(
+        status=ExperimentRecordStatus.SUCCESS,
+        summary="Stored one experiment attempt in the local ledger.",
+        next_actions=("Retain the artifact path with the candidate decision.",),
+        artifacts=(str(relative_path), _EXPERIMENT_ARTIFACT_ID),
+        experiment_id="itsm-demo",
+        run_id="run-001",
+        artifact_id=_EXPERIMENT_ARTIFACT_ID,
+        relative_path=relative_path,
+        gate_decision=ExperimentDecision.ADMIT,
+    )
+
+
 def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
@@ -253,6 +314,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "record_outcome",
         "record_failure",
         "mine_failure_patterns",
+        "record_experiment",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -263,6 +325,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (False, False, True),
         (False, False, True),
         (True, False, True),
+        (False, False, True),
     )
 
 
@@ -504,3 +567,36 @@ def test_mine_failure_patterns_passes_one_bounded_object_to_the_service(
     assert result.source_artifact_count == 1
     assert result.patterns == ()
     assert result.inconclusive_artifact_ids == (recorded.artifact_id,)
+
+
+def test_record_experiment_passes_one_strict_object_to_the_ledger_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    expected = _experiment_observation()
+    service = _FakeExperimentService(expected)
+    request = _experiment_request(tmp_path)
+    monkeypatch.setattr(module, "_experiment_service", lambda: service)
+
+    assert module.record_experiment(request) == expected
+    assert service.requests == [request]
+
+
+def test_record_experiment_preserves_typed_ledger_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    service = _FakeExperimentService(_experiment_observation())
+    service.failure = ExperimentLedgerFailure(
+        ExperimentLedgerErrorCode.WRITE_FAILED,
+        _EXPERIMENT_ARTIFACT_ID,
+    )
+    monkeypatch.setattr(module, "_experiment_service", lambda: service)
+
+    with pytest.raises(ExperimentLedgerFailure) as raised:
+        module.record_experiment(_experiment_request(tmp_path))
+
+    assert raised.value.code is ExperimentLedgerErrorCode.WRITE_FAILED
+    assert str(raised.value) == f"write_failed: {_EXPERIMENT_ARTIFACT_ID}"

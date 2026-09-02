@@ -14,6 +14,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
+from ofw.evaluation.experiment_ledger import (
+    ExperimentLedgerService,
+    ExperimentRecordObservation,
+    FileExperimentLedger,
+    RecordExperimentInput,
+)
 from ofw.evaluation.failure_patterns import (
     FailurePatternMiningObservation,
     FailurePatternMiningService,
@@ -73,8 +79,9 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     name="openflywheel",
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
-        "record authoritative outcomes plus compact failure diagnoses and exact patterns. "
-        "Never infer outcomes, mutate traces, or copy trace payloads into local storage."
+        "record authoritative outcomes, compact failure diagnoses, and terminal experiment "
+        "attempts; mine exact failure patterns. Never infer outcomes, mutate traces, or copy "
+        "trace payloads into local storage."
     ),
     log_level="DEBUG",
 )
@@ -137,6 +144,10 @@ def _failure_service() -> FailureWorkspaceService:
 
 def _failure_pattern_service() -> FailurePatternMiningService:
     return FailurePatternMiningService(FileFailureWorkspace())
+
+
+def _experiment_service() -> ExperimentLedgerService:
+    return ExperimentLedgerService(FileExperimentLedger())
 
 
 def _program_template(name: str) -> str:
@@ -274,6 +285,12 @@ def mine_failure_patterns(
 ) -> FailurePatternMiningObservation:
     """Group explicit compact diagnoses by exact normalized root cause."""
     return _failure_pattern_service().mine(request)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def record_experiment(request: RecordExperimentInput) -> ExperimentRecordObservation:
+    """Store one terminal candidate decision in the prepared workspace ledger."""
+    return _experiment_service().record(request)
 
 
 def main() -> None:
