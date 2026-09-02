@@ -27,6 +27,11 @@ from ofw.contracts import (
     WorkspaceFile,
 )
 from ofw.evaluation import (
+    FailureDiagnosis,
+    FailureDiagnosisError,
+    FailureErrorCode,
+    FailureEvidenceStatus,
+    FailureType,
     LangfuseOutcomeStore,
     OutcomeErrorCode,
     OutcomeEvaluation,
@@ -100,6 +105,11 @@ __all__ = [
     "E2BSandbox",
     "EditableFile",
     "EvidenceReference",
+    "FailureDiagnosis",
+    "FailureDiagnosisError",
+    "FailureErrorCode",
+    "FailureEvidenceStatus",
+    "FailureType",
     "GitCommit",
     "Harness",
     "HarnessAsset",

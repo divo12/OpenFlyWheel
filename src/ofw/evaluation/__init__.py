@@ -1,5 +1,12 @@
 """Provider-agnostic evaluation contracts."""
 
+from ofw.evaluation.failure import (
+    FailureDiagnosis,
+    FailureDiagnosisError,
+    FailureErrorCode,
+    FailureEvidenceStatus,
+    FailureType,
+)
 from ofw.evaluation.langfuse import (
     LangfuseOutcomeStore,
     OutcomeScoreSubmission,
@@ -15,6 +22,11 @@ from ofw.evaluation.outcome import (
 )
 
 __all__ = [
+    "FailureDiagnosis",
+    "FailureDiagnosisError",
+    "FailureErrorCode",
+    "FailureEvidenceStatus",
+    "FailureType",
     "LangfuseOutcomeStore",
     "OutcomeErrorCode",
     "OutcomeEvaluation",
