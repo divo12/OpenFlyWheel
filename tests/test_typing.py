@@ -50,6 +50,20 @@ def test_namespace_exports_failure_pattern_contract() -> None:
     assert "MineFailurePatternsInput" in package.__all__
 
 
+def test_namespace_exports_failure_curation_contract() -> None:
+    expected = {
+        "DeferredFailure",
+        "FailureCuration",
+        "FailureCurationErrorCode",
+        "FailureCurationFailure",
+        "FailureGroup",
+        "FailureGroupMember",
+        "FailureSource",
+    }
+
+    assert expected <= set(package.__all__)
+
+
 def test_namespace_exports_workspace_preparation_contract() -> None:
     assert "PreparationErrorCode" in package.__all__
     assert "PreparationPhase" in package.__all__

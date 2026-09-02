@@ -12,7 +12,15 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool
 
+from ofw.contracts import ComponentKind
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
+from ofw.evaluation.failure_curation import (
+    FailureCurationObservation,
+    FailureCurationService,
+    FailureCurationStatus,
+    FailureGroupInput,
+    RecordFailureCurationInput,
+)
 from ofw.evaluation.failure_patterns import (
     FailurePatternMiningObservation,
     FailurePatternMiningStatus,
@@ -59,6 +67,8 @@ from ofw.preparation import (
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
+_SECOND_FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
+_CURATION_ID = "00000000-0000-0000-0000-000000000003"
 
 
 class OpenFlywheelMcpModule(Protocol):
@@ -68,6 +78,8 @@ class OpenFlywheelMcpModule(Protocol):
     def _preparation_service(self) -> WorkspacePreparationService: ...
 
     def _failure_service(self) -> FailureWorkspaceService: ...
+
+    def _curation_service(self) -> FailureCurationService: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -120,6 +132,11 @@ class OpenFlywheelMcpModule(Protocol):
         request: MineFailurePatternsInput,
     ) -> FailurePatternMiningObservation: ...
 
+    def record_failure_curation(
+        self,
+        request: RecordFailureCurationInput,
+    ) -> FailureCurationObservation: ...
+
 
 class _FakeOutcomeStore:
     def __init__(self) -> None:
@@ -156,6 +173,16 @@ class _FakeFailureService:
     def record(self, request: RecordFailureInput) -> FailureRecordObservation:
         if self.failure is not None:
             raise self.failure
+        self.requests.append(request)
+        return self.observation
+
+
+class _FakeCurationService:
+    def __init__(self, observation: FailureCurationObservation) -> None:
+        self.observation = observation
+        self.requests: list[RecordFailureCurationInput] = []
+
+    def record(self, request: RecordFailureCurationInput) -> FailureCurationObservation:
         self.requests.append(request)
         return self.observation
 
@@ -241,6 +268,39 @@ def _inconclusive_failure_request(root: Path) -> RecordFailureInput:
     )
 
 
+def _curation_request(root: Path) -> RecordFailureCurationInput:
+    return RecordFailureCurationInput(
+        workspace_root=root,
+        source_artifact_ids=(_FAILURE_ARTIFACT_ID, _SECOND_FAILURE_ARTIFACT_ID),
+        groups=(
+            FailureGroupInput(
+                pattern_key="finalizes-before-verification",
+                title="Finalizes before verifying state",
+                mechanism="A successful mutation is treated as task completion.",
+                prevention="Require a state read before finalization.",
+                target_component=ComponentKind.PROMPT,
+                failure_artifact_ids=(_FAILURE_ARTIFACT_ID, _SECOND_FAILURE_ARTIFACT_ID),
+            ),
+        ),
+        deferred=(),
+    )
+
+
+def _curation_observation() -> FailureCurationObservation:
+    relative_path = Path(f".workspace/failure-curations/{_CURATION_ID}.json")
+    return FailureCurationObservation(
+        status=FailureCurationStatus.SUCCESS,
+        summary="Stored one evidence-bound failure group and 0 deferred failures.",
+        next_actions=("Use one recorded group to form the next harness hypothesis.",),
+        artifacts=(str(relative_path), _CURATION_ID),
+        curation_id=_CURATION_ID,
+        relative_path=relative_path,
+        source_failure_count=2,
+        group_count=1,
+        deferred_count=0,
+    )
+
+
 def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
@@ -253,6 +313,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "record_outcome",
         "record_failure",
         "mine_failure_patterns",
+        "record_failure_curation",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -263,6 +324,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (False, False, True),
         (False, False, True),
         (True, False, True),
+        (False, False, True),
     )
 
 
@@ -504,3 +566,17 @@ def test_mine_failure_patterns_passes_one_bounded_object_to_the_service(
     assert result.source_artifact_count == 1
     assert result.patterns == ()
     assert result.inconclusive_artifact_ids == (recorded.artifact_id,)
+
+
+def test_record_failure_curation_passes_one_strict_object_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    expected = _curation_observation()
+    service = _FakeCurationService(expected)
+    request = _curation_request(tmp_path)
+    monkeypatch.setattr(module, "_curation_service", lambda: service)
+
+    assert module.record_failure_curation(request) == expected
+    assert service.requests == [request]

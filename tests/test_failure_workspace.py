@@ -9,12 +9,26 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 
 import ofw.evaluation.failure_workspace as failure_workspace_module
+from ofw.contracts import ComponentKind, Sha256Digest
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
+from ofw.evaluation.failure_curation import (
+    DeferredFailureInput,
+    FailureCuration,
+    FailureCurationArtifact,
+    FailureCurationErrorCode,
+    FailureCurationFailure,
+    FailureCurationService,
+    FailureGroup,
+    FailureGroupInput,
+    FailureGroupMember,
+    RecordFailureCurationInput,
+)
 from ofw.evaluation.failure_workspace import (
     FailedOutcomeInput,
     FailureArtifact,
@@ -23,13 +37,17 @@ from ofw.evaluation.failure_workspace import (
     FailureWorkspaceErrorCode,
     FailureWorkspaceFailure,
     FailureWorkspaceService,
+    FileFailureCurationWorkspace,
     FileFailureWorkspace,
     RecordFailureInput,
 )
+from ofw.evaluation.outcome import TaskId
+from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 
 _EVALUATED_AT = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)
 _ARTIFACT_LIMIT_BYTES = 64 * 1024
 RecordResult = FailureRecordObservation | FailureWorkspaceErrorCode
+RecordedFailures = tuple[tuple[str, str, str], tuple[Path, Path, Path]]
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -57,28 +75,113 @@ def _prepared_workspace(tmp_path: Path) -> Path:
 def _request(
     root: Path,
     root_cause: str = "The agent finalized before reading state.",
+    *,
+    trace_id: str = "trace-1",
+    task_id: str = "task-1",
+    outcome_score_id: str = "outcome-score-1",
+    critical_observation_id: str = "observation-7",
 ) -> RecordFailureInput:
-    critical = "observation-7"
     return RecordFailureInput(
         workspace_root=root,
         outcome=FailedOutcomeInput(
-            trace_id="trace-1",
-            task_id="task-1",
+            trace_id=trace_id,
+            task_id=task_id,
             verifier_id="itsm-bench@v1",
             evaluated_at=_EVALUATED_AT,
             score=0.0,
             evidence=("harbor://trial-1/verifier/result",),
-            outcome_score_id="outcome-score-1",
+            outcome_score_id=outcome_score_id,
         ),
         evidence_status=FailureEvidenceStatus.SUPPORTED,
         issue_type=FailureType.CONTROL_FLOW_FAILURE,
         expected_outcome="Incident INC-123 is closed.",
         actual_outcome="Incident INC-123 remains open.",
-        critical_observation_id=critical,
-        evidence_observation_ids=(critical, "observation-9"),
+        critical_observation_id=critical_observation_id,
+        evidence_observation_ids=(critical_observation_id, "observation-9"),
         root_cause=root_cause,
         counterfactual_action="Read the incident state before finalizing.",
         inconclusive_reason=None,
+    )
+
+
+def _curation_request(root: Path, artifact_ids: tuple[str, str, str]) -> RecordFailureCurationInput:
+    return RecordFailureCurationInput(
+        workspace_root=root,
+        source_artifact_ids=artifact_ids,
+        groups=(
+            FailureGroupInput(
+                pattern_key="finalizes-before-verification",
+                title="Finalizes before verifying state",
+                mechanism="The control loop treats a successful mutation as completion.",
+                prevention="Require a state read after mutation and before finalization.",
+                target_component=ComponentKind.PROMPT,
+                failure_artifact_ids=(artifact_ids[0], artifact_ids[1]),
+            ),
+        ),
+        deferred=(
+            DeferredFailureInput(
+                failure_artifact_id=artifact_ids[2],
+                reason="No second task supports this mechanism yet.",
+            ),
+        ),
+    )
+
+
+def _record_failures(root: Path) -> RecordedFailures:
+    service = FailureWorkspaceService(FileFailureWorkspace())
+    receipts = tuple(
+        service.record(
+            _request(
+                root,
+                trace_id=f"trace-{index}",
+                task_id=f"task-{index}",
+                outcome_score_id=f"score-{index}",
+                critical_observation_id=f"observation-{index}",
+            )
+        )
+        for index in range(1, 4)
+    )
+    return (
+        (receipts[0].artifact_id, receipts[1].artifact_id, receipts[2].artifact_id),
+        (
+            root / receipts[0].relative_path,
+            root / receipts[1].relative_path,
+            root / receipts[2].relative_path,
+        ),
+    )
+
+
+def _group_member(index: int) -> FailureGroupMember:
+    return FailureGroupMember(
+        artifact_id=str(UUID(int=index)),
+        artifact_digest=Sha256Digest(f"sha256:{index:064x}"),
+        trace_id=TraceId(f"trace-{index}"),
+        task_id=TaskId(f"task-{index}"),
+        outcome_score_id=ScoreId(f"score-{index}"),
+        critical_observation_id=ObservationId(f"observation-{index}"),
+    )
+
+
+def _oversized_curation() -> FailureCuration:
+    members = tuple(_group_member(index) for index in range(1, 51))
+    groups = tuple(
+        FailureGroup(
+            id=str(UUID(int=100 + index)),
+            pattern_key=f"pattern-{index}",
+            title="T" * 160,
+            mechanism="M" * 1000,
+            prevention="P" * 1000,
+            target_component=ComponentKind.PROMPT,
+            issue_type=FailureType.CONTROL_FLOW_FAILURE,
+            members=(members[index * 2], members[index * 2 + 1]),
+        )
+        for index in range(25)
+    )
+    return FailureCuration(
+        id=str(UUID(int=999)),
+        source_artifact_ids=tuple(member.artifact_id for member in members),
+        groups=groups,
+        deferred=(),
     )
 
 
@@ -366,6 +469,73 @@ def test_workspace_directory_swap_after_validation_cannot_receive_the_artifact(
     assert raised.value.code is FailureWorkspaceErrorCode.WRITE_FAILED
     assert not tuple(displaced.rglob("*.json"))
     assert not tuple((root / ".workspace").rglob("*.json"))
+
+
+def test_curates_recorded_failures_without_copying_trace_content(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    artifact_ids, _ = _record_failures(root)
+    service = FailureCurationService(FileFailureCurationWorkspace())
+
+    observation = service.record(_curation_request(root, artifact_ids))
+
+    artifact_path = root / observation.relative_path
+    artifact = FailureCurationArtifact.model_validate_json(artifact_path.read_text())
+    assert (
+        tuple(member.task_id for member in artifact.groups[0].members),
+        artifact.deferred[0].source.artifact_id,
+        artifact_path.read_text().find("The agent finalized before reading state."),
+        service.record(_curation_request(root, artifact_ids)),
+        len(tuple(artifact_path.parent.glob("*.json"))),
+        _git(root, "status", "--short"),
+    ) == (("task-1", "task-2"), artifact_ids[2], -1, observation, 1, "")
+
+
+def test_curation_rejects_a_missing_or_tampered_failure_artifact(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    artifact_ids, artifact_paths = _record_failures(root)
+    missing_path = artifact_paths[0]
+    missing_path.unlink()
+    service = FailureCurationService(FileFailureCurationWorkspace())
+
+    with pytest.raises(FailureCurationFailure) as missing:
+        service.record(_curation_request(root, artifact_ids))
+
+    assert missing.value.code is FailureCurationErrorCode.SOURCE_NOT_FOUND
+    missing_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(FailureCurationFailure) as invalid:
+        service.record(_curation_request(root, artifact_ids))
+
+    assert invalid.value.code is FailureCurationErrorCode.SOURCE_INVALID
+    assert not (root / ".workspace/failure-curations").exists()
+
+
+def test_curation_does_not_follow_a_failure_artifact_symlink(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    artifact_ids, artifact_paths = _record_failures(root)
+    source_path = artifact_paths[0]
+    outside = tmp_path / "outside.json"
+    source_path.replace(outside)
+    source_path.symlink_to(outside)
+
+    with pytest.raises(FailureCurationFailure) as raised:
+        FailureCurationService(FileFailureCurationWorkspace()).record(
+            _curation_request(root, artifact_ids)
+        )
+
+    assert raised.value.code is FailureCurationErrorCode.SOURCE_INVALID
+    assert outside.read_bytes()
+    assert not (root / ".workspace/failure-curations").exists()
+
+
+def test_oversized_curation_fails_before_workspace_mutation(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+
+    with pytest.raises(FailureCurationFailure) as raised:
+        FileFailureCurationWorkspace().store(root, _oversized_curation())
+
+    assert raised.value.code is FailureCurationErrorCode.ARTIFACT_TOO_LARGE
+    assert not (root / ".workspace/failure-curations").exists()
 
 
 def test_record_input_rejects_relative_workspace_and_extra_fields(tmp_path: Path) -> None:
