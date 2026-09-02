@@ -28,7 +28,7 @@ def test_openflywheel_mcp_uses_pinned_portable_runtime() -> None:
     server = manifest.mcpServers["openflywheel"]
 
     assert (
-        "git+https://github.com/divo12/OpenFlyWheel.git@ab0ef62cbe1e6cddf0bfd8ec61374d10120c61aa"
+        "git+https://github.com/divo12/OpenFlyWheel.git@2ea8dd1a1870ab741c10f07600e1b0081bd946ab"
         in server.args
     )
     assert "openflywheel-mcp" in server.args
