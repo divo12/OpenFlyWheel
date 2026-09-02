@@ -303,7 +303,7 @@ def _read_state(state_directory: Path) -> _PreparationStateWire | None:
         return None
     try:
         content = path.read_text(encoding="utf-8")
-    except OSError as error:
+    except (OSError, ValueError) as error:
         raise PreparationFailure(
             PreparationErrorCode.INVALID_BASELINE_RESULT,
             "state.json",

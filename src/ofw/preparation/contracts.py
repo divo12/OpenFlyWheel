@@ -29,7 +29,9 @@ def _numeric_float(value: object, field: str) -> float:
 
 
 def _bounded_path_input(value: object) -> object:
-    if isinstance(value, str) and ("\x00" in value or len(value.encode("utf-8")) > 1024):
+    if isinstance(value, (str, Path)) and (
+        "\x00" in str(value) or len(str(value).encode("utf-8")) > 1024
+    ):
         raise ValueError("path input must be bounded text")
     return value
 

@@ -548,6 +548,26 @@ def test_prepare_workspace_input_rejects_oversized_raw_path_before_normalization
         PrepareWorkspaceInput.model_validate_json(payload)
 
 
+def test_prepare_workspace_input_rejects_oversized_direct_path(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        PrepareWorkspaceInput(
+            experiment_id="demo",
+            harness_root=Path("/") / ("p" * 1025),
+            base_ref="HEAD",
+            worktree_parent=tmp_path,
+            benchmark_root=tmp_path,
+            harbor_executable=tmp_path / "harbor",
+            harbor_config=Path("config.json"),
+            expected_task_count=1,
+            editable_paths=(Path("prompt.md"),),
+            goal="Improve.",
+            quality_target=1.0,
+            max_iterations=1,
+            no_improvement_limit=1,
+            max_baseline_seconds=60,
+        )
+
+
 def test_legacy_preparation_state_requires_a_fresh_preparation_id(tmp_path: Path) -> None:
     harness_root = _harness_repository(tmp_path)
     harbor = _fake_harbor(tmp_path)
@@ -563,6 +583,23 @@ def test_legacy_preparation_state_requires_a_fresh_preparation_id(tmp_path: Path
 
     assert result.error_code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED
     assert result.retry is not None and "new experiment id" in result.retry.lower()
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
+def test_invalid_utf8_preparation_state_returns_typed_failure(tmp_path: Path) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    control = GitWorktreeGateway().control_directory(harness_root, request.experiment_id)
+    control.mkdir(parents=True)
+    (control / "state.json").write_bytes(b"\xff")
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.INVALID_BASELINE_RESULT
     assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
 
 
