@@ -121,6 +121,46 @@ def test_policy_is_derived_from_validated_preparation_inputs(tmp_path: Path) -> 
     assert policy.controls_digest == policy.recomputed_controls_digest()
 
 
+def test_maximum_valid_policy_fits_its_publication_bound(tmp_path: Path) -> None:
+    request = PrepareWorkspaceInput(
+        experiment_id="maximum",
+        harness_root=tmp_path / "harness",
+        base_ref="HEAD",
+        worktree_parent=tmp_path,
+        benchmark_root=tmp_path / "benchmark",
+        harbor_executable=tmp_path / "harbor",
+        harbor_config=Path("config.json"),
+        expected_task_count=500,
+        editable_paths=tuple(Path(f"{index:02d}/" + "p" * 1021) for index in range(50)),
+        goal="g" * 2000,
+        quality_target=1.0,
+        max_iterations=100,
+        no_improvement_limit=100,
+        max_baseline_seconds=172800,
+    )
+    prepared = PreparedGitWorkspace(
+        branch_name="ofw/maximum",
+        worktree_path=tmp_path / "worktree",
+        base_commit="1" * 40,
+        initialization_commit="2" * 40,
+        program_path=tmp_path / "worktree/PROGRAM.md",
+    )
+    baseline = BaselineConfiguration(
+        model="m" * 256,
+        task_ids=tuple(f"{index:03d}-" + "t" * 252 for index in range(500)),
+        benchmark_config_digest="sha256:" + "3" * 64,
+        verifier="v" * 128,
+        environment="e" * 128,
+    )
+    policy = build_experiment_policy(request, prepared, baseline)
+    control = tmp_path / "common/ofw/preparations/maximum"
+    control.mkdir(parents=True)
+
+    published = FileExperimentPolicyRepository().publish(control, policy)
+
+    assert published.stat().st_size <= 256 * 1024
+
+
 def test_policy_schema_rejects_extra_fields_and_tampered_controls(tmp_path: Path) -> None:
     _, policy = _snapshot(tmp_path)
     payload = policy.model_dump_json()
@@ -154,6 +194,19 @@ def test_policy_publish_is_atomic_idempotent_and_conflict_detecting(tmp_path: Pa
     assert raised.value.code is ExperimentPolicyErrorCode.POLICY_CONFLICT
 
 
+def test_policy_load_rejects_a_mismatched_experiment(tmp_path: Path) -> None:
+    root, policy = _snapshot(tmp_path)
+    control = root / ".git/ofw/preparations/experiment-two"
+    control.mkdir(parents=True)
+    repository = FileExperimentPolicyRepository()
+    repository.publish(control, policy)
+
+    with pytest.raises(ExperimentPolicyFailure) as raised:
+        repository.load(root, "experiment-two")
+
+    assert raised.value.code is ExperimentPolicyErrorCode.POLICY_INVALID
+
+
 @pytest.mark.parametrize("kind", ("symlink", "fifo"))
 def test_policy_rejects_non_regular_existing_file(tmp_path: Path, kind: str) -> None:
     root, policy = _snapshot(tmp_path)
@@ -180,7 +233,7 @@ def test_policy_reload_rejects_missing_oversized_and_invalid_files(tmp_path: Pat
     assert missing.value.code is ExperimentPolicyErrorCode.POLICY_SNAPSHOT_REQUIRED
 
     path = control / "policy.json"
-    path.write_bytes(b"x" * (64 * 1024 + 1))
+    path.write_bytes(b"x" * (256 * 1024 + 1))
     with pytest.raises(ExperimentPolicyFailure) as oversized:
         repository.load(root, "experiment-one")
     assert oversized.value.code is ExperimentPolicyErrorCode.POLICY_TOO_LARGE

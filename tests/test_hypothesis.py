@@ -304,7 +304,10 @@ def test_hypothesis_fails_closed_on_inexact_evidence(tmp_path: Path, case: str) 
     assert raised.value.code is expected
 
 
-@pytest.mark.parametrize("drift", ("commit", "dirty", "branch", "target-symlink"))
+@pytest.mark.parametrize(
+    "drift",
+    ("commit", "dirty", "untracked", "branch", "target-symlink"),
+)
 def test_hypothesis_rejects_stale_or_drifted_workspace(tmp_path: Path, drift: str) -> None:
     root, commit = _workspace(tmp_path)
     artifacts = (_diagnosis(root, "1"), _diagnosis(root, "2"))
@@ -315,6 +318,8 @@ def test_hypothesis_rejects_stale_or_drifted_workspace(tmp_path: Path, drift: st
         _git(root, "commit", "-qm", "move head")
     elif drift == "dirty":
         (root / "prompt.md").write_text("dirty\n", encoding="utf-8")
+    elif drift == "untracked":
+        (root / "untracked.txt").write_text("not prepared\n", encoding="utf-8")
     elif drift == "branch":
         _git(root, "branch", "-m", "wrong-branch")
     else:
@@ -330,6 +335,25 @@ def test_hypothesis_rejects_stale_or_drifted_workspace(tmp_path: Path, drift: st
         HypothesisErrorCode.STALE_POLICY,
         HypothesisErrorCode.INVALID_TARGET,
     }
+
+
+def test_hypothesis_rejects_semantically_tampered_diagnosis(tmp_path: Path) -> None:
+    root, commit = _workspace(tmp_path)
+    artifacts = (_diagnosis(root, "1"), _diagnosis(root, "2"))
+    path = root / ".workspace/failures" / f"{artifacts[0]}.json"
+    content = path.read_text(encoding="utf-8")
+    path.write_text(
+        content.replace(
+            "The incident remains open.",
+            "The incident was altered after recording.",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HypothesisFailure) as raised:
+        _service().record(_request(root, commit, artifacts))
+
+    assert raised.value.code is HypothesisErrorCode.PATTERN_EVIDENCE_MISMATCH
 
 
 @pytest.mark.parametrize("path", (Path("tools.py"), Path("PROGRAM.md"), Path("prompt.md/child")))

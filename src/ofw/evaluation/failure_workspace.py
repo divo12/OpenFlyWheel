@@ -50,6 +50,7 @@ from ofw.safe_file import (
     SafeFileFailure,
     publish_idempotent,
     read_bounded,
+    write_new_file,
 )
 
 _IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@/-]*"
@@ -62,7 +63,6 @@ _CURATION_DIRECTORY = "failure-curations"
 _IGNORE_CONTENT = "*\n"
 _WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-_CREATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 
 Identifier = Annotated[
     str,
@@ -177,8 +177,9 @@ class FailureRecordObservation(StrictModel):
 
 
 class FailureArtifact(StrictModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     artifact_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    content_digest: str = Field(pattern=r"sha256:[0-9a-f]{64}")
     trace_id: Identifier
     task_id: Identifier
     verifier_id: Identifier
@@ -199,9 +200,11 @@ class FailureArtifact(StrictModel):
     @model_validator(mode="after")
     def validate_domain_contract(self) -> FailureArtifact:
         try:
-            self.to_diagnosis()
+            diagnosis = self.to_diagnosis()
         except (FailureDiagnosisError, OutcomeEvaluationError) as error:
             raise ValueError("invalid failure artifact") from error
+        if self.content_digest != _diagnosis_content_digest(diagnosis):
+            raise ValueError("failure artifact content digest mismatch")
         return self
 
     @classmethod
@@ -213,6 +216,7 @@ class FailureArtifact(StrictModel):
         outcome = diagnosis.outcome
         return cls(
             artifact_id=artifact_id,
+            content_digest=_diagnosis_content_digest(diagnosis),
             trace_id=outcome.trace_id.value,
             task_id=outcome.task_id.value,
             verifier_id=outcome.verifier_id.value,
@@ -512,6 +516,50 @@ def _artifact_id(diagnosis: FailureDiagnosis) -> str:
     return str(uuid5(NAMESPACE_URL, identity))
 
 
+def _diagnosis_content_digest(diagnosis: FailureDiagnosis) -> str:
+    outcome = diagnosis.outcome
+    score = _required_score(outcome)
+    values = (
+        "ofw.failure-artifact/1",
+        outcome.trace_id.value,
+        outcome.task_id.value,
+        outcome.verifier_id.value,
+        outcome.evaluated_at.isoformat(),
+        score.hex(),
+        str(len(outcome.evidence)),
+        *(reference.value for reference in outcome.evidence),
+        diagnosis.outcome_score_id.value,
+        diagnosis.evidence_status.value,
+        _optional_enum(diagnosis.issue_type),
+        diagnosis.expected_outcome,
+        diagnosis.actual_outcome,
+        _optional_identifier(diagnosis.critical_observation_id),
+        str(len(diagnosis.evidence_observation_ids)),
+        *(identifier.value for identifier in diagnosis.evidence_observation_ids),
+        _optional_text(diagnosis.root_cause),
+        _optional_text(diagnosis.counterfactual_action),
+        _optional_text(diagnosis.inconclusive_reason),
+    )
+    digest = hashlib.sha256()
+    for value in values:
+        encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def _optional_enum(value: FailureType | None) -> str:
+    return "0" if value is None else f"1{value.value}"
+
+
+def _optional_identifier(value: ObservationId | None) -> str:
+    return "0" if value is None else f"1{value.value}"
+
+
+def _optional_text(value: str | None) -> str:
+    return "0" if value is None else f"1{value}"
+
+
 def _prepared_root(root: Path) -> Path:
     resolved = _resolve_root(root)
     if not _is_prepared_root(resolved):
@@ -624,7 +672,7 @@ def _existing_workspace_directories(
 
 def _write_ignore_file(directory: int) -> None:
     try:
-        _write_new_file(directory, ".gitignore", _IGNORE_CONTENT.encode("utf-8"))
+        write_new_file(directory, ".gitignore", _IGNORE_CONTENT.encode("utf-8"))
     except FileExistsError:
         return
 
@@ -655,14 +703,6 @@ def _publish_or_validate(
                 artifact_id,
             ) from None
         raise OSError("unsafe failure artifact") from None
-
-
-def _write_new_file(directory: int, name: str, content: bytes) -> None:
-    descriptor = os.open(name, _CREATE_FILE_FLAGS, 0o600, dir_fd=directory)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
 
 
 def _read_artifact(directory: int, artifact_id: str) -> FailureDiagnosisRecord:

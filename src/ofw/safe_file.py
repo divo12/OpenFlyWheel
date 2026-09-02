@@ -36,14 +36,8 @@ class SafeFileFailure(Exception):
 @contextmanager
 def open_directory(path: Path) -> Iterator[int]:
     """Open one directory without following links and recheck its identity on exit."""
-    descriptor = os.open(path, _DIRECTORY_FLAGS)
-    expected = _descriptor_identity(descriptor)
-    try:
-        _require_path_identity(path, expected)
+    with open_directory_chain(path, (), create=False) as descriptor:
         yield descriptor
-        _require_path_identity(path, expected)
-    finally:
-        os.close(descriptor)
 
 
 @contextmanager
@@ -54,15 +48,18 @@ def open_directory_chain(
     create: bool,
 ) -> Iterator[int]:
     """Open a contained child chain and recheck every link before and after use."""
-    root_descriptor = os.open(root, _DIRECTORY_FLAGS)
-    descriptors = [root_descriptor]
-    expected_root = _descriptor_identity(root_descriptor)
+    anchor, existing_parts = _absolute_directory_parts(root)
+    all_parts = existing_parts + parts
+    anchor_descriptor = os.open(anchor, _DIRECTORY_FLAGS)
+    descriptors = [anchor_descriptor]
+    expected_anchor = _descriptor_identity(anchor_descriptor)
     try:
-        for part in parts:
-            descriptors.append(_open_child(descriptors[-1], part, create=create))
-        _require_chain(root, parts, descriptors, expected_root)
+        for index, part in enumerate(all_parts):
+            child_create = create and index >= len(existing_parts)
+            descriptors.append(_open_child(descriptors[-1], part, create=child_create))
+        _require_chain(anchor, all_parts, descriptors, expected_anchor)
         yield descriptors[-1]
-        _require_chain(root, parts, descriptors, expected_root)
+        _require_chain(anchor, all_parts, descriptors, expected_anchor)
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
@@ -114,7 +111,12 @@ def _open_child(parent: int, name: str, *, create: bool) -> int:
     _require_leaf(name)
     if create:
         _mkdir_if_missing(parent, name)
-    return os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+    try:
+        return os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+    except FileNotFoundError:
+        raise
+    except OSError:
+        raise SafeFileFailure(SafeFileErrorCode.INVALID_FILE, name) from None
 
 
 def _mkdir_if_missing(parent: int, name: str) -> None:
@@ -158,7 +160,7 @@ def _publish_new_file(directory: int, name: str, content: bytes) -> None:
     temporary_name = f".ofw-{uuid4().hex}.tmp"
     published = False
     try:
-        _write_new_file(directory, temporary_name, content)
+        write_new_file(directory, temporary_name, content)
         os.link(
             temporary_name,
             name,
@@ -173,7 +175,9 @@ def _publish_new_file(directory: int, name: str, content: bytes) -> None:
             os.fsync(directory)
 
 
-def _write_new_file(directory: int, name: str, content: bytes) -> None:
+def write_new_file(directory: int, name: str, content: bytes) -> None:
+    """Create and fsync one exclusive no-follow file under a directory descriptor."""
+    _require_leaf(name)
     descriptor = os.open(name, _CREATE_FILE_FLAGS, 0o600, dir_fd=directory)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(content)
@@ -221,3 +225,9 @@ def _descriptor_identity(descriptor: int) -> tuple[int, int]:
 
 def _stat_identity(value: os.stat_result) -> tuple[int, int]:
     return value.st_dev, value.st_ino
+
+
+def _absolute_directory_parts(path: Path) -> tuple[Path, tuple[str, ...]]:
+    if not path.is_absolute():
+        raise SafeFileFailure(SafeFileErrorCode.INVALID_FILE, "directory")
+    return Path(path.anchor), path.parts[1:]
