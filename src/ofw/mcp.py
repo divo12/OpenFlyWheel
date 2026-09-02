@@ -14,6 +14,11 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
+from ofw.evaluation.failure_curation import (
+    FailureCurationObservation,
+    FailureCurationService,
+    RecordFailureCurationInput,
+)
 from ofw.evaluation.failure_patterns import (
     FailurePatternMiningObservation,
     FailurePatternMiningService,
@@ -22,6 +27,7 @@ from ofw.evaluation.failure_patterns import (
 from ofw.evaluation.failure_workspace import (
     FailureRecordObservation,
     FailureWorkspaceService,
+    FileFailureCurationWorkspace,
     FileFailureWorkspace,
     RecordFailureInput,
 )
@@ -73,8 +79,9 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     name="openflywheel",
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
-        "record authoritative outcomes plus compact failure diagnoses and exact patterns. "
-        "Never infer outcomes, mutate traces, or copy trace payloads into local storage."
+        "record authoritative outcomes, compact failure diagnoses, exact patterns, and "
+        "evidence-bound curations. Never infer outcomes, mutate traces, or copy trace payloads "
+        "into local storage."
     ),
     log_level="DEBUG",
 )
@@ -137,6 +144,10 @@ def _failure_service() -> FailureWorkspaceService:
 
 def _failure_pattern_service() -> FailurePatternMiningService:
     return FailurePatternMiningService(FileFailureWorkspace())
+
+
+def _curation_service() -> FailureCurationService:
+    return FailureCurationService(FileFailureCurationWorkspace())
 
 
 def _program_template(name: str) -> str:
@@ -274,6 +285,14 @@ def mine_failure_patterns(
 ) -> FailurePatternMiningObservation:
     """Group explicit compact diagnoses by exact normalized root cause."""
     return _failure_pattern_service().mine(request)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def record_failure_curation(
+    request: RecordFailureCurationInput,
+) -> FailureCurationObservation:
+    """Store one bounded cross-failure curation under a prepared local workspace."""
+    return _curation_service().record(request)
 
 
 def main() -> None:

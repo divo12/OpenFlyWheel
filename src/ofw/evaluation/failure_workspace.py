@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -14,20 +15,34 @@ from pathlib import Path
 from typing import Annotated, Literal, Never, Protocol
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from ofw.contracts import Sha256Digest
 from ofw.evaluation.failure import (
     FailureDiagnosis,
     FailureDiagnosisError,
     FailureEvidenceStatus,
     FailureType,
 )
+from ofw.evaluation.failure_curation import (
+    FailureCuration,
+    FailureCurationArtifact,
+    FailureCurationErrorCode,
+    FailureCurationFailure,
+    FailureCurationReceipt,
+    FailureSource,
+)
 from ofw.evaluation.failure_patterns import (
     FailureDiagnosisRecord,
     FailurePatternMiningError,
     FailurePatternMiningErrorCode,
 )
-from ofw.evaluation.outcome import OutcomeEvaluation, OutcomeEvaluationError, TaskId, VerifierId
+from ofw.evaluation.outcome import (
+    OutcomeEvaluation,
+    OutcomeEvaluationError,
+    TaskId,
+    VerifierId,
+)
 from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
@@ -37,6 +52,7 @@ _ARTIFACT_ID = re.compile(_ARTIFACT_ID_PATTERN)
 _ARTIFACT_LIMIT_BYTES = 64 * 1024
 _WORKSPACE_DIRECTORY = ".workspace"
 _FAILURE_DIRECTORY = "failures"
+_CURATION_DIRECTORY = "failure-curations"
 _IGNORE_CONTENT = "*\n"
 _WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -164,6 +180,14 @@ class FailureArtifact(StrictModel):
     counterfactual_action: DiagnosisText | None
     inconclusive_reason: DiagnosisText | None
 
+    @model_validator(mode="after")
+    def validate_domain_contract(self) -> FailureArtifact:
+        try:
+            self.to_diagnosis()
+        except (FailureDiagnosisError, OutcomeEvaluationError) as error:
+            raise ValueError("invalid failure artifact") from error
+        return self
+
     @classmethod
     def from_diagnosis(
         cls,
@@ -230,7 +254,7 @@ class FailureArtifactReceipt:
 class _DirectoryChainIdentity:
     root: tuple[int, int]
     workspace: tuple[int, int]
-    failures: tuple[int, int]
+    artifacts: tuple[int, int]
 
 
 class FailureWorkspaceErrorCode(StrEnum):
@@ -280,7 +304,15 @@ class FileFailureWorkspace:
     def store(self, root: Path, diagnosis: FailureDiagnosis) -> FailureArtifactReceipt:
         artifact_id = _artifact_id(diagnosis)
         try:
-            return self._store(root, diagnosis, artifact_id)
+            artifact = FailureArtifact.from_diagnosis(artifact_id, diagnosis)
+            content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
+            relative_path = _store_artifact(
+                root,
+                _FAILURE_DIRECTORY,
+                artifact_id,
+                content,
+            )
+            return FailureArtifactReceipt(artifact_id, relative_path)
         except (OSError, RuntimeError, UnicodeError):
             raise FailureWorkspaceFailure(
                 FailureWorkspaceErrorCode.WRITE_FAILED,
@@ -304,46 +336,96 @@ class FileFailureWorkspace:
                 "failure_artifacts",
             ) from None
 
-    def _store(
-        self,
-        root: Path,
-        diagnosis: FailureDiagnosis,
-        artifact_id: str,
-    ) -> FailureArtifactReceipt:
-        prepared_root = _prepared_root(root)
-        workspace, failures = _workspace_paths(prepared_root)
-        artifact = FailureArtifact.from_diagnosis(artifact_id, diagnosis)
-        content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
-        _validate_artifact_size(content)
-        directory_identity = _prepare_workspace_directories(
-            prepared_root,
-            workspace,
-            failures,
-        )
-        path = failures / f"{artifact_id}.json"
-        receipt = FailureArtifactReceipt(artifact_id, path.relative_to(prepared_root))
-        with _failure_directory_handle(
-            prepared_root,
-            directory_identity,
-        ) as directory:
-            _publish_or_validate(directory, path.name, content, artifact_id)
-        return receipt
-
     def _read(
         self,
         root: Path,
         artifact_ids: tuple[str, ...],
     ) -> tuple[FailureDiagnosisRecord, ...]:
         prepared_root = _prepared_root(root)
-        workspace, failures = _workspace_paths(prepared_root)
+        workspace, failures = _workspace_artifact_paths(prepared_root, _FAILURE_DIRECTORY)
         directory_identity = _existing_workspace_directories(
             prepared_root,
             workspace,
             failures,
         )
-        with _failure_directory_handle(prepared_root, directory_identity) as directory:
+        with _artifact_directory_handle(
+            prepared_root,
+            _FAILURE_DIRECTORY,
+            directory_identity,
+        ) as directory:
             return tuple(_read_artifact(directory, artifact_id) for artifact_id in artifact_ids)
 
+
+class FileFailureCurationWorkspace:
+    """Read compact diagnoses and store one bounded cross-failure curation."""
+
+    def load(self, root: Path, artifact_ids: tuple[str, ...]) -> tuple[FailureSource, ...]:
+        try:
+            return self._load(root, artifact_ids)
+        except FailureCurationFailure:
+            raise
+        except FailureWorkspaceFailure as error:
+            code = (
+                FailureCurationErrorCode.SOURCE_INVALID
+                if error.code is FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE
+                else FailureCurationErrorCode.INVALID_WORKSPACE
+            )
+            raise FailureCurationFailure(code, error.subject) from None
+        except (OSError, RuntimeError, UnicodeError):
+            raise FailureCurationFailure(
+                FailureCurationErrorCode.SOURCE_INVALID,
+                "failure_artifacts",
+            ) from None
+
+    def store(self, root: Path, curation: FailureCuration) -> FailureCurationReceipt:
+        try:
+            artifact = FailureCurationArtifact.from_curation(curation)
+            content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
+            relative_path = _store_artifact(
+                root,
+                _CURATION_DIRECTORY,
+                curation.id,
+                content,
+            )
+            return FailureCurationReceipt(curation.id, relative_path)
+        except FailureWorkspaceFailure as error:
+            raise FailureCurationFailure(_curation_workspace_error(error), error.subject) from None
+        except (OSError, RuntimeError, UnicodeError):
+            raise FailureCurationFailure(
+                FailureCurationErrorCode.WRITE_FAILED,
+                curation.id,
+            ) from None
+
+    def _load(
+        self,
+        root: Path,
+        artifact_ids: tuple[str, ...],
+    ) -> tuple[FailureSource, ...]:
+        prepared_root = _prepared_root(root)
+        workspace, failures = _workspace_artifact_paths(prepared_root, _FAILURE_DIRECTORY)
+        try:
+            identity = _existing_directory_identity(prepared_root, workspace, failures)
+            with _artifact_directory_handle(
+                prepared_root,
+                _FAILURE_DIRECTORY,
+                identity,
+            ) as directory:
+                return tuple(
+                    _read_failure_source(directory, artifact_id) for artifact_id in artifact_ids
+                )
+        except FileNotFoundError:
+            missing = next(
+                (
+                    artifact_id
+                    for artifact_id in artifact_ids
+                    if not (failures / f"{artifact_id}.json").exists()
+                ),
+                artifact_ids[0],
+            )
+            raise FailureCurationFailure(
+                FailureCurationErrorCode.SOURCE_NOT_FOUND,
+                missing,
+            ) from None
 
 def _observation_id(value: str | None) -> ObservationId | None:
     return None if value is None else ObservationId(value)
@@ -358,6 +440,48 @@ def _required_score(outcome: OutcomeEvaluation) -> float:
     if score is None:
         raise FailureWorkspaceFailure(FailureWorkspaceErrorCode.WRITE_FAILED, "outcome_score")
     return score
+
+
+def _read_failure_source(directory: int, artifact_id: str) -> FailureSource:
+    try:
+        content = _read_existing(directory, f"{artifact_id}.json", artifact_id)
+        artifact = FailureArtifact.model_validate_json(content)
+    except FileNotFoundError:
+        raise FailureCurationFailure(
+            FailureCurationErrorCode.SOURCE_NOT_FOUND,
+            artifact_id,
+        ) from None
+    except (FailureWorkspaceFailure, ValidationError):
+        raise FailureCurationFailure(
+            FailureCurationErrorCode.SOURCE_INVALID,
+            artifact_id,
+        ) from None
+    if artifact.artifact_id != artifact_id:
+        raise FailureCurationFailure(
+            FailureCurationErrorCode.SOURCE_INVALID,
+            artifact_id,
+        )
+    diagnosis = artifact.to_diagnosis()
+    return FailureSource(
+        artifact_id=artifact.artifact_id,
+        artifact_digest=Sha256Digest(f"sha256:{hashlib.sha256(content).hexdigest()}"),
+        trace_id=diagnosis.outcome.trace_id,
+        task_id=diagnosis.outcome.task_id,
+        outcome_score_id=diagnosis.outcome_score_id,
+        evidence_status=diagnosis.evidence_status,
+        issue_type=diagnosis.issue_type,
+        critical_observation_id=diagnosis.critical_observation_id,
+    )
+
+
+def _curation_workspace_error(error: FailureWorkspaceFailure) -> FailureCurationErrorCode:
+    if error.code is FailureWorkspaceErrorCode.INVALID_WORKSPACE:
+        return FailureCurationErrorCode.INVALID_WORKSPACE
+    if error.code is FailureWorkspaceErrorCode.ARTIFACT_CONFLICT:
+        return FailureCurationErrorCode.ARTIFACT_CONFLICT
+    if error.code is FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE:
+        return FailureCurationErrorCode.ARTIFACT_TOO_LARGE
+    return FailureCurationErrorCode.WRITE_FAILED
 
 
 def _artifact_id(diagnosis: FailureDiagnosis) -> str:
@@ -389,13 +513,24 @@ def _is_prepared_root(root: Path) -> bool:
     return all((root / name).is_file() for name in _WORKSPACE_MARKERS)
 
 
-def _workspace_paths(root: Path) -> tuple[Path, Path]:
+def _workspace_artifact_paths(root: Path, directory_name: str) -> tuple[Path, Path]:
     workspace = root / _WORKSPACE_DIRECTORY
-    failures = workspace / _FAILURE_DIRECTORY
+    failures = workspace / directory_name
     _require_contained(root, workspace.resolve(strict=False))
     _require_contained(root, failures.resolve(strict=False))
     _require_directory_if_present(workspace)
     return workspace, failures
+
+
+def _store_artifact(root: Path, directory_name: str, artifact_id: str, content: bytes) -> Path:
+    prepared_root = _prepared_root(root)
+    workspace, artifacts = _workspace_artifact_paths(prepared_root, directory_name)
+    _validate_artifact_size(content)
+    identity = _prepare_workspace_directories(prepared_root, workspace, artifacts)
+    path = artifacts / f"{artifact_id}.json"
+    with _artifact_directory_handle(prepared_root, directory_name, identity) as directory:
+        _publish_or_validate(directory, path.name, content, artifact_id)
+    return path.relative_to(prepared_root)
 
 
 def _require_directory_if_present(path: Path) -> None:
@@ -439,7 +574,21 @@ def _prepare_workspace_directories(
     return _DirectoryChainIdentity(
         root=_path_identity(root),
         workspace=_path_identity(workspace),
-        failures=_path_identity(failures),
+        artifacts=_path_identity(failures),
+    )
+
+
+def _existing_directory_identity(
+    root: Path,
+    workspace: Path,
+    artifacts: Path,
+) -> _DirectoryChainIdentity:
+    _require_contained(root, workspace.resolve(strict=True))
+    _require_contained(root, artifacts.resolve(strict=True))
+    return _DirectoryChainIdentity(
+        root=_path_identity(root),
+        workspace=_path_identity(workspace),
+        artifacts=_path_identity(artifacts),
     )
 
 
@@ -453,11 +602,7 @@ def _existing_workspace_directories(
             FailurePatternMiningErrorCode.ARTIFACT_NOT_FOUND,
             _FAILURE_DIRECTORY,
         )
-    return _DirectoryChainIdentity(
-        root=_path_identity(root),
-        workspace=_path_identity(workspace),
-        failures=_path_identity(failures),
-    )
+    return _existing_directory_identity(root, workspace, failures)
 
 
 def _write_ignore_file(directory: int) -> None:
@@ -613,28 +758,31 @@ def _child_directory_handle(parent: int, name: str) -> Iterator[int]:
 
 
 @contextmanager
-def _failure_directory_handle(
+def _artifact_directory_handle(
     root: Path,
+    directory_name: str,
     expected: _DirectoryChainIdentity,
 ) -> Iterator[int]:
     with (
         _directory_handle(root) as root_directory,
         _child_directory_handle(root_directory, _WORKSPACE_DIRECTORY) as workspace,
-        _child_directory_handle(workspace, _FAILURE_DIRECTORY) as failures,
+        _child_directory_handle(workspace, directory_name) as artifacts,
     ):
         _require_directory_chain(
             root,
             root_directory,
             workspace,
-            failures,
+            directory_name,
+            artifacts,
             expected,
         )
-        yield failures
+        yield artifacts
         _require_directory_chain(
             root,
             root_directory,
             workspace,
-            failures,
+            directory_name,
+            artifacts,
             expected,
         )
 
@@ -643,12 +791,13 @@ def _require_directory_chain(
     root: Path,
     root_directory: int,
     workspace: int,
-    failures: int,
+    directory_name: str,
+    artifacts: int,
     expected: _DirectoryChainIdentity,
 ) -> None:
     _require_directory_identity(root_directory, root, expected.root)
     _require_child_identity(root_directory, _WORKSPACE_DIRECTORY, workspace, expected.workspace)
-    _require_child_identity(workspace, _FAILURE_DIRECTORY, failures, expected.failures)
+    _require_child_identity(workspace, directory_name, artifacts, expected.artifacts)
 
 
 def _require_directory_identity(

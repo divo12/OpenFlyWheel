@@ -7,6 +7,15 @@ from ofw.evaluation.failure import (
     FailureEvidenceStatus,
     FailureType,
 )
+from ofw.evaluation.failure_curation import (
+    DeferredFailure,
+    FailureCuration,
+    FailureCurationErrorCode,
+    FailureCurationFailure,
+    FailureGroup,
+    FailureGroupMember,
+    FailureSource,
+)
 from ofw.evaluation.failure_patterns import (
     FailurePatternMiningError,
     FailurePatternMiningErrorCode,
@@ -31,16 +40,23 @@ from ofw.evaluation.outcome import (
 )
 
 __all__ = [
+    "DeferredFailure",
+    "FailureCuration",
+    "FailureCurationErrorCode",
+    "FailureCurationFailure",
     "FailureDiagnosis",
     "FailureDiagnosisError",
     "FailureErrorCode",
     "FailureEvidenceStatus",
+    "FailureGroup",
+    "FailureGroupMember",
     "FailurePatternMiningError",
     "FailurePatternMiningErrorCode",
     "FailurePatternMiningObservation",
     "FailurePatternMiningStatus",
     "FailurePatternOrdering",
     "FailurePatternSummary",
+    "FailureSource",
     "FailureType",
     "LangfuseOutcomeStore",
     "MineFailurePatternsInput",
