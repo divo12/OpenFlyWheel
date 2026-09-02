@@ -50,11 +50,12 @@ type and exact normalized root cause; results are not semantic clusters. Keep in
 diagnoses separate, and reread each supporting diagnosis before forming a shared hypothesis.
 
 After every failed outcome has a retained artifact, use `$failure-curator` for one bounded
-cross-task debugger pass. Submit the complete set of at most 50 artifact IDs to
-`record_failure_curation`, assigning each exactly once to a repeated evidence-bound group or a
-deferred entry. Retain the `.workspace/failure-curations/` artifact before forming a harness
-hypothesis. If the run has more than 50 failure artifacts, report the curation bound instead of
-claiming complete coverage.
+cross-task debugger pass. Use only the current run's retained `record_failure` receipt IDs.
+Do not glob `.workspace/failures/`, which may contain earlier runs. Submit the complete set of at
+most 50 IDs to `record_failure_curation`, assigning each exactly once to a repeated
+evidence-bound group or a deferred entry. Retain the `.workspace/failure-curations/` artifact
+before forming a harness hypothesis. If the run has more than 50 failure artifacts, report the
+curation bound and stop before forming a harness hypothesis.
 
 An intermediate tool error is evidence, not an outcome failure, when the agent recovered
 and the verifier passed. A technically clean trajectory is still a failure when the ITSM

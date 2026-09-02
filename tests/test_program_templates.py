@@ -23,6 +23,8 @@ def test_packaged_program_template_matches_plugin_asset(name: str) -> None:
         "$failure-curator",
         "record_failure_curation",
         ".workspace/failure-curations/",
+        "Do not glob",
+        "stop before forming a harness hypothesis",
         "Do not copy Langfuse trace payloads",
     ),
 )

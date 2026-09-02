@@ -5,9 +5,10 @@ description: Group a completed bounded set of recorded failure diagnoses into ev
 
 # Failure Curator
 
-Turn the retained `.workspace/failures/<artifact-id>.json` receipts from one completed
-baseline or candidate run into a compact cross-task debugger overview. Langfuse remains the
-source of trace content; read only the recorded diagnosis artifacts during this phase.
+Turn only the retained `record_failure` receipt IDs produced for the current completed baseline
+or candidate run into a compact cross-task debugger overview. Do not glob or enumerate
+`.workspace/failures/`; it may also contain artifacts from earlier runs. Langfuse remains the
+source of trace content; read only the current run's recorded diagnosis artifacts in this phase.
 
 ## Curate
 

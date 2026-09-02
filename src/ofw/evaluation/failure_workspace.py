@@ -355,7 +355,6 @@ class FileFailureWorkspace:
         ) as directory:
             return tuple(_read_artifact(directory, artifact_id) for artifact_id in artifact_ids)
 
-
 class FileFailureCurationWorkspace:
     """Read compact diagnoses and store one bounded cross-failure curation."""
 

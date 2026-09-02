@@ -47,6 +47,7 @@ from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 _EVALUATED_AT = datetime(2026, 8, 28, 6, 0, tzinfo=UTC)
 _ARTIFACT_LIMIT_BYTES = 64 * 1024
 RecordResult = FailureRecordObservation | FailureWorkspaceErrorCode
+RecordedFailures = tuple[tuple[str, str, str], tuple[Path, Path, Path]]
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -122,6 +123,30 @@ def _curation_request(root: Path, artifact_ids: tuple[str, str, str]) -> RecordF
                 failure_artifact_id=artifact_ids[2],
                 reason="No second task supports this mechanism yet.",
             ),
+        ),
+    )
+
+
+def _record_failures(root: Path) -> RecordedFailures:
+    service = FailureWorkspaceService(FileFailureWorkspace())
+    receipts = tuple(
+        service.record(
+            _request(
+                root,
+                trace_id=f"trace-{index}",
+                task_id=f"task-{index}",
+                outcome_score_id=f"score-{index}",
+                critical_observation_id=f"observation-{index}",
+            )
+        )
+        for index in range(1, 4)
+    )
+    return (
+        (receipts[0].artifact_id, receipts[1].artifact_id, receipts[2].artifact_id),
+        (
+            root / receipts[0].relative_path,
+            root / receipts[1].relative_path,
+            root / receipts[2].relative_path,
         ),
     )
 
@@ -448,41 +473,7 @@ def test_workspace_directory_swap_after_validation_cannot_receive_the_artifact(
 
 def test_curates_recorded_failures_without_copying_trace_content(tmp_path: Path) -> None:
     root = _prepared_workspace(tmp_path)
-    failure_service = FailureWorkspaceService(FileFailureWorkspace())
-    receipts = (
-        failure_service.record(
-            _request(
-                root,
-                trace_id="trace-1",
-                task_id="task-1",
-                outcome_score_id="score-1",
-                critical_observation_id="observation-1",
-            )
-        ),
-        failure_service.record(
-            _request(
-                root,
-                trace_id="trace-2",
-                task_id="task-2",
-                outcome_score_id="score-2",
-                critical_observation_id="observation-2",
-            )
-        ),
-        failure_service.record(
-            _request(
-                root,
-                trace_id="trace-3",
-                task_id="task-3",
-                outcome_score_id="score-3",
-                critical_observation_id="observation-3",
-            )
-        ),
-    )
-    artifact_ids = (
-        receipts[0].artifact_id,
-        receipts[1].artifact_id,
-        receipts[2].artifact_id,
-    )
+    artifact_ids, _ = _record_failures(root)
     service = FailureCurationService(FileFailureCurationWorkspace())
 
     observation = service.record(_curation_request(root, artifact_ids))
@@ -501,25 +492,8 @@ def test_curates_recorded_failures_without_copying_trace_content(tmp_path: Path)
 
 def test_curation_rejects_a_missing_or_tampered_failure_artifact(tmp_path: Path) -> None:
     root = _prepared_workspace(tmp_path)
-    failure_service = FailureWorkspaceService(FileFailureWorkspace())
-    receipts = tuple(
-        failure_service.record(
-            _request(
-                root,
-                trace_id=f"trace-{index}",
-                task_id=f"task-{index}",
-                outcome_score_id=f"score-{index}",
-                critical_observation_id=f"observation-{index}",
-            )
-        )
-        for index in range(1, 4)
-    )
-    artifact_ids = (
-        receipts[0].artifact_id,
-        receipts[1].artifact_id,
-        receipts[2].artifact_id,
-    )
-    missing_path = root / receipts[0].relative_path
+    artifact_ids, artifact_paths = _record_failures(root)
+    missing_path = artifact_paths[0]
     missing_path.unlink()
     service = FailureCurationService(FileFailureCurationWorkspace())
 
@@ -538,25 +512,8 @@ def test_curation_rejects_a_missing_or_tampered_failure_artifact(tmp_path: Path)
 
 def test_curation_does_not_follow_a_failure_artifact_symlink(tmp_path: Path) -> None:
     root = _prepared_workspace(tmp_path)
-    failure_service = FailureWorkspaceService(FileFailureWorkspace())
-    receipts = tuple(
-        failure_service.record(
-            _request(
-                root,
-                trace_id=f"trace-{index}",
-                task_id=f"task-{index}",
-                outcome_score_id=f"score-{index}",
-                critical_observation_id=f"observation-{index}",
-            )
-        )
-        for index in range(1, 4)
-    )
-    artifact_ids = (
-        receipts[0].artifact_id,
-        receipts[1].artifact_id,
-        receipts[2].artifact_id,
-    )
-    source_path = root / receipts[0].relative_path
+    artifact_ids, artifact_paths = _record_failures(root)
+    source_path = artifact_paths[0]
     outside = tmp_path / "outside.json"
     source_path.replace(outside)
     source_path.symlink_to(outside)

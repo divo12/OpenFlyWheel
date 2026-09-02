@@ -15,7 +15,7 @@ from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
 from ofw.evaluation.outcome import TaskId
 from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 
-_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _PATTERN_KEY_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _TEXT_PATTERN = r"[^\x00]+"
 

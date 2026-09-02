@@ -311,6 +311,23 @@ def test_curation_input_rejects_an_empty_source_set(tmp_path: Path) -> None:
         )
 
 
+def test_curation_input_rejects_an_artifact_path(tmp_path: Path) -> None:
+    escaped = f"../{_FIRST_ARTIFACT_ID}"
+
+    with pytest.raises(ValidationError):
+        RecordFailureCurationInput(
+            workspace_root=tmp_path,
+            source_artifact_ids=(escaped,),
+            groups=(),
+            deferred=(
+                DeferredFailureInput(
+                    failure_artifact_id=escaped,
+                    reason="No repeated mechanism.",
+                ),
+            ),
+        )
+
+
 @pytest.mark.parametrize(
     ("sources", "groups", "deferred"),
     [
