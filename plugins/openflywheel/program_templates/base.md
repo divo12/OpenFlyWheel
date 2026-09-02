@@ -54,7 +54,19 @@ Run only the prepared experiment command and gates declared by the workspace. Co
 task-level verifier outcomes and report quality, cost, and latency separately. Missing or
 errored trials remain visible and cannot disappear from the denominator.
 
-### 6. Keep or revert
+### 6. Record the experiment attempt
+
+After every candidate reaches a terminal gate decision, call `record_experiment` exactly once.
+Record the current accepted parent revision, focused hypothesis, all available authoritative
+verifier receipt IDs, gate decision, total Langfuse cost, latency, UTC decision time, and a
+rejection reason when the gate rejects the candidate. Cost, latency, and verifier receipts may
+be absent only when a rejected candidate never produced that evidence.
+
+Retain the returned `.workspace/experiments/` artifact path. If recording fails, stop rather
+than committing an unledgered change. The ledger contains references and aggregate measurements,
+never Langfuse trace payloads.
+
+### 7. Keep or revert
 
 Keep the change only when the configured gate admits it. Otherwise revert only the current
 iteration's harness edit, retain the evidence, and try a different hypothesis. Never weaken
@@ -66,7 +78,7 @@ trailers. Do not commit failed candidates, generated run artifacts, credentials,
 outside the editable surface. Do not push or open a pull request without explicit user
 authorization.
 
-### 7. Repeat
+### 8. Repeat
 
 Return to step 2 with the newly recorded run. Stop when the configured goal is met, the
 budget or iteration limit is exhausted, the no-improvement condition is reached, or required

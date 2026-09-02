@@ -1,5 +1,16 @@
 """Provider-agnostic evaluation contracts."""
 
+from ofw.evaluation.experiment_ledger import (
+    ExperimentAttempt,
+    ExperimentDecision,
+    ExperimentId,
+    ExperimentLedgerErrorCode,
+    ExperimentLedgerFailure,
+    ExperimentRecordObservation,
+    ExperimentRecordStatus,
+    ExperimentRunId,
+    RecordExperimentInput,
+)
 from ofw.evaluation.failure import (
     FailureDiagnosis,
     FailureDiagnosisError,
@@ -31,6 +42,14 @@ from ofw.evaluation.outcome import (
 )
 
 __all__ = [
+    "ExperimentAttempt",
+    "ExperimentDecision",
+    "ExperimentId",
+    "ExperimentLedgerErrorCode",
+    "ExperimentLedgerFailure",
+    "ExperimentRecordObservation",
+    "ExperimentRecordStatus",
+    "ExperimentRunId",
     "FailureDiagnosis",
     "FailureDiagnosisError",
     "FailureErrorCode",
@@ -50,6 +69,7 @@ __all__ = [
     "OutcomeScoreSubmission",
     "OutcomeStoreObservation",
     "OutcomeStoreStatus",
+    "RecordExperimentInput",
     "TaskId",
     "VerifierId",
 ]

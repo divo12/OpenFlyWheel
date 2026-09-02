@@ -53,3 +53,21 @@ def test_failure_pattern_miner_skill_is_packaged() -> None:
 
     assert skill.is_file()
     assert "mine_failure_patterns" in skill.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "required_instruction",
+    (
+        "record_experiment",
+        ".workspace/experiments/",
+        "parent revision",
+        "verifier receipt",
+        "rejection reason",
+    ),
+)
+def test_base_program_requires_every_terminal_candidate_in_the_experiment_ledger(
+    required_instruction: str,
+) -> None:
+    content = files("ofw.preparation.templates").joinpath("base.md").read_text(encoding="utf-8")
+
+    assert required_instruction in content
