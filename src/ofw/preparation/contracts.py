@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Protocol
@@ -205,6 +206,49 @@ class BaselineSummary:
     verifier_failures: int
     unverified_trials: int
     unsupported_reward_trials: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentControls:
+    model: str
+    task_ids: tuple[str, ...]
+    benchmark_config_digest: str
+    verifier: str
+    environment: str
+    concurrency: int
+    max_retries: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentRun:
+    run_id: str
+    benchmark_root: Path
+    harbor_executable: Path
+    harbor_config: Path
+    job_path: Path
+    log_path: Path
+    source_root: Path
+    release: str
+    session_id: str
+    controls: ExperimentControls
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentTrial:
+    task_id: str
+    task_checksum: str
+    exception: bool
+    verdict: str | None
+    reward: float | None
+    started_at: datetime
+    finished_at: datetime
+    evaluated_at: datetime
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentSummary:
+    trials: tuple[ExperimentTrial, ...]
 
 
 @dataclass(frozen=True, slots=True)

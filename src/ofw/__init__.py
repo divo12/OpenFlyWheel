@@ -45,6 +45,16 @@ from ofw.evaluation import (
     VerifierVerdict,
 )
 from ofw.evolution import (
+    CandidateBlocker,
+    CandidateBlockerCode,
+    CandidateErrorCode,
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateFailure,
+    CandidateId,
+    CandidateOutcomeReceipt,
+    CandidatePhase,
+    CandidateStatus,
     FailurePatternReference,
     FailurePatternReferenceInput,
     HarnessChangeTarget,
@@ -76,6 +86,16 @@ from ofw.preparation import (
 )
 
 __all__ = [
+    "CandidateBlocker",
+    "CandidateBlockerCode",
+    "CandidateErrorCode",
+    "CandidateExecutionInput",
+    "CandidateExecutionObservation",
+    "CandidateFailure",
+    "CandidateId",
+    "CandidateOutcomeReceipt",
+    "CandidatePhase",
+    "CandidateStatus",
     "CollectionError",
     "CollectionErrorCode",
     "ComponentKind",

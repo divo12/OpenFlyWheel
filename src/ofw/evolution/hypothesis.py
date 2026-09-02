@@ -223,6 +223,28 @@ class HypothesisArtifact(_HypothesisContent):
             regression_risks=hypothesis.regression_risks,
         )
 
+    def to_hypothesis(self) -> HarnessHypothesis:
+        return HarnessHypothesis(
+            id=HypothesisId(self.hypothesis_id),
+            experiment_id=self.experiment_id,
+            source_commit=self.source_commit,
+            patterns=tuple(
+                FailurePatternReference(
+                    pattern.pattern_id,
+                    pattern.diagnosis_artifact_ids,
+                )
+                for pattern in self.patterns
+            ),
+            statement=self.statement,
+            rationale=self.rationale,
+            target=HarnessChangeTarget(
+                self.target.component_kind,
+                self.target.relative_paths,
+            ),
+            expected_effect=self.expected_effect,
+            regression_risks=self.regression_risks,
+        )
+
 
 class HypothesisStatus(StrEnum):
     SUCCESS = "success"
@@ -428,9 +450,7 @@ def _mine_patterns(
 ) -> FailurePatternMiningObservation:
     artifact_ids = tuple(
         sorted(
-            artifact_id
-            for pattern in patterns
-            for artifact_id in pattern.diagnosis_artifact_ids
+            artifact_id for pattern in patterns for artifact_id in pattern.diagnosis_artifact_ids
         )
     )
     try:
