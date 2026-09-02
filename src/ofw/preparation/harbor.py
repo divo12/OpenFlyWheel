@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess  # nosec B404
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ class _HarborAgentWire(_WireModel):
 
 
 class _HarborTaskWire(_WireModel):
-    path: str
+    path: str = Field(min_length=1, max_length=256)
 
 
 class _HarborConfigWire(_WireModel):
@@ -77,7 +78,8 @@ class HarborBaselineRunner:
     def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
         _executable(request.harbor_executable)
         config_path = _contained(request.benchmark_root, request.harbor_config)
-        config = _parse_config(config_path)
+        config_content = _bounded_text(config_path, _MAX_CONFIG_BYTES)
+        config = _parse_config(config_path, config_content)
         if len(config.tasks) != request.expected_task_count:
             raise PreparationFailure(
                 PreparationErrorCode.TASK_COUNT_MISMATCH,
@@ -89,9 +91,23 @@ class HarborBaselineRunner:
                 PreparationErrorCode.INVALID_HARBOR_CONFIG,
                 "agent",
             )
+        task_ids = tuple(task.path for task in config.tasks)
+        if len(set(task_ids)) != len(task_ids):
+            raise PreparationFailure(
+                PreparationErrorCode.INVALID_HARBOR_CONFIG,
+                "tasks",
+            )
         _validate_source_adapter(request.benchmark_root)
         _credentials()
-        return BaselineConfiguration(model=agent.model_name, task_count=len(config.tasks))
+        return BaselineConfiguration(
+            model=agent.model_name,
+            task_ids=task_ids,
+            benchmark_config_digest=(
+                f"sha256:{hashlib.sha256(config_content.encode('utf-8')).hexdigest()}"
+            ),
+            verifier="itsm-bench",
+            environment="itsm-bench",
+        )
 
     def start(self, run: BaselineRun) -> int:
         if run.job_path.exists():
@@ -191,9 +207,9 @@ def _contained(root: Path, relative: Path) -> Path:
     return resolved
 
 
-def _parse_config(path: Path) -> _HarborConfigWire:
+def _parse_config(path: Path, content: str) -> _HarborConfigWire:
     try:
-        return _HarborConfigWire.model_validate_json(_bounded_text(path, _MAX_CONFIG_BYTES))
+        return _HarborConfigWire.model_validate_json(content)
     except (OSError, ValidationError, ValueError) as error:
         raise PreparationFailure(
             PreparationErrorCode.INVALID_HARBOR_CONFIG,

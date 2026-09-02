@@ -14,6 +14,12 @@ from ofw.preparation.contracts import (
     WorkspaceGateway,
     WorkspacePreparationObservation,
 )
+from ofw.preparation.policy import (
+    ExperimentPolicyErrorCode,
+    ExperimentPolicyFailure,
+    ExperimentPolicySnapshot,
+    FileExperimentPolicyRepository,
+)
 from ofw.preparation.service import WorkspacePreparationService
 
 __all__ = [
@@ -21,6 +27,10 @@ __all__ = [
     "BaselineRun",
     "BaselineRunner",
     "BaselineSummary",
+    "ExperimentPolicyErrorCode",
+    "ExperimentPolicyFailure",
+    "ExperimentPolicySnapshot",
+    "FileExperimentPolicyRepository",
     "PreparationErrorCode",
     "PreparationFailure",
     "PreparationPhase",

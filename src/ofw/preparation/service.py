@@ -14,6 +14,7 @@ from pathlib import Path
 from pydantic import Field
 
 from ofw.preparation.contracts import (
+    BaselineConfiguration,
     BaselineRun,
     BaselineRunner,
     BaselineSummary,
@@ -26,6 +27,12 @@ from ofw.preparation.contracts import (
     StrictModel,
     WorkspaceGateway,
     WorkspacePreparationObservation,
+)
+from ofw.preparation.policy import (
+    ExperimentPolicyErrorCode,
+    ExperimentPolicyFailure,
+    FileExperimentPolicyRepository,
+    build_experiment_policy,
 )
 
 _COMMIT_PATTERN = r"[0-9a-f]{40}"
@@ -112,6 +119,7 @@ class WorkspacePreparationService:
             self._program,
             configuration,
         )
+        _publish_policy(state_directory, request, prepared, configuration)
         job_path = request.benchmark_root / "jobs" / request.experiment_id
         log_path = state_directory / "baseline.log"
         run = _baseline_run(request, prepared, job_path, log_path)
@@ -185,6 +193,26 @@ def _directory(path: Path, field: str) -> Path:
     if not resolved.is_dir():
         raise PreparationFailure(PreparationErrorCode.INVALID_PATH, field)
     return resolved
+
+
+def _publish_policy(
+    state_directory: Path,
+    request: PrepareWorkspaceInput,
+    prepared: PreparedGitWorkspace,
+    configuration: BaselineConfiguration,
+) -> None:
+    try:
+        FileExperimentPolicyRepository().publish(
+            state_directory,
+            build_experiment_policy(request, prepared, configuration),
+        )
+    except ExperimentPolicyFailure as error:
+        code = (
+            PreparationErrorCode.POLICY_CONFLICT
+            if error.code is ExperimentPolicyErrorCode.POLICY_CONFLICT
+            else PreparationErrorCode.POLICY_WRITE_FAILED
+        )
+        raise PreparationFailure(code, request.experiment_id) from None
 
 
 def _compose_program(base: str, itsm: str) -> str:

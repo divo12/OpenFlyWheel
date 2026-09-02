@@ -51,6 +51,14 @@ from ofw.evaluation.outcome import (
     VerifierId,
     VerifierVerdict,
 )
+from ofw.evolution import (
+    FailurePatternReferenceInput,
+    HarnessChangeTargetInput,
+    HypothesisObservation,
+    HypothesisService,
+    HypothesisStatus,
+    RecordHypothesisInput,
+)
 from ofw.observability.langfuse.domain import ScoreId, TraceId
 from ofw.observability.langfuse.trace_query import (
     GetSpanContextInput,
@@ -71,6 +79,9 @@ from ofw.preparation import (
 _FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
 _SECOND_FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
 _CURATION_ID = "00000000-0000-0000-0000-000000000003"
+_PATTERN_ID = "sha256:" + "1" * 64
+_HYPOTHESIS_ID = "sha256:" + "2" * 64
+_COMMIT = "1" * 40
 _JSON_OBJECT_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 
 
@@ -83,6 +94,8 @@ class OpenFlywheelMcpModule(Protocol):
     def _failure_service(self) -> FailureWorkspaceService: ...
 
     def _curation_service(self) -> FailureCurationService: ...
+
+    def _hypothesis_service(self) -> HypothesisService: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -140,6 +153,8 @@ class OpenFlywheelMcpModule(Protocol):
         request: RecordFailureCurationInput,
     ) -> FailureCurationObservation: ...
 
+    def record_hypothesis(self, request: RecordHypothesisInput) -> HypothesisObservation: ...
+
 
 class _FakeOutcomeStore:
     def __init__(self) -> None:
@@ -188,6 +203,16 @@ class _FakeCurationService:
         self.requests: list[RecordFailureCurationInput] = []
 
     def record(self, request: RecordFailureCurationInput) -> FailureCurationObservation:
+        self.requests.append(request)
+        return self.observation
+
+
+class _FakeHypothesisService:
+    def __init__(self, observation: HypothesisObservation) -> None:
+        self.observation = observation
+        self.requests: list[RecordHypothesisInput] = []
+
+    def record(self, request: RecordHypothesisInput) -> HypothesisObservation:
         self.requests.append(request)
         return self.observation
 
@@ -310,6 +335,45 @@ def _curation_observation() -> FailureCurationObservation:
     )
 
 
+def _hypothesis_request(root: Path) -> RecordHypothesisInput:
+    return RecordHypothesisInput(
+        workspace_root=root,
+        experiment_id="experiment-one",
+        source_commit=_COMMIT,
+        patterns=(
+            FailurePatternReferenceInput(
+                pattern_id=_PATTERN_ID,
+                diagnosis_artifact_ids=(_FAILURE_ARTIFACT_ID,),
+            ),
+        ),
+        statement="Require a final state check.",
+        rationale="The supported pattern shows premature finalization.",
+        target=HarnessChangeTargetInput(
+            component_kind=ComponentKind.PROMPT,
+            relative_paths=(Path("prompt.md"),),
+        ),
+        expected_effect="The agent verifies success before finalizing.",
+        regression_risks=("The extra check may add latency.",),
+    )
+
+
+def _hypothesis_observation() -> HypothesisObservation:
+    relative_path = Path(f".workspace/hypotheses/{_HYPOTHESIS_ID}.json")
+    return HypothesisObservation(
+        status=HypothesisStatus.SUCCESS,
+        summary="Recorded one evidence-backed hypothesis for the prepared experiment.",
+        next_actions=("Stop before candidate editing and retain this hypothesis receipt.",),
+        artifacts=(str(relative_path), _HYPOTHESIS_ID),
+        hypothesis_id=_HYPOTHESIS_ID,
+        experiment_id="experiment-one",
+        source_commit=_COMMIT,
+        relative_path=relative_path,
+        pattern_count=1,
+        diagnosis_count=1,
+        target_paths=(Path("prompt.md"),),
+    )
+
+
 def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
@@ -323,6 +387,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "record_failure",
         "mine_failure_patterns",
         "record_failure_curation",
+        "record_hypothesis",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -333,6 +398,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (False, False, True),
         (False, False, True),
         (True, False, True),
+        (False, False, True),
         (False, False, True),
     )
 
@@ -633,3 +699,23 @@ def test_record_failure_curation_accepts_mcp_json_mapping(tmp_path: Path) -> Non
     request = _curation_request(tmp_path)
 
     assert RecordFailureCurationInput.model_validate(_json_request(request)) == request
+
+
+def test_record_hypothesis_passes_one_strict_object_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    expected = _hypothesis_observation()
+    service = _FakeHypothesisService(expected)
+    request = _hypothesis_request(tmp_path)
+    monkeypatch.setattr(module, "_hypothesis_service", lambda: service)
+
+    assert module.record_hypothesis(request) == expected
+    assert service.requests == [request]
+
+
+def test_record_hypothesis_accepts_mcp_json_mapping(tmp_path: Path) -> None:
+    request = _hypothesis_request(tmp_path)
+
+    assert RecordHypothesisInput.model_validate(_json_request(request)) == request

@@ -133,6 +133,8 @@ class PreparationErrorCode(StrEnum):
     INVALID_BASELINE_RESULT = "invalid_baseline_result"
     PREPARATION_BUSY = "preparation_busy"
     GIT_FAILED = "git_failed"
+    POLICY_CONFLICT = "policy_conflict"
+    POLICY_WRITE_FAILED = "policy_write_failed"
 
 
 class WorkspacePreparationObservation(StrictModel):
@@ -164,7 +166,14 @@ class WorkspacePreparationObservation(StrictModel):
 @dataclass(frozen=True, slots=True)
 class BaselineConfiguration:
     model: str
-    task_count: int
+    task_ids: tuple[str, ...]
+    benchmark_config_digest: str
+    verifier: str
+    environment: str
+
+    @property
+    def task_count(self) -> int:
+        return len(self.task_ids)
 
 
 @dataclass(frozen=True, slots=True)
