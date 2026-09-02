@@ -1,0 +1,543 @@
+"""Bounded local persistence for mined failure diagnoses."""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from enum import StrEnum
+from pathlib import Path
+from typing import Annotated, Literal, Never, Protocol
+from uuid import NAMESPACE_URL, uuid4, uuid5
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from ofw.evaluation.failure import FailureDiagnosis, FailureEvidenceStatus, FailureType
+from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
+from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
+from ofw.runtime import EvidenceReference, VerifierVerdict
+
+_IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@/-]*"
+_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_ARTIFACT_LIMIT_BYTES = 64 * 1024
+_WORKSPACE_DIRECTORY = ".workspace"
+_FAILURE_DIRECTORY = "failures"
+_IGNORE_CONTENT = "*\n"
+_WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_CREATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+_READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+
+Identifier = Annotated[
+    str,
+    Field(min_length=1, max_length=256, pattern=_IDENTIFIER_PATTERN),
+]
+EvidenceReferenceValue = Annotated[str, Field(min_length=1, max_length=1024)]
+DiagnosisText = Annotated[str, Field(min_length=1, max_length=4000)]
+WorkspaceRoot = Annotated[Path, Field(strict=False)]
+ObservationIdentifiers = Annotated[tuple[Identifier, ...], Field(max_length=10)]
+OutcomeEvidence = Annotated[
+    tuple[EvidenceReferenceValue, ...],
+    Field(min_length=1, max_length=10),
+]
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class FailedOutcomeInput(StrictModel):
+    trace_id: Identifier
+    task_id: Identifier
+    verifier_id: Identifier
+    evaluated_at: datetime
+    score: float = Field(strict=True, ge=0.0, le=1.0)
+    evidence: OutcomeEvidence
+    outcome_score_id: Identifier
+
+    @field_validator("evaluated_at")
+    @classmethod
+    def validate_evaluated_at(cls, value: datetime) -> datetime:
+        if value.utcoffset() != timedelta(0):
+            raise ValueError("evaluated_at must be UTC")
+        return value
+
+    def to_outcome(self) -> OutcomeEvaluation:
+        return OutcomeEvaluation(
+            trace_id=TraceId(self.trace_id),
+            task_id=TaskId(self.task_id),
+            verifier_id=VerifierId(self.verifier_id),
+            evaluated_at=self.evaluated_at,
+            verdict=VerifierVerdict.FAIL,
+            score=self.score,
+            evidence=tuple(EvidenceReference(value) for value in self.evidence),
+        )
+
+
+class RecordFailureInput(StrictModel):
+    workspace_root: WorkspaceRoot
+    outcome: FailedOutcomeInput
+    evidence_status: FailureEvidenceStatus
+    issue_type: FailureType | None
+    expected_outcome: DiagnosisText
+    actual_outcome: DiagnosisText
+    critical_observation_id: Identifier | None
+    evidence_observation_ids: ObservationIdentifiers
+    root_cause: DiagnosisText | None
+    counterfactual_action: DiagnosisText | None
+    inconclusive_reason: DiagnosisText | None
+
+    @field_validator("workspace_root")
+    @classmethod
+    def validate_workspace_root(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("workspace_root must be absolute")
+        return value
+
+    def to_diagnosis(self) -> FailureDiagnosis:
+        return FailureDiagnosis(
+            outcome=self.outcome.to_outcome(),
+            outcome_score_id=ScoreId(self.outcome.outcome_score_id),
+            evidence_status=self.evidence_status,
+            issue_type=self.issue_type,
+            expected_outcome=self.expected_outcome,
+            actual_outcome=self.actual_outcome,
+            critical_observation_id=_observation_id(self.critical_observation_id),
+            evidence_observation_ids=tuple(
+                ObservationId(value) for value in self.evidence_observation_ids
+            ),
+            root_cause=self.root_cause,
+            counterfactual_action=self.counterfactual_action,
+            inconclusive_reason=self.inconclusive_reason,
+        )
+
+
+class FailureRecordStatus(StrEnum):
+    SUCCESS = "success"
+
+
+class FailureRecordObservation(StrictModel):
+    status: FailureRecordStatus
+    summary: str = Field(min_length=1, max_length=256)
+    next_actions: tuple[str, ...] = Field(max_length=2)
+    artifacts: tuple[str, ...] = Field(min_length=2, max_length=2)
+    trace_id: Identifier
+    task_id: Identifier
+    artifact_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    relative_path: Path
+    evidence_status: FailureEvidenceStatus
+    issue_type: FailureType | None
+
+
+class FailureArtifact(StrictModel):
+    schema_version: Literal[1] = 1
+    artifact_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    trace_id: Identifier
+    task_id: Identifier
+    verifier_id: Identifier
+    evaluated_at: datetime
+    normalized_score: float = Field(strict=True, ge=0.0, le=1.0)
+    outcome_score_id: Identifier
+    outcome_evidence: OutcomeEvidence
+    evidence_status: FailureEvidenceStatus
+    issue_type: FailureType | None
+    expected_outcome: DiagnosisText
+    actual_outcome: DiagnosisText
+    critical_observation_id: Identifier | None
+    evidence_observation_ids: ObservationIdentifiers
+    root_cause: DiagnosisText | None
+    counterfactual_action: DiagnosisText | None
+    inconclusive_reason: DiagnosisText | None
+
+    @classmethod
+    def from_diagnosis(
+        cls,
+        artifact_id: str,
+        diagnosis: FailureDiagnosis,
+    ) -> FailureArtifact:
+        outcome = diagnosis.outcome
+        return cls(
+            artifact_id=artifact_id,
+            trace_id=outcome.trace_id.value,
+            task_id=outcome.task_id.value,
+            verifier_id=outcome.verifier_id.value,
+            evaluated_at=outcome.evaluated_at,
+            normalized_score=_required_score(outcome),
+            outcome_score_id=diagnosis.outcome_score_id.value,
+            outcome_evidence=tuple(reference.value for reference in outcome.evidence),
+            evidence_status=diagnosis.evidence_status,
+            issue_type=diagnosis.issue_type,
+            expected_outcome=diagnosis.expected_outcome,
+            actual_outcome=diagnosis.actual_outcome,
+            critical_observation_id=_observation_value(diagnosis.critical_observation_id),
+            evidence_observation_ids=tuple(
+                observation_id.value for observation_id in diagnosis.evidence_observation_ids
+            ),
+            root_cause=diagnosis.root_cause,
+            counterfactual_action=diagnosis.counterfactual_action,
+            inconclusive_reason=diagnosis.inconclusive_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FailureArtifactReceipt:
+    artifact_id: str
+    relative_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectoryChainIdentity:
+    root: tuple[int, int]
+    workspace: tuple[int, int]
+    failures: tuple[int, int]
+
+
+class FailureWorkspaceErrorCode(StrEnum):
+    INVALID_WORKSPACE = "invalid_workspace"
+    ARTIFACT_CONFLICT = "artifact_conflict"
+    ARTIFACT_TOO_LARGE = "artifact_too_large"
+    WRITE_FAILED = "write_failed"
+
+
+class FailureWorkspaceFailure(Exception):
+    __slots__ = ("code", "subject")
+
+    def __init__(self, code: FailureWorkspaceErrorCode, subject: str) -> None:
+        self.code = code
+        self.subject = subject
+        super().__init__(f"{code.value}: {subject}")
+
+
+class FailureWorkspace(Protocol):
+    def store(self, root: Path, diagnosis: FailureDiagnosis) -> FailureArtifactReceipt: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FailureWorkspaceService:
+    workspace: FailureWorkspace
+
+    def record(self, request: RecordFailureInput) -> FailureRecordObservation:
+        diagnosis = request.to_diagnosis()
+        receipt = self.workspace.store(request.workspace_root, diagnosis)
+        return FailureRecordObservation(
+            status=FailureRecordStatus.SUCCESS,
+            summary="Stored one failure diagnosis in the local workspace.",
+            next_actions=("Retain the artifact path for failure analysis.",),
+            artifacts=(str(receipt.relative_path), receipt.artifact_id),
+            trace_id=diagnosis.outcome.trace_id.value,
+            task_id=diagnosis.outcome.task_id.value,
+            artifact_id=receipt.artifact_id,
+            relative_path=receipt.relative_path,
+            evidence_status=diagnosis.evidence_status,
+            issue_type=diagnosis.issue_type,
+        )
+
+
+class FileFailureWorkspace:
+    """Store compact diagnoses under a prepared harness's ignored runtime workspace."""
+
+    def store(self, root: Path, diagnosis: FailureDiagnosis) -> FailureArtifactReceipt:
+        artifact_id = _artifact_id(diagnosis)
+        try:
+            return self._store(root, diagnosis, artifact_id)
+        except (OSError, RuntimeError, UnicodeError):
+            raise FailureWorkspaceFailure(
+                FailureWorkspaceErrorCode.WRITE_FAILED,
+                artifact_id,
+            ) from None
+
+    def _store(
+        self,
+        root: Path,
+        diagnosis: FailureDiagnosis,
+        artifact_id: str,
+    ) -> FailureArtifactReceipt:
+        prepared_root = _prepared_root(root)
+        workspace, failures = _workspace_paths(prepared_root)
+        artifact = FailureArtifact.from_diagnosis(artifact_id, diagnosis)
+        content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
+        _validate_artifact_size(content)
+        directory_identity = _prepare_workspace_directories(
+            prepared_root,
+            workspace,
+            failures,
+        )
+        path = failures / f"{artifact_id}.json"
+        receipt = FailureArtifactReceipt(artifact_id, path.relative_to(prepared_root))
+        with _failure_directory_handle(
+            prepared_root,
+            directory_identity,
+        ) as directory:
+            _publish_or_validate(directory, path.name, content, artifact_id)
+        return receipt
+
+
+def _observation_id(value: str | None) -> ObservationId | None:
+    return None if value is None else ObservationId(value)
+
+
+def _observation_value(value: ObservationId | None) -> str | None:
+    return None if value is None else value.value
+
+
+def _required_score(outcome: OutcomeEvaluation) -> float:
+    score = outcome.score
+    if score is None:
+        raise FailureWorkspaceFailure(FailureWorkspaceErrorCode.WRITE_FAILED, "outcome_score")
+    return score
+
+
+def _artifact_id(diagnosis: FailureDiagnosis) -> str:
+    identity = "\0".join(
+        (
+            "ofw.failure",
+            diagnosis.outcome.trace_id.value,
+            diagnosis.outcome_score_id.value,
+        )
+    )
+    return str(uuid5(NAMESPACE_URL, identity))
+
+
+def _prepared_root(root: Path) -> Path:
+    resolved = _resolve_root(root)
+    if not _is_prepared_root(resolved):
+        _invalid_workspace("workspace_root")
+    return resolved
+
+
+def _resolve_root(root: Path) -> Path:
+    try:
+        return root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        _invalid_workspace("workspace_root")
+
+
+def _is_prepared_root(root: Path) -> bool:
+    return all((root / name).is_file() for name in _WORKSPACE_MARKERS)
+
+
+def _workspace_paths(root: Path) -> tuple[Path, Path]:
+    workspace = root / _WORKSPACE_DIRECTORY
+    failures = workspace / _FAILURE_DIRECTORY
+    _require_contained(root, workspace.resolve(strict=False))
+    _require_contained(root, failures.resolve(strict=False))
+    _require_directory_if_present(workspace)
+    return workspace, failures
+
+
+def _require_directory_if_present(path: Path) -> None:
+    if path.exists() and not path.is_dir():
+        _invalid_workspace(_WORKSPACE_DIRECTORY)
+
+
+def _require_contained(root: Path, path: Path) -> None:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        _invalid_workspace(_WORKSPACE_DIRECTORY)
+
+
+def _invalid_workspace(subject: str) -> Never:
+    raise FailureWorkspaceFailure(
+        FailureWorkspaceErrorCode.INVALID_WORKSPACE,
+        subject,
+    ) from None
+
+
+def _validate_artifact_size(content: bytes) -> None:
+    if len(content) > _ARTIFACT_LIMIT_BYTES:
+        raise FailureWorkspaceFailure(
+            FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE,
+            str(_ARTIFACT_LIMIT_BYTES),
+        )
+
+
+def _prepare_workspace_directories(
+    root: Path,
+    workspace: Path,
+    failures: Path,
+) -> _DirectoryChainIdentity:
+    failures.mkdir(parents=True, exist_ok=True)
+    _require_contained(root, workspace.resolve(strict=True))
+    _require_contained(root, failures.resolve(strict=True))
+    with _directory_handle(workspace) as directory:
+        _require_directory_identity(directory, workspace)
+        _write_ignore_file(directory)
+    return _DirectoryChainIdentity(
+        root=_path_identity(root),
+        workspace=_path_identity(workspace),
+        failures=_path_identity(failures),
+    )
+
+
+def _write_ignore_file(directory: int) -> None:
+    try:
+        _write_new_file(directory, ".gitignore", _IGNORE_CONTENT.encode("utf-8"))
+    except FileExistsError:
+        return
+
+
+def _publish_or_validate(
+    directory: int,
+    name: str,
+    expected: bytes,
+    artifact_id: str,
+) -> None:
+    try:
+        _publish_new_file(directory, name, expected)
+    except FileExistsError:
+        _validate_existing(directory, name, expected, artifact_id)
+
+
+def _publish_new_file(directory: int, name: str, content: bytes) -> None:
+    temporary_name = f".ofw-{uuid4().hex}.tmp"
+    published = False
+    try:
+        _write_new_file(directory, temporary_name, content)
+        os.link(
+            temporary_name,
+            name,
+            src_dir_fd=directory,
+            dst_dir_fd=directory,
+            follow_symlinks=False,
+        )
+        published = True
+    finally:
+        _unlink_if_present(directory, temporary_name)
+        if published:
+            os.fsync(directory)
+
+
+def _write_new_file(directory: int, name: str, content: bytes) -> None:
+    descriptor = os.open(name, _CREATE_FILE_FLAGS, 0o600, dir_fd=directory)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _unlink_if_present(directory: int, name: str) -> None:
+    try:
+        os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        return
+
+
+def _validate_existing(
+    directory: int,
+    name: str,
+    expected: bytes,
+    artifact_id: str,
+) -> None:
+    actual = _read_existing(directory, name, artifact_id)
+    if actual != expected:
+        raise FailureWorkspaceFailure(
+            FailureWorkspaceErrorCode.ARTIFACT_CONFLICT,
+            artifact_id,
+        )
+
+
+def _read_existing(directory: int, name: str, artifact_id: str) -> bytes:
+    descriptor = os.open(name, _READ_FILE_FLAGS, dir_fd=directory)
+    with os.fdopen(descriptor, "rb") as stream:
+        content = stream.read(_ARTIFACT_LIMIT_BYTES + 1)
+    if len(content) > _ARTIFACT_LIMIT_BYTES:
+        raise FailureWorkspaceFailure(
+            FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE,
+            artifact_id,
+        )
+    return content
+
+
+@contextmanager
+def _directory_handle(path: Path) -> Iterator[int]:
+    descriptor = os.open(path, _DIRECTORY_FLAGS)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _child_directory_handle(parent: int, name: str) -> Iterator[int]:
+    descriptor = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent)
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _failure_directory_handle(
+    root: Path,
+    expected: _DirectoryChainIdentity,
+) -> Iterator[int]:
+    with (
+        _directory_handle(root) as root_directory,
+        _child_directory_handle(root_directory, _WORKSPACE_DIRECTORY) as workspace,
+        _child_directory_handle(workspace, _FAILURE_DIRECTORY) as failures,
+    ):
+        _require_directory_chain(
+            root,
+            root_directory,
+            workspace,
+            failures,
+            expected,
+        )
+        yield failures
+        _require_directory_chain(
+            root,
+            root_directory,
+            workspace,
+            failures,
+            expected,
+        )
+
+
+def _require_directory_chain(
+    root: Path,
+    root_directory: int,
+    workspace: int,
+    failures: int,
+    expected: _DirectoryChainIdentity,
+) -> None:
+    _require_directory_identity(root_directory, root, expected.root)
+    _require_child_identity(root_directory, _WORKSPACE_DIRECTORY, workspace, expected.workspace)
+    _require_child_identity(workspace, _FAILURE_DIRECTORY, failures, expected.failures)
+
+
+def _require_directory_identity(
+    descriptor: int,
+    path: Path,
+    expected: tuple[int, int] | None = None,
+) -> None:
+    opened = _descriptor_identity(descriptor)
+    current = _path_identity(path)
+    if opened != current or (expected is not None and opened != expected):
+        raise OSError("workspace directory changed during failure recording")
+
+
+def _require_child_identity(
+    parent: int,
+    name: str,
+    descriptor: int,
+    expected: tuple[int, int],
+) -> None:
+    opened = _descriptor_identity(descriptor)
+    current = _stat_identity(os.stat(name, dir_fd=parent, follow_symlinks=False))
+    if opened != current or opened != expected:
+        raise OSError("workspace directory changed during failure recording")
+
+
+def _descriptor_identity(descriptor: int) -> tuple[int, int]:
+    return _stat_identity(os.fstat(descriptor))
+
+
+def _path_identity(path: Path) -> tuple[int, int]:
+    return _stat_identity(os.stat(path, follow_symlinks=False))
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino

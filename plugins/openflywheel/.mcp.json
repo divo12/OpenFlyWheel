@@ -4,7 +4,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/divo12/OpenFlyWheel.git@6319f24",
+        "git+https://github.com/divo12/OpenFlyWheel.git@0d4af6e0499c54765e2f7784b48b53baf96d1ad5",
         "--with",
         "mcp>=1.13,<2",
         "openflywheel-mcp"

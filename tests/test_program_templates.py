@@ -12,3 +12,20 @@ def test_packaged_program_template_matches_plugin_asset(name: str) -> None:
     packaged = files("ofw.preparation.templates").joinpath(name).read_bytes()
 
     assert packaged == plugin_path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "required_instruction",
+    (
+        "$failure-miner",
+        "record_failure",
+        ".workspace/failures/",
+        "Do not copy Langfuse trace payloads",
+    ),
+)
+def test_itsm_program_routes_failure_mining_to_local_workspace_artifacts(
+    required_instruction: str,
+) -> None:
+    content = files("ofw.preparation.templates").joinpath("itsm.md").read_text(encoding="utf-8")
+
+    assert required_instruction in content

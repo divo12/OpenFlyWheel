@@ -14,6 +14,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
+from ofw.evaluation.failure_workspace import (
+    FailureRecordObservation,
+    FailureWorkspaceService,
+    FileFailureWorkspace,
+    RecordFailureInput,
+)
 from ofw.evaluation.langfuse import (
     LangfuseOutcomeStore,
     OutcomeStoreObservation,
@@ -62,8 +68,8 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     name="openflywheel",
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
-        "record only authoritative external-verifier outcomes. Never infer outcomes or mutate "
-        "traces."
+        "record authoritative outcomes plus compact failure diagnoses. Never infer outcomes, "
+        "mutate traces, or copy trace payloads into local storage."
     ),
     log_level="DEBUG",
 )
@@ -118,6 +124,10 @@ def _preparation_service() -> WorkspacePreparationService:
         base_program=_program_template("base.md"),
         itsm_program=_program_template("itsm.md"),
     )
+
+
+def _failure_service() -> FailureWorkspaceService:
+    return FailureWorkspaceService(FileFailureWorkspace())
 
 
 def _program_template(name: str) -> str:
@@ -241,6 +251,12 @@ def record_outcome(
         trace_id=trace_id,
         score_id=submission.score_id.value,
     )
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def record_failure(request: RecordFailureInput) -> FailureRecordObservation:
+    """Store one bounded diagnosis under a prepared harness's local .workspace."""
+    return _failure_service().record(request)
 
 
 def main() -> None:

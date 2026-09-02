@@ -1,7 +1,7 @@
 {
   "name": "openflywheel",
-  "version": "0.4.0",
-  "description": "Initialize ITSM-bench harness workspaces, query Langfuse trajectories, and record authoritative verifier outcomes.",
+  "version": "0.5.0",
+  "description": "Initialize ITSM-bench harness workspaces, query Langfuse trajectories, and record outcomes and compact failure diagnoses.",
   "author": {
     "name": "OpenFlyWheel"
   },
@@ -10,8 +10,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "OpenFlyWheel",
-    "shortDescription": "Initialize ITSM workspaces and inspect traces",
-    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, select and inspect bounded Langfuse trajectory evidence, and record authoritative external-verifier outcomes on exact traces.",
+    "shortDescription": "Prepare ITSM workspaces and mine failures",
+    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, inspect bounded Langfuse trajectory evidence, record authoritative outcomes, and persist compact failure diagnoses in the prepared local workspace.",
     "developerName": "OpenFlyWheel",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],

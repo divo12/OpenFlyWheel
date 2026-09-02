@@ -12,6 +12,16 @@ import pytest
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool
 
+from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
+from ofw.evaluation.failure_workspace import (
+    FailedOutcomeInput,
+    FailureRecordObservation,
+    FailureRecordStatus,
+    FailureWorkspaceErrorCode,
+    FailureWorkspaceFailure,
+    FailureWorkspaceService,
+    RecordFailureInput,
+)
 from ofw.evaluation.langfuse import (
     OutcomeScoreSubmission,
     OutcomeStoreObservation,
@@ -41,12 +51,16 @@ from ofw.preparation import (
 )
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
+_FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
+
 
 class OpenFlywheelMcpModule(Protocol):
     server: FastMCP[None]
     OutcomeToolError: type[Exception]
 
     def _preparation_service(self) -> WorkspacePreparationService: ...
+
+    def _failure_service(self) -> FailureWorkspaceService: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -92,6 +106,8 @@ class OpenFlywheelMcpModule(Protocol):
         score: float | None = None,
     ) -> OutcomeStoreObservation: ...
 
+    def record_failure(self, request: RecordFailureInput) -> FailureRecordObservation: ...
+
 
 class _FakeOutcomeStore:
     def __init__(self) -> None:
@@ -119,6 +135,19 @@ class _FakePreparationService:
         return self.observation
 
 
+class _FakeFailureService:
+    def __init__(self, observation: FailureRecordObservation) -> None:
+        self.observation = observation
+        self.requests: list[RecordFailureInput] = []
+        self.failure: FailureWorkspaceFailure | None = None
+
+    def record(self, request: RecordFailureInput) -> FailureRecordObservation:
+        if self.failure is not None:
+            raise self.failure
+        self.requests.append(request)
+        return self.observation
+
+
 def _module() -> OpenFlywheelMcpModule:
     return cast(OpenFlywheelMcpModule, importlib.import_module("ofw.mcp"))
 
@@ -137,7 +166,70 @@ def _annotation_flags(tool: Tool) -> tuple[bool | None, bool | None, bool | None
     )
 
 
-def test_mcp_exposes_scoped_read_and_outcome_write_tools() -> None:
+def _failed_outcome_input() -> FailedOutcomeInput:
+    return FailedOutcomeInput(
+        trace_id="trace-1",
+        task_id="task-1",
+        verifier_id="itsm-bench@v1",
+        evaluated_at=datetime(2026, 8, 28, 6, 0, tzinfo=UTC),
+        score=0.0,
+        evidence=("harbor://trial-1/verifier/result",),
+        outcome_score_id="outcome-score-1",
+    )
+
+
+def _failure_observation(
+    evidence_status: FailureEvidenceStatus,
+    issue_type: FailureType | None,
+) -> FailureRecordObservation:
+    relative_path = Path(f".workspace/failures/{_FAILURE_ARTIFACT_ID}.json")
+    return FailureRecordObservation(
+        status=FailureRecordStatus.SUCCESS,
+        summary="Stored one failure diagnosis in the local workspace.",
+        next_actions=("Retain the artifact path for failure analysis.",),
+        artifacts=(str(relative_path), _FAILURE_ARTIFACT_ID),
+        trace_id="trace-1",
+        task_id="task-1",
+        artifact_id=_FAILURE_ARTIFACT_ID,
+        relative_path=relative_path,
+        evidence_status=evidence_status,
+        issue_type=issue_type,
+    )
+
+
+def _supported_failure_request(root: Path) -> RecordFailureInput:
+    return RecordFailureInput(
+        workspace_root=root,
+        outcome=_failed_outcome_input(),
+        evidence_status=FailureEvidenceStatus.SUPPORTED,
+        issue_type=FailureType.CONTROL_FLOW_FAILURE,
+        expected_outcome="Incident is closed.",
+        actual_outcome="Incident remains open.",
+        critical_observation_id="observation-7",
+        evidence_observation_ids=("observation-7",),
+        root_cause="The agent finalized before checking state.",
+        counterfactual_action="Check state before finalizing.",
+        inconclusive_reason=None,
+    )
+
+
+def _inconclusive_failure_request(root: Path) -> RecordFailureInput:
+    return RecordFailureInput(
+        workspace_root=root,
+        outcome=_failed_outcome_input(),
+        evidence_status=FailureEvidenceStatus.INCONCLUSIVE,
+        issue_type=None,
+        expected_outcome="Incident is closed.",
+        actual_outcome="Incident remains open.",
+        critical_observation_id=None,
+        evidence_observation_ids=(),
+        root_cause=None,
+        counterfactual_action=None,
+        inconclusive_reason="The trace is incomplete.",
+    )
+
+
+def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
     assert [tool.name for tool in tools] == [
@@ -147,6 +239,7 @@ def test_mcp_exposes_scoped_read_and_outcome_write_tools() -> None:
         "query_spans",
         "get_span_context",
         "record_outcome",
+        "record_failure",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -154,6 +247,7 @@ def test_mcp_exposes_scoped_read_and_outcome_write_tools() -> None:
         (True, False, True),
         (True, False, True),
         (True, False, True),
+        (False, False, True),
         (False, False, True),
     )
 
@@ -332,3 +426,41 @@ def test_provider_failure_is_typed_and_does_not_leak_details(
 
     assert str(raised.value) == "outcome_store_failed: trace-1"
     assert store.close_count == 1
+
+
+def test_record_failure_passes_one_strict_object_to_the_workspace_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    expected = _failure_observation(
+        FailureEvidenceStatus.SUPPORTED,
+        FailureType.CONTROL_FLOW_FAILURE,
+    )
+    service = _FakeFailureService(expected)
+    request = _supported_failure_request(tmp_path)
+    monkeypatch.setattr(module, "_failure_service", lambda: service)
+
+    assert module.record_failure(request) == expected
+    assert service.requests == [request]
+
+
+def test_record_failure_preserves_typed_workspace_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    observation = _failure_observation(FailureEvidenceStatus.INCONCLUSIVE, None)
+    service = _FakeFailureService(observation)
+    service.failure = FailureWorkspaceFailure(
+        FailureWorkspaceErrorCode.WRITE_FAILED,
+        _FAILURE_ARTIFACT_ID,
+    )
+    monkeypatch.setattr(module, "_failure_service", lambda: service)
+    request = _inconclusive_failure_request(tmp_path)
+
+    with pytest.raises(FailureWorkspaceFailure) as raised:
+        module.record_failure(request)
+
+    assert raised.value.code is FailureWorkspaceErrorCode.WRITE_FAILED
+    assert str(raised.value) == f"write_failed: {_FAILURE_ARTIFACT_ID}"
