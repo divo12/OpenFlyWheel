@@ -18,7 +18,7 @@ _ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 _PATTERN_ID_PATTERN = r"sha256:[0-9a-f]{64}"
 _ABSOLUTE_PATH = re.compile(r"(?:/[\w.+-]+){2,}")
 _OPAQUE_ID = re.compile(
-    r"\b(?:(?:request|trace|span|observation|score|session|run)[_-]?id|rq)"
+    r"\b(?:(?:request|trace|span|observation|score|session|run)(?:[_-]?id)?|rq)"
     r"[_:/-][A-Za-z0-9_-]{12,}\b",
     re.IGNORECASE,
 )
@@ -27,6 +27,7 @@ _UUID = re.compile(
     re.IGNORECASE,
 )
 _HEX_DIGEST = re.compile(r"\b[0-9a-f]{16,}\b", re.IGNORECASE)
+_ULID = re.compile(r"\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b", re.IGNORECASE)
 _DIGIT_RUN = re.compile(r"\d+")
 _WHITESPACE = re.compile(r"\s+")
 _NORMALIZED_CAUSE_LIMIT = 200
@@ -168,6 +169,7 @@ def normalize_root_cause(value: str) -> str:
     normalized = _OPAQUE_ID.sub("<id>", normalized)
     normalized = _UUID.sub("<id>", normalized)
     normalized = _HEX_DIGEST.sub("<id>", normalized)
+    normalized = _ULID.sub("<id>", normalized)
     normalized = _DIGIT_RUN.sub("<n>", normalized)
     return _WHITESPACE.sub(" ", normalized).strip()
 

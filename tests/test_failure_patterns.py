@@ -119,6 +119,12 @@ def test_normalization_and_fingerprint_ignore_volatile_values() -> None:
     assert "supercalifragilistic" in normalize_root_cause(
         "The parser rejected the legitimate supercalifragilistic field."
     )
+    assert normalize_root_cause(
+        "Trace trace-01ARZ3NDEKTSV4RRFFQ69G5FAV failed."
+    ) == normalize_root_cause("Trace trace-01BX5ZZKBKACTAV9WEVGEMMVRZ failed.")
+    assert normalize_root_cause("Run 01ARZ3NDEKTSV4RRFFQ69G5FAV failed.") == normalize_root_cause(
+        "Run 01BX5ZZKBKACTAV9WEVGEMMVRZ failed."
+    )
 
 
 def test_fingerprint_uses_the_complete_normalized_root_cause() -> None:
@@ -320,6 +326,7 @@ def test_reader_rejects_a_fifo_without_blocking(tmp_path: Path) -> None:
     script = (
         "import sys\n"
         "from pathlib import Path\n"
+        "sys.path.insert(0, sys.argv[3])\n"
         "from ofw.evaluation.failure_patterns import ("
         "FailurePatternMiningError, FailurePatternMiningErrorCode, "
         "FailurePatternMiningService, MineFailurePatternsInput)\n"
@@ -335,7 +342,14 @@ def test_reader_rejects_a_fifo_without_blocking(tmp_path: Path) -> None:
     )
 
     subprocess.run(
-        (sys.executable, "-c", script, str(root), artifact_id),
+        (
+            sys.executable,
+            "-c",
+            script,
+            str(root),
+            artifact_id,
+            str(Path(__file__).parents[1] / "src"),
+        ),
         check=True,
         timeout=2,
     )
