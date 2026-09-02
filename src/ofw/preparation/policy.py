@@ -23,6 +23,7 @@ from ofw.preparation.contracts import (
     PreparedGitWorkspace,
     PrepareWorkspaceInput,
     StrictModel,
+    contained_relative_path,
 )
 from ofw.safe_file import (
     SafeFileErrorCode,
@@ -32,7 +33,7 @@ from ofw.safe_file import (
     read_bounded,
 )
 
-_POLICY_LIMIT_BYTES = 64 * 1024
+_POLICY_LIMIT_BYTES = 256 * 1024
 _COMMIT_PATTERN = r"[0-9a-f]{40}"
 _DIGEST_PATTERN = r"sha256:[0-9a-f]{64}"
 _TASK_ID_PATTERN = r"[^\x00]+"
@@ -75,10 +76,9 @@ class _ExperimentPolicyContent(StrictModel):
     @field_validator("editable_paths")
     @classmethod
     def validate_editable_paths(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
-        for path in values:
-            _require_contained_editable_path(path)
-        _require_unique_editable_paths(values)
-        return values
+        normalized = tuple(contained_relative_path(path, "editable_paths") for path in values)
+        _require_unique_editable_paths(normalized)
+        return normalized
 
 
 class ExperimentPolicySnapshot(_ExperimentPolicyContent):
@@ -307,11 +307,6 @@ def _read_failure(error: SafeFileFailure, experiment_id: str) -> ExperimentPolic
 
 def _digest(value: str) -> str:
     return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
-
-
-def _require_contained_editable_path(path: Path) -> None:
-    if path.is_absolute() or path == Path(".") or ".." in path.parts:
-        raise ValueError("editable_paths must be contained relative paths")
 
 
 def _require_unique_editable_paths(paths: tuple[Path, ...]) -> None:

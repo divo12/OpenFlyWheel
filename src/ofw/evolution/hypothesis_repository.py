@@ -45,7 +45,7 @@ class FileHypothesisRepository:
             raise HypothesisFailure(HypothesisErrorCode.STALE_COMMIT, policy.experiment_id)
         if _git(prepared_root, "branch", "--show-current") != policy.branch_name:
             raise HypothesisFailure(HypothesisErrorCode.STALE_POLICY, policy.experiment_id)
-        if _git(prepared_root, "status", "--porcelain=v1", "--untracked-files=no"):
+        if _git(prepared_root, "status", "--porcelain=v1"):
             raise HypothesisFailure(HypothesisErrorCode.DIRTY_WORKSPACE, policy.experiment_id)
         for path in paths:
             _require_regular_target(prepared_root, path)

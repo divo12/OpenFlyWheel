@@ -93,12 +93,12 @@ class PrepareWorkspaceInput(StrictModel):
     @field_validator("harbor_config")
     @classmethod
     def validate_harbor_config(cls, value: Path) -> Path:
-        return _relative_path(value, "harbor_config")
+        return contained_relative_path(value, "harbor_config")
 
     @field_validator("editable_paths")
     @classmethod
     def validate_editable_paths(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
-        normalized = tuple(_relative_path(value, "editable_paths") for value in values)
+        normalized = tuple(contained_relative_path(value, "editable_paths") for value in values)
         if len(set(normalized)) != len(normalized):
             raise ValueError("editable_paths must be unique")
         return normalized
@@ -234,7 +234,18 @@ class PreparationFailure(Exception):
         super().__init__(f"{code.value}: {subject}")
 
 
-def _relative_path(value: Path, field: str) -> Path:
+def contained_relative_path(value: Path, field: str) -> Path:
+    _require_relative_shape(value, field)
+    _require_bounded_path_text(value, field)
+    return value
+
+
+def _require_relative_shape(value: Path, field: str) -> None:
     if value.is_absolute() or ".." in value.parts or value == Path("."):
         raise ValueError(f"{field} must be a contained relative path")
-    return value
+
+
+def _require_bounded_path_text(value: Path, field: str) -> None:
+    text = value.as_posix()
+    if "\x00" in text or len(text.encode("utf-8")) > 1024:
+        raise ValueError(f"{field} must be a bounded text path")

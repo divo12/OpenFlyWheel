@@ -22,7 +22,12 @@ from ofw.preparation import (
     WorkspacePreparationService,
 )
 from ofw.preparation.harbor import HarborBaselineRunner
-from ofw.preparation.policy import FileExperimentPolicyRepository
+from ofw.preparation.policy import (
+    ExperimentPolicyErrorCode,
+    ExperimentPolicyFailure,
+    ExperimentPolicySnapshot,
+    FileExperimentPolicyRepository,
+)
 from ofw.preparation.worktree import GitWorktreeGateway
 
 
@@ -358,6 +363,125 @@ def test_prepare_workspace_rejects_task_count_before_creating_branch(tmp_path: P
     assert result.error_code is PreparationErrorCode.TASK_COUNT_MISMATCH
     assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
 
+
+@pytest.mark.parametrize(
+    "content",
+    (b"x" * (2 * 1024 * 1024 + 1), b"\xff"),
+    ids=("oversized", "invalid-utf8"),
+)
+def test_prepare_workspace_sanitizes_invalid_harbor_config_reads(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    config.write_bytes(content)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.INVALID_HARBOR_CONFIG
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
+def test_prepare_workspace_rejects_oversized_model_before_creating_branch(tmp_path: Path) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "openai/gpt-5.4-mini",
+            "m" * 257,
+        ),
+        encoding="utf-8",
+    )
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.INVALID_HARBOR_CONFIG
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
+def test_policy_publication_failure_resumes_without_recreating_git_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    _credentials(monkeypatch)
+    original = FileExperimentPolicyRepository.publish
+    attempts = 0
+
+    def fail_once(
+        repository: FileExperimentPolicyRepository,
+        control_directory: Path,
+        policy: ExperimentPolicySnapshot,
+    ) -> Path:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ExperimentPolicyFailure(
+                ExperimentPolicyErrorCode.POLICY_WRITE_FAILED,
+                request.experiment_id,
+            )
+        return original(repository, control_directory, policy)
+
+    monkeypatch.setattr(FileExperimentPolicyRepository, "publish", fail_once)
+    service = _service()
+
+    first = service.prepare(request)
+    ready = _wait_until_ready(service, request)
+
+    assert first.error_code is PreparationErrorCode.POLICY_WRITE_FAILED
+    assert ready.phase is PreparationPhase.READY
+    assert attempts == 2
+    assert (benchmark_root / "invocations.txt").read_text(encoding="utf-8") == "run\n"
+
+
+def test_policy_conflict_remains_typed_and_non_retryable_after_git_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    _credentials(monkeypatch)
+
+    def conflict(
+        repository: FileExperimentPolicyRepository,
+        control_directory: Path,
+        policy: ExperimentPolicySnapshot,
+    ) -> Path:
+        del repository, control_directory, policy
+        raise ExperimentPolicyFailure(
+            ExperimentPolicyErrorCode.POLICY_CONFLICT,
+            request.experiment_id,
+        )
+
+    monkeypatch.setattr(FileExperimentPolicyRepository, "publish", conflict)
+    service = _service()
+
+    first = service.prepare(request)
+    repeated = service.prepare(request)
+
+    assert first.error_code is repeated.error_code is PreparationErrorCode.POLICY_CONFLICT
+    assert first.retry is not None and "do not retry" in first.retry.lower()
+    assert first.stop_when is not None and "new experiment" in first.stop_when.lower()
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo")
+
 def test_prepare_workspace_input_rejects_relative_roots(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         PrepareWorkspaceInput(
@@ -376,6 +500,27 @@ def test_prepare_workspace_input_rejects_relative_roots(tmp_path: Path) -> None:
             no_improvement_limit=1,
             max_baseline_seconds=60,
         )
+
+
+def test_prepare_workspace_input_rejects_nul_and_oversized_editable_paths(tmp_path: Path) -> None:
+    for editable in (Path("bad\x00path"), Path("p" * 1025)):
+        with pytest.raises(ValidationError):
+            PrepareWorkspaceInput(
+                experiment_id="demo",
+                harness_root=tmp_path,
+                base_ref="HEAD",
+                worktree_parent=tmp_path,
+                benchmark_root=tmp_path,
+                harbor_executable=tmp_path / "harbor",
+                harbor_config=Path("config.json"),
+                expected_task_count=1,
+                editable_paths=(editable,),
+                goal="Improve.",
+                quality_target=1.0,
+                max_iterations=1,
+                no_improvement_limit=1,
+                max_baseline_seconds=60,
+            )
 
 
 def test_prepare_workspace_input_accepts_json_path_strings(tmp_path: Path) -> None:

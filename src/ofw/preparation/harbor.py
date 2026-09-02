@@ -31,8 +31,8 @@ class _WireModel(BaseModel):
 
 
 class _HarborAgentWire(_WireModel):
-    name: str
-    model_name: str
+    name: str = Field(min_length=1, max_length=256)
+    model_name: str = Field(min_length=1, max_length=256)
 
 
 class _HarborTaskWire(_WireModel):
@@ -78,8 +78,7 @@ class HarborBaselineRunner:
     def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
         _executable(request.harbor_executable)
         config_path = _contained(request.benchmark_root, request.harbor_config)
-        config_content = _bounded_text(config_path, _MAX_CONFIG_BYTES)
-        config = _parse_config(config_path, config_content)
+        config, config_content = _parse_config(config_path)
         if len(config.tasks) != request.expected_task_count:
             raise PreparationFailure(
                 PreparationErrorCode.TASK_COUNT_MISMATCH,
@@ -207,10 +206,11 @@ def _contained(root: Path, relative: Path) -> Path:
     return resolved
 
 
-def _parse_config(path: Path, content: str) -> _HarborConfigWire:
+def _parse_config(path: Path) -> tuple[_HarborConfigWire, str]:
     try:
-        return _HarborConfigWire.model_validate_json(content)
-    except (OSError, ValidationError, ValueError) as error:
+        content = _bounded_text(path, _MAX_CONFIG_BYTES)
+        return _HarborConfigWire.model_validate_json(content), content
+    except (OSError, UnicodeError, ValidationError, ValueError) as error:
         raise PreparationFailure(
             PreparationErrorCode.INVALID_HARBOR_CONFIG,
             path.name,

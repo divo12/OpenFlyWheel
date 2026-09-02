@@ -18,6 +18,7 @@ from ofw.evaluation.failure_patterns import (
     FailurePatternMiningService,
     MineFailurePatternsInput,
 )
+from ofw.preparation.contracts import contained_relative_path
 from ofw.preparation.policy import ExperimentPolicyErrorCode, ExperimentPolicyFailure
 
 _ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
@@ -59,7 +60,7 @@ class HarnessChangeTargetInput(StrictModel):
     @field_validator("relative_paths")
     @classmethod
     def validate_paths(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
-        normalized = tuple(_relative_path(value) for value in values)
+        normalized = tuple(contained_relative_path(value, "relative_paths") for value in values)
         if len(set(normalized)) != len(normalized):
             raise ValueError("relative_paths must be unique")
         return normalized
@@ -420,12 +421,6 @@ def _observation(hypothesis: HarnessHypothesis, relative_path: Path) -> Hypothes
         diagnosis_count=diagnosis_count,
         target_paths=hypothesis.target.relative_paths,
     )
-
-
-def _relative_path(path: Path) -> Path:
-    if path.is_absolute() or path == Path(".") or ".." in path.parts:
-        raise ValueError("relative_paths must be contained")
-    return path
 
 
 def _require_unique_patterns(pattern_ids: tuple[str, ...]) -> None:

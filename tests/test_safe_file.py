@@ -23,6 +23,28 @@ def test_regular_file_reader_rejects_device() -> None:
     assert raised.value.code is SafeFileErrorCode.INVALID_FILE
 
 
+def test_regular_file_reader_rejects_oversized_content(tmp_path: Path) -> None:
+    directory_path = tmp_path / "control"
+    directory_path.mkdir()
+    (directory_path / "policy.json").write_bytes(b"oversized")
+
+    with open_directory(directory_path) as directory, pytest.raises(SafeFileFailure) as raised:
+        read_bounded(directory, "policy.json", maximum_bytes=4, subject="policy")
+
+    assert raised.value.code is SafeFileErrorCode.TOO_LARGE
+
+
+def test_directory_open_rejects_a_symlinked_ancestor(tmp_path: Path) -> None:
+    real_parent = tmp_path / "real"
+    directory = real_parent / "control"
+    directory.mkdir(parents=True)
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+
+    with pytest.raises((OSError, SafeFileFailure)), open_directory(linked_parent / "control"):
+        pytest.fail("symlinked ancestor was followed")
+
+
 def test_directory_swap_is_detected_without_redirecting_publication(tmp_path: Path) -> None:
     directory_path = tmp_path / "control"
     moved_path = tmp_path / "moved"
