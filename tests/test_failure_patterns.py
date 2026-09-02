@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -114,6 +116,22 @@ def test_normalization_and_fingerprint_ignore_volatile_values() -> None:
         FailureType.CONTROL_FLOW_FAILURE,
         first,
     )
+    assert "supercalifragilistic" in normalize_root_cause(
+        "The parser rejected the legitimate supercalifragilistic field."
+    )
+
+
+def test_fingerprint_uses_the_complete_normalized_root_cause() -> None:
+    shared = "The agent repeated a recoverable operation without checking state. " * 4
+
+    assert len(shared) > 200
+    assert failure_pattern_id(
+        FailureType.CONTROL_FLOW_FAILURE,
+        shared + "It then finalized early.",
+    ) != failure_pattern_id(
+        FailureType.CONTROL_FLOW_FAILURE,
+        shared + "It then corrupted state.",
+    )
 
 
 def test_mines_exact_patterns_and_keeps_inconclusive_diagnoses_separate(
@@ -185,7 +203,16 @@ def test_mines_exact_patterns_and_keeps_inconclusive_diagnoses_separate(
     assert repeated.first_evaluated_at == _EVALUATED_AT
     assert repeated.last_evaluated_at == _EVALUATED_AT + timedelta(minutes=1)
     assert policy.occurrence_count == 1
-    assert result.artifacts == tuple(pattern.pattern_id for pattern in result.patterns)
+    assert result.artifacts == (
+        failure_pattern_id(
+            FailureType.CONTROL_FLOW_FAILURE,
+            "The agent stopped after attempt 1 in /tmp/run-1/state.json.",
+        ),
+        failure_pattern_id(
+            FailureType.POLICY_FAILURE,
+            "The agent ignored the required approval.",
+        ),
+    )
 
 
 def test_reader_loads_only_explicit_artifact_ids(tmp_path: Path) -> None:
@@ -249,6 +276,69 @@ def test_missing_or_tampered_artifact_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(FailurePatternMiningError) as invalid:
         service.mine(MineFailurePatternsInput(workspace_root=root, artifact_ids=(artifact_id,)))
     assert invalid.value.code is FailurePatternMiningErrorCode.INVALID_ARTIFACT
+
+
+def test_reader_rejects_path_shaped_artifact_ids_at_both_seams(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    recorder = FailureWorkspaceService(FileFailureWorkspace())
+    artifact_id = _record(
+        recorder,
+        _request(
+            root,
+            trace_id="trace-1",
+            task_id="task-1",
+            evaluated_at=_EVALUATED_AT,
+            root_cause="The agent finalized early.",
+        ),
+    )
+    invalid = f"../{artifact_id}"
+
+    with pytest.raises(ValidationError):
+        MineFailurePatternsInput(workspace_root=root, artifact_ids=(invalid,))
+    with pytest.raises(FailurePatternMiningError) as raised:
+        FileFailureWorkspace().read(root, (invalid,))
+
+    assert raised.value.code is FailurePatternMiningErrorCode.INVALID_ARTIFACT
+
+
+def test_reader_rejects_a_fifo_without_blocking(tmp_path: Path) -> None:
+    root = _prepared_workspace(tmp_path)
+    recorder = FailureWorkspaceService(FileFailureWorkspace())
+    artifact_id = _record(
+        recorder,
+        _request(
+            root,
+            trace_id="trace-1",
+            task_id="task-1",
+            evaluated_at=_EVALUATED_AT,
+            root_cause="The agent finalized early.",
+        ),
+    )
+    artifact_path = root / ".workspace/failures" / f"{artifact_id}.json"
+    artifact_path.unlink()
+    os.mkfifo(artifact_path)
+    script = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from ofw.evaluation.failure_patterns import ("
+        "FailurePatternMiningError, FailurePatternMiningErrorCode, "
+        "FailurePatternMiningService, MineFailurePatternsInput)\n"
+        "from ofw.evaluation.failure_workspace import FileFailureWorkspace\n"
+        "request = MineFailurePatternsInput(workspace_root=Path(sys.argv[1]), "
+        "artifact_ids=(sys.argv[2],))\n"
+        "try:\n"
+        "    FailurePatternMiningService(FileFailureWorkspace()).mine(request)\n"
+        "except FailurePatternMiningError as error:\n"
+        "    expected = FailurePatternMiningErrorCode.READ_FAILED\n"
+        "    raise SystemExit(0 if error.code is expected else 2)\n"
+        "raise SystemExit(3)\n"
+    )
+
+    subprocess.run(
+        (sys.executable, "-c", script, str(root), artifact_id),
+        check=True,
+        timeout=2,
+    )
 
 
 def test_pattern_request_is_strict_bounded_and_immutable(tmp_path: Path) -> None:

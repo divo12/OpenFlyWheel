@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -30,7 +32,8 @@ from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@/-]*"
-_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_ARTIFACT_ID = re.compile(_ARTIFACT_ID_PATTERN)
 _ARTIFACT_LIMIT_BYTES = 64 * 1024
 _WORKSPACE_DIRECTORY = ".workspace"
 _FAILURE_DIRECTORY = "failures"
@@ -38,7 +41,7 @@ _IGNORE_CONTENT = "*\n"
 _WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _CREATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-_READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+_READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 Identifier = Annotated[
     str,
@@ -525,6 +528,7 @@ def _validate_existing(
 
 
 def _read_artifact(directory: int, artifact_id: str) -> FailureDiagnosisRecord:
+    _require_artifact_id(artifact_id)
     try:
         content = _read_existing(directory, f"{artifact_id}.json", artifact_id)
     except FileNotFoundError:
@@ -534,6 +538,18 @@ def _read_artifact(directory: int, artifact_id: str) -> FailureDiagnosisRecord:
         ) from None
     except FailureWorkspaceFailure as error:
         raise _pattern_read_error(error) from None
+    return _parse_artifact(content, artifact_id)
+
+
+def _require_artifact_id(artifact_id: str) -> None:
+    if _ARTIFACT_ID.fullmatch(artifact_id) is None:
+        raise FailurePatternMiningError(
+            FailurePatternMiningErrorCode.INVALID_ARTIFACT,
+            "artifact_id",
+        )
+
+
+def _parse_artifact(content: bytes, artifact_id: str) -> FailureDiagnosisRecord:
     try:
         artifact = FailureArtifact.model_validate_json(content)
         diagnosis = artifact.to_diagnosis()
@@ -562,6 +578,12 @@ def _pattern_read_error(error: FailureWorkspaceFailure) -> FailurePatternMiningE
 
 def _read_existing(directory: int, name: str, artifact_id: str) -> bytes:
     descriptor = os.open(name, _READ_FILE_FLAGS, dir_fd=directory)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("failure artifact is not a regular file")
+    except OSError:
+        os.close(descriptor)
+        raise
     with os.fdopen(descriptor, "rb") as stream:
         content = stream.read(_ARTIFACT_LIMIT_BYTES + 1)
     if len(content) > _ARTIFACT_LIMIT_BYTES:

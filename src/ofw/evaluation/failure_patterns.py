@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -14,10 +14,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ofw.evaluation.failure import FailureDiagnosis, FailureEvidenceStatus, FailureType
 
-_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 _PATTERN_ID_PATTERN = r"sha256:[0-9a-f]{64}"
 _ABSOLUTE_PATH = re.compile(r"(?:/[\w.+-]+){2,}")
-_OPAQUE_RUN = re.compile(r"[A-Za-z0-9_-]{16,}")
+_OPAQUE_ID = re.compile(
+    r"\b(?:(?:request|trace|span|observation|score|session|run)[_-]?id|rq)"
+    r"[_:/-][A-Za-z0-9_-]{12,}\b",
+    re.IGNORECASE,
+)
+_UUID = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_HEX_DIGEST = re.compile(r"\b[0-9a-f]{16,}\b", re.IGNORECASE)
 _DIGIT_RUN = re.compile(r"\d+")
 _WHITESPACE = re.compile(r"\s+")
 _NORMALIZED_CAUSE_LIMIT = 200
@@ -119,15 +128,12 @@ class FailureDiagnosisRecord:
     diagnosis: FailureDiagnosis
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _PatternAccumulator:
     pattern_id: str
     issue_type: FailureType
     normalized_root_cause: str
-    occurrences: tuple[FailureDiagnosisRecord, ...]
-
-    def add(self, occurrence: FailureDiagnosisRecord) -> _PatternAccumulator:
-        return replace(self, occurrences=self.occurrences + (occurrence,))
+    occurrences: list[FailureDiagnosisRecord]
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,9 +165,11 @@ class FailurePatternMiningService:
 def normalize_root_cause(value: str) -> str:
     """Mask volatile path, identifier, and number runs before exact grouping."""
     normalized = _ABSOLUTE_PATH.sub("<path>", value)
-    normalized = _OPAQUE_RUN.sub("<id>", normalized)
+    normalized = _OPAQUE_ID.sub("<id>", normalized)
+    normalized = _UUID.sub("<id>", normalized)
+    normalized = _HEX_DIGEST.sub("<id>", normalized)
     normalized = _DIGIT_RUN.sub("<n>", normalized)
-    return _WHITESPACE.sub(" ", normalized).strip()[:_NORMALIZED_CAUSE_LIMIT]
+    return _WHITESPACE.sub(" ", normalized).strip()
 
 
 def failure_pattern_id(issue_type: FailureType, root_cause: str) -> str:
@@ -185,21 +193,21 @@ def _validate_reader_result(
 def _mine(
     occurrences: tuple[FailureDiagnosisRecord, ...],
 ) -> tuple[tuple[_PatternAccumulator, ...], tuple[str, ...]]:
-    patterns: tuple[_PatternAccumulator, ...] = ()
-    inconclusive: tuple[str, ...] = ()
+    patterns: list[_PatternAccumulator] = []
+    inconclusive: list[str] = []
     for occurrence in occurrences:
         diagnosis = occurrence.diagnosis
         if diagnosis.evidence_status is FailureEvidenceStatus.INCONCLUSIVE:
-            inconclusive += (occurrence.artifact_id,)
+            inconclusive.append(occurrence.artifact_id)
             continue
-        patterns = _add_pattern(patterns, occurrence)
-    return patterns, inconclusive
+        _add_pattern(patterns, occurrence)
+    return tuple(patterns), tuple(inconclusive)
 
 
 def _add_pattern(
-    patterns: tuple[_PatternAccumulator, ...],
+    patterns: list[_PatternAccumulator],
     occurrence: FailureDiagnosisRecord,
-) -> tuple[_PatternAccumulator, ...]:
+) -> None:
     diagnosis = occurrence.diagnosis
     issue_type = diagnosis.issue_type
     root_cause = diagnosis.root_cause
@@ -209,46 +217,45 @@ def _add_pattern(
             occurrence.artifact_id,
         )
     pattern_id = failure_pattern_id(issue_type, root_cause)
-    for index, pattern in enumerate(patterns):
+    for pattern in patterns:
         if pattern.pattern_id == pattern_id:
-            return patterns[:index] + (pattern.add(occurrence),) + patterns[index + 1 :]
+            pattern.occurrences.append(occurrence)
+            return
     # ponytail: a linear scan is bounded at 50 artifacts; add an index only if that bound grows.
-    return patterns + (
+    patterns.append(
         _PatternAccumulator(
             pattern_id=pattern_id,
             issue_type=issue_type,
             normalized_root_cause=normalize_root_cause(root_cause),
-            occurrences=(occurrence,),
-        ),
+            occurrences=[occurrence],
+        )
     )
 
 
 def _summary(pattern: _PatternAccumulator) -> FailurePatternSummary:
-    diagnoses = tuple(occurrence.diagnosis for occurrence in pattern.occurrences)
-    evaluated = tuple(diagnosis.outcome.evaluated_at for diagnosis in diagnoses)
+    occurrences = sorted(
+        pattern.occurrences,
+        key=_evaluated_at,
+    )
     return FailurePatternSummary(
         pattern_id=pattern.pattern_id,
         issue_type=pattern.issue_type,
-        normalized_root_cause=pattern.normalized_root_cause,
+        normalized_root_cause=pattern.normalized_root_cause[:_NORMALIZED_CAUSE_LIMIT],
         occurrence_count=len(pattern.occurrences),
-        task_ids=_task_ids(diagnoses),
-        trace_ids=_trace_ids(diagnoses),
-        artifact_ids=_artifact_ids(pattern.occurrences),
-        first_evaluated_at=min(evaluated),
-        last_evaluated_at=max(evaluated),
+        task_ids=tuple(
+            sorted({occurrence.diagnosis.outcome.task_id.value for occurrence in occurrences})
+        ),
+        trace_ids=tuple(
+            sorted({occurrence.diagnosis.outcome.trace_id.value for occurrence in occurrences})
+        ),
+        artifact_ids=tuple(sorted(occurrence.artifact_id for occurrence in occurrences)),
+        first_evaluated_at=occurrences[0].diagnosis.outcome.evaluated_at,
+        last_evaluated_at=occurrences[-1].diagnosis.outcome.evaluated_at,
     )
 
 
-def _task_ids(diagnoses: tuple[FailureDiagnosis, ...]) -> tuple[str, ...]:
-    return tuple(sorted({diagnosis.outcome.task_id.value for diagnosis in diagnoses}))
-
-
-def _trace_ids(diagnoses: tuple[FailureDiagnosis, ...]) -> tuple[str, ...]:
-    return tuple(sorted({diagnosis.outcome.trace_id.value for diagnosis in diagnoses}))
-
-
-def _artifact_ids(occurrences: tuple[FailureDiagnosisRecord, ...]) -> tuple[str, ...]:
-    return tuple(sorted(occurrence.artifact_id for occurrence in occurrences))
+def _evaluated_at(occurrence: FailureDiagnosisRecord) -> datetime:
+    return occurrence.diagnosis.outcome.evaluated_at
 
 
 def _sort_key(summary: FailurePatternSummary) -> tuple[int, int, float, str]:

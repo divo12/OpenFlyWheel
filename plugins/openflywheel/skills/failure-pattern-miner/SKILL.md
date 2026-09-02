@@ -11,10 +11,11 @@ comparison scope, such as one baseline or candidate run. Pass one to fifty uniqu
 IDs to `mine_failure_patterns`; never scan the workspace or substitute trace IDs and paths.
 
 The tool groups supported diagnoses by failure type plus exact normalized root cause. Its
-normalizer masks volatile absolute paths, long opaque identifiers, and numbers before
-fingerprinting. Results are deterministic exact matches, not semantic clusters: similar
-wording may remain separate, and matching wording does not prove one repair will fix every
-occurrence. Inconclusive diagnoses remain separate and must not be forced into a pattern.
+normalizer masks volatile absolute paths, recognizable opaque identifiers, and numbers before
+fingerprinting the complete normalized cause; the returned cause text is only a bounded display
+excerpt. Results are deterministic exact matches, not semantic clusters: similar wording may
+remain separate, and matching wording does not prove one repair will fix every occurrence.
+Inconclusive diagnoses remain separate and must not be forced into a pattern.
 
 Read patterns in their declared order: occurrence count descending, distinct task count
 descending, latest occurrence descending, then fingerprint ascending. Preserve the returned
