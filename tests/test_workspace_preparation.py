@@ -22,6 +22,7 @@ from ofw.preparation import (
     WorkspacePreparationService,
 )
 from ofw.preparation.harbor import HarborBaselineRunner
+from ofw.preparation.policy import FileExperimentPolicyRepository
 from ofw.preparation.worktree import GitWorktreeGateway
 
 
@@ -36,7 +37,13 @@ class _EnvironmentCapture(BaseModel):
 
 class _FailingRunner:
     def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
-        return BaselineConfiguration(model="openai/gpt-5.4-mini", task_count=1)
+        return BaselineConfiguration(
+            model="openai/gpt-5.4-mini",
+            task_ids=("task-1",),
+            benchmark_config_digest="sha256:" + "1" * 64,
+            verifier="itsm-bench",
+            environment="itsm-bench",
+        )
 
     def start(self, run: BaselineRun) -> int:
         raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "harbor")
@@ -260,6 +267,15 @@ def test_prepare_workspace_creates_isolated_branch_commit_and_baseline(
         release=initialization_commit,
         session="itsm-hermes-demo",
     )
+    policy = FileExperimentPolicyRepository().load(worktree, "itsm-hermes-demo")
+    assert policy.base_commit == ready.base_commit
+    assert policy.initialization_commit == ready.initialization_commit
+    assert policy.editable_paths == (Path("prompt.md"),)
+    assert policy.task_ids == ("tasks/task-pass", "tasks/task-fail")
+    assert policy.model == "openai/gpt-5.4-mini"
+    assert policy.concurrency == 1
+    assert policy.max_retries == 0
+    assert policy.controls_digest == policy.recomputed_controls_digest()
     assert (benchmark_root / "invocations.txt").read_text(encoding="utf-8") == "run\n"
     persisted_text = "\n".join(
         (
@@ -272,6 +288,10 @@ def test_prepare_workspace_creates_isolated_branch_commit_and_baseline(
             (
                 harness_root
                 / ".git/ofw/preparations/itsm-hermes-demo/baseline.log"
+            ).read_text(encoding="utf-8"),
+            (
+                harness_root
+                / ".git/ofw/preparations/itsm-hermes-demo/policy.json"
             ).read_text(encoding="utf-8"),
         )
     )

@@ -44,6 +44,12 @@ from ofw.evaluation.outcome import (
     VerifierResult,
     VerifierVerdict,
 )
+from ofw.evolution import (
+    FileHypothesisRepository,
+    HypothesisObservation,
+    HypothesisService,
+    RecordHypothesisInput,
+)
 from ofw.observability.langfuse.contracts import LangfuseProject
 from ofw.observability.langfuse.domain import TraceId
 from ofw.observability.langfuse.trace_query import (
@@ -86,8 +92,8 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
         "record authoritative outcomes, compact failure diagnoses, exact patterns, and "
-        "evidence-bound curations. Never infer outcomes, mutate traces, or copy trace payloads "
-        "into local storage."
+        "evidence-backed hypotheses. Never infer outcomes, mutate traces, copy trace payloads "
+        "into local storage, or edit candidates while recording a hypothesis."
     ),
     log_level="DEBUG",
 )
@@ -154,6 +160,14 @@ def _failure_pattern_service() -> FailurePatternMiningService:
 
 def _curation_service() -> FailureCurationService:
     return FailureCurationService(FileFailureCurationWorkspace())
+
+
+def _hypothesis_service() -> HypothesisService:
+    workspace = FileFailureWorkspace()
+    return HypothesisService(
+        pattern_miner=FailurePatternMiningService(workspace),
+        repository=FileHypothesisRepository(),
+    )
 
 
 def _program_template(name: str) -> str:
@@ -295,6 +309,12 @@ def record_failure_curation(
 ) -> FailureCurationObservation:
     """Store one bounded cross-failure curation under a prepared local workspace."""
     return _curation_service().record(request)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def record_hypothesis(request: RecordHypothesisInput) -> HypothesisObservation:
+    """Record one exact evidence-backed hypothesis, then stop before candidate editing."""
+    return _hypothesis_service().record(request)
 
 
 def main() -> None:

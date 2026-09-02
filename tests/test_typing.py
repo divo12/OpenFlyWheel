@@ -83,3 +83,19 @@ def test_namespace_exports_workspace_preparation_contract() -> None:
     assert "PreparationStatus" in package.__all__
     assert "PrepareWorkspaceInput" in package.__all__
     assert "WorkspacePreparationObservation" in package.__all__
+
+
+def test_namespace_exports_policy_and_hypothesis_contracts_without_legacy_ownership() -> None:
+    expected = {
+        "ExperimentPolicySnapshot",
+        "FailurePatternReference",
+        "HarnessChangeTarget",
+        "HarnessHypothesis",
+        "HypothesisErrorCode",
+        "HypothesisId",
+        "HypothesisObservation",
+        "RecordHypothesisInput",
+    }
+
+    assert expected <= set(package.__all__)
+    assert {"AssetAccess", "HarnessRevision", "HarnessRevisionId"}.isdisjoint(package.__all__)

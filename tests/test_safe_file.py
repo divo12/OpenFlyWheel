@@ -1,0 +1,98 @@
+"""Shared descriptor-anchored immutable-file safety checks."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from ofw.safe_file import (
+    SafeFileErrorCode,
+    SafeFileFailure,
+    open_directory,
+    publish_idempotent,
+    read_bounded,
+)
+
+
+def test_regular_file_reader_rejects_device() -> None:
+    with open_directory(Path("/dev")) as directory, pytest.raises(SafeFileFailure) as raised:
+        read_bounded(directory, "null", maximum_bytes=16, subject="device")
+
+    assert raised.value.code is SafeFileErrorCode.INVALID_FILE
+
+
+def test_directory_swap_is_detected_without_redirecting_publication(tmp_path: Path) -> None:
+    directory_path = tmp_path / "control"
+    moved_path = tmp_path / "moved"
+    replacement_path = tmp_path / "replacement"
+    directory_path.mkdir()
+    replacement_path.mkdir()
+
+    with pytest.raises(SafeFileFailure) as raised, open_directory(directory_path) as directory:
+        directory_path.rename(moved_path)
+        replacement_path.rename(directory_path)
+        publish_idempotent(
+            directory,
+            "policy.json",
+            b"{}\n",
+            maximum_bytes=16,
+            subject="policy",
+        )
+
+    assert raised.value.code is SafeFileErrorCode.DIRECTORY_CHANGED
+    assert not (directory_path / "policy.json").exists()
+    assert (moved_path / "policy.json").read_bytes() == b"{}\n"
+
+
+def test_failed_atomic_link_leaves_no_publication_or_temporary_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory_path = tmp_path / "control"
+    directory_path.mkdir()
+
+    def crash(
+        source: str,
+        destination: str,
+        *,
+        src_dir_fd: int,
+        dst_dir_fd: int,
+        follow_symlinks: bool,
+    ) -> None:
+        del source, destination, src_dir_fd, dst_dir_fd, follow_symlinks
+        raise OSError("simulated crash boundary")
+
+    monkeypatch.setattr(os, "link", crash)
+
+    with (
+        open_directory(directory_path) as directory,
+        pytest.raises(OSError, match="simulated crash boundary"),
+    ):
+        publish_idempotent(
+            directory,
+            "policy.json",
+            b"{}\n",
+            maximum_bytes=16,
+            subject="policy",
+        )
+
+    assert tuple(directory_path.iterdir()) == ()
+
+
+def test_new_content_is_rejected_before_any_file_write_when_oversized(tmp_path: Path) -> None:
+    directory_path = tmp_path / "control"
+    directory_path.mkdir()
+
+    with open_directory(directory_path) as directory, pytest.raises(SafeFileFailure) as raised:
+        publish_idempotent(
+            directory,
+            "policy.json",
+            b"too large",
+            maximum_bytes=4,
+            subject="policy",
+        )
+
+    assert raised.value.code is SafeFileErrorCode.TOO_LARGE
+    assert tuple(directory_path.iterdir()) == ()
