@@ -13,6 +13,12 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool
 
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
+from ofw.evaluation.failure_patterns import (
+    FailurePatternMiningObservation,
+    FailurePatternMiningStatus,
+    FailurePatternOrdering,
+    MineFailurePatternsInput,
+)
 from ofw.evaluation.failure_workspace import (
     FailedOutcomeInput,
     FailureRecordObservation,
@@ -20,6 +26,7 @@ from ofw.evaluation.failure_workspace import (
     FailureWorkspaceErrorCode,
     FailureWorkspaceFailure,
     FailureWorkspaceService,
+    FileFailureWorkspace,
     RecordFailureInput,
 )
 from ofw.evaluation.langfuse import (
@@ -107,6 +114,11 @@ class OpenFlywheelMcpModule(Protocol):
     ) -> OutcomeStoreObservation: ...
 
     def record_failure(self, request: RecordFailureInput) -> FailureRecordObservation: ...
+
+    def mine_failure_patterns(
+        self,
+        request: MineFailurePatternsInput,
+    ) -> FailurePatternMiningObservation: ...
 
 
 class _FakeOutcomeStore:
@@ -240,6 +252,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "get_span_context",
         "record_outcome",
         "record_failure",
+        "mine_failure_patterns",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -249,6 +262,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (True, False, True),
         (False, False, True),
         (False, False, True),
+        (True, False, True),
     )
 
 
@@ -464,3 +478,29 @@ def test_record_failure_preserves_typed_workspace_errors(
 
     assert raised.value.code is FailureWorkspaceErrorCode.WRITE_FAILED
     assert str(raised.value) == f"write_failed: {_FAILURE_ARTIFACT_ID}"
+
+
+def test_mine_failure_patterns_passes_one_bounded_object_to_the_service(
+    tmp_path: Path,
+) -> None:
+    module = _module()
+    (tmp_path / "PROGRAM.md").write_text("# Program\n", encoding="utf-8")
+    (tmp_path / "experiment_config.yaml").write_text(
+        "benchmark: itsm-bench\n",
+        encoding="utf-8",
+    )
+    recorded = FailureWorkspaceService(FileFailureWorkspace()).record(
+        _inconclusive_failure_request(tmp_path)
+    )
+    request = MineFailurePatternsInput(
+        workspace_root=tmp_path,
+        artifact_ids=(recorded.artifact_id,),
+    )
+
+    result = module.mine_failure_patterns(request)
+
+    assert result.status is FailurePatternMiningStatus.SUCCESS
+    assert result.ordering is FailurePatternOrdering.OCCURRENCES_TASKS_LATEST_FINGERPRINT
+    assert result.source_artifact_count == 1
+    assert result.patterns == ()
+    assert result.inconclusive_artifact_ids == (recorded.artifact_id,)

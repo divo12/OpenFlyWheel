@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -12,15 +14,26 @@ from pathlib import Path
 from typing import Annotated, Literal, Never, Protocol
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from ofw.evaluation.failure import FailureDiagnosis, FailureEvidenceStatus, FailureType
-from ofw.evaluation.outcome import OutcomeEvaluation, TaskId, VerifierId
+from ofw.evaluation.failure import (
+    FailureDiagnosis,
+    FailureDiagnosisError,
+    FailureEvidenceStatus,
+    FailureType,
+)
+from ofw.evaluation.failure_patterns import (
+    FailureDiagnosisRecord,
+    FailurePatternMiningError,
+    FailurePatternMiningErrorCode,
+)
+from ofw.evaluation.outcome import OutcomeEvaluation, OutcomeEvaluationError, TaskId, VerifierId
 from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 from ofw.runtime import EvidenceReference, VerifierVerdict
 
 _IDENTIFIER_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:@/-]*"
-_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_ARTIFACT_ID = re.compile(_ARTIFACT_ID_PATTERN)
 _ARTIFACT_LIMIT_BYTES = 64 * 1024
 _WORKSPACE_DIRECTORY = ".workspace"
 _FAILURE_DIRECTORY = "failures"
@@ -28,7 +41,7 @@ _IGNORE_CONTENT = "*\n"
 _WORKSPACE_MARKERS = ("PROGRAM.md", "experiment_config.yaml")
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _CREATE_FILE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-_READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW
+_READ_FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
 
 Identifier = Annotated[
     str,
@@ -180,6 +193,32 @@ class FailureArtifact(StrictModel):
             inconclusive_reason=diagnosis.inconclusive_reason,
         )
 
+    def to_diagnosis(self) -> FailureDiagnosis:
+        outcome = OutcomeEvaluation(
+            trace_id=TraceId(self.trace_id),
+            task_id=TaskId(self.task_id),
+            verifier_id=VerifierId(self.verifier_id),
+            evaluated_at=self.evaluated_at,
+            verdict=VerifierVerdict.FAIL,
+            score=self.normalized_score,
+            evidence=tuple(EvidenceReference(value) for value in self.outcome_evidence),
+        )
+        return FailureDiagnosis(
+            outcome=outcome,
+            outcome_score_id=ScoreId(self.outcome_score_id),
+            evidence_status=self.evidence_status,
+            issue_type=self.issue_type,
+            expected_outcome=self.expected_outcome,
+            actual_outcome=self.actual_outcome,
+            critical_observation_id=_observation_id(self.critical_observation_id),
+            evidence_observation_ids=tuple(
+                ObservationId(value) for value in self.evidence_observation_ids
+            ),
+            root_cause=self.root_cause,
+            counterfactual_action=self.counterfactual_action,
+            inconclusive_reason=self.inconclusive_reason,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class FailureArtifactReceipt:
@@ -248,6 +287,23 @@ class FileFailureWorkspace:
                 artifact_id,
             ) from None
 
+    def read(
+        self,
+        root: Path,
+        artifact_ids: tuple[str, ...],
+    ) -> tuple[FailureDiagnosisRecord, ...]:
+        try:
+            return self._read(root, artifact_ids)
+        except FailurePatternMiningError:
+            raise
+        except FailureWorkspaceFailure as error:
+            raise _pattern_read_error(error) from None
+        except (OSError, RuntimeError, UnicodeError):
+            raise FailurePatternMiningError(
+                FailurePatternMiningErrorCode.READ_FAILED,
+                "failure_artifacts",
+            ) from None
+
     def _store(
         self,
         root: Path,
@@ -272,6 +328,21 @@ class FileFailureWorkspace:
         ) as directory:
             _publish_or_validate(directory, path.name, content, artifact_id)
         return receipt
+
+    def _read(
+        self,
+        root: Path,
+        artifact_ids: tuple[str, ...],
+    ) -> tuple[FailureDiagnosisRecord, ...]:
+        prepared_root = _prepared_root(root)
+        workspace, failures = _workspace_paths(prepared_root)
+        directory_identity = _existing_workspace_directories(
+            prepared_root,
+            workspace,
+            failures,
+        )
+        with _failure_directory_handle(prepared_root, directory_identity) as directory:
+            return tuple(_read_artifact(directory, artifact_id) for artifact_id in artifact_ids)
 
 
 def _observation_id(value: str | None) -> ObservationId | None:
@@ -372,6 +443,23 @@ def _prepare_workspace_directories(
     )
 
 
+def _existing_workspace_directories(
+    root: Path,
+    workspace: Path,
+    failures: Path,
+) -> _DirectoryChainIdentity:
+    if not workspace.is_dir() or not failures.is_dir():
+        raise FailurePatternMiningError(
+            FailurePatternMiningErrorCode.ARTIFACT_NOT_FOUND,
+            _FAILURE_DIRECTORY,
+        )
+    return _DirectoryChainIdentity(
+        root=_path_identity(root),
+        workspace=_path_identity(workspace),
+        failures=_path_identity(failures),
+    )
+
+
 def _write_ignore_file(directory: int) -> None:
     try:
         _write_new_file(directory, ".gitignore", _IGNORE_CONTENT.encode("utf-8"))
@@ -439,8 +527,63 @@ def _validate_existing(
         )
 
 
+def _read_artifact(directory: int, artifact_id: str) -> FailureDiagnosisRecord:
+    _require_artifact_id(artifact_id)
+    try:
+        content = _read_existing(directory, f"{artifact_id}.json", artifact_id)
+    except FileNotFoundError:
+        raise FailurePatternMiningError(
+            FailurePatternMiningErrorCode.ARTIFACT_NOT_FOUND,
+            artifact_id,
+        ) from None
+    except FailureWorkspaceFailure as error:
+        raise _pattern_read_error(error) from None
+    return _parse_artifact(content, artifact_id)
+
+
+def _require_artifact_id(artifact_id: str) -> None:
+    if _ARTIFACT_ID.fullmatch(artifact_id) is None:
+        raise FailurePatternMiningError(
+            FailurePatternMiningErrorCode.INVALID_ARTIFACT,
+            "artifact_id",
+        )
+
+
+def _parse_artifact(content: bytes, artifact_id: str) -> FailureDiagnosisRecord:
+    try:
+        artifact = FailureArtifact.model_validate_json(content)
+        diagnosis = artifact.to_diagnosis()
+    except (FailureDiagnosisError, OutcomeEvaluationError, ValidationError):
+        raise FailurePatternMiningError(
+            FailurePatternMiningErrorCode.INVALID_ARTIFACT,
+            artifact_id,
+        ) from None
+    if artifact.artifact_id != artifact_id:
+        raise FailurePatternMiningError(
+            FailurePatternMiningErrorCode.INVALID_ARTIFACT,
+            artifact_id,
+        )
+    return FailureDiagnosisRecord(artifact_id, diagnosis)
+
+
+def _pattern_read_error(error: FailureWorkspaceFailure) -> FailurePatternMiningError:
+    if error.code is FailureWorkspaceErrorCode.INVALID_WORKSPACE:
+        code = FailurePatternMiningErrorCode.INVALID_WORKSPACE
+    elif error.code is FailureWorkspaceErrorCode.ARTIFACT_TOO_LARGE:
+        code = FailurePatternMiningErrorCode.INVALID_ARTIFACT
+    else:
+        code = FailurePatternMiningErrorCode.READ_FAILED
+    return FailurePatternMiningError(code, error.subject)
+
+
 def _read_existing(directory: int, name: str, artifact_id: str) -> bytes:
     descriptor = os.open(name, _READ_FILE_FLAGS, dir_fd=directory)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError("failure artifact is not a regular file")
+    except OSError:
+        os.close(descriptor)
+        raise
     with os.fdopen(descriptor, "rb") as stream:
         content = stream.read(_ARTIFACT_LIMIT_BYTES + 1)
     if len(content) > _ARTIFACT_LIMIT_BYTES:

@@ -40,6 +40,16 @@ def test_namespace_exports_failure_diagnosis_contract() -> None:
     assert "FailureType" in package.__all__
 
 
+def test_namespace_exports_failure_pattern_contract() -> None:
+    assert "FailurePatternMiningError" in package.__all__
+    assert "FailurePatternMiningErrorCode" in package.__all__
+    assert "FailurePatternMiningObservation" in package.__all__
+    assert "FailurePatternMiningStatus" in package.__all__
+    assert "FailurePatternOrdering" in package.__all__
+    assert "FailurePatternSummary" in package.__all__
+    assert "MineFailurePatternsInput" in package.__all__
+
+
 def test_namespace_exports_workspace_preparation_contract() -> None:
     assert "PreparationErrorCode" in package.__all__
     assert "PreparationPhase" in package.__all__
