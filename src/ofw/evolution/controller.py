@@ -728,7 +728,9 @@ class EvolutionController:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.MISSING_INPUT, "gate_receipts"
             )
-        if accepted.evaluated_commit != state.accepted_commit:
+        if accepted.evaluated_commit != (
+            state.accepted_commit or policy.initialization_commit
+        ):
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, accepted.receipt_id
             )

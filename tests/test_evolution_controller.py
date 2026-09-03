@@ -27,21 +27,26 @@ from ofw.evolution.controller import (
 from ofw.evolution.gate import PromotionDecision, decide_promotion
 from ofw.evolution.ledger import (
     CandidatePrepared,
+    CandidateSubmitted,
     EvolutionEvent,
     EvolutionEventDraft,
+    EvolutionEventPayload,
     EvolutionEventType,
     EvolutionLedgerErrorCode,
     EvolutionLedgerFailure,
+    EvolutionStarted,
     FileEvolutionLedger,
+    HypothesisLinked,
     ReleasePublished,
     ReleaseRolledBack,
+    RunCompleted,
 )
 from ofw.preparation.policy import (
     ExperimentPolicyErrorCode,
     ExperimentPolicyFailure,
     ExperimentPolicySnapshot,
 )
-from tests.support_policy import PolicyRepository, policy
+from tests.support_policy import HypothesisRepository, PolicyRepository, policy
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -498,6 +503,77 @@ def test_conflicting_controller_retry_is_rejected(tmp_path: Path) -> None:
             )
         )
     assert raised.value.code is EvolutionControllerErrorCode.REQUEST_CONFLICT
+
+
+def test_legacy_started_event_uses_policy_baseline_for_gate(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    authority = policy()
+    ledger = FileEvolutionLedger()
+    timestamp = datetime(2026, 9, 3, tzinfo=UTC)
+
+    def append(
+        event_type: EvolutionEventType,
+        payload: EvolutionEventPayload,
+        name: str,
+    ) -> None:
+        ledger.append(
+            root,
+            EvolutionEventDraft(
+                event_type=event_type,
+                experiment_id="experiment-one",
+                payload=payload,
+                occurred_at=timestamp,
+                causation_id=name,
+                correlation_id=name,
+            ),
+        )
+
+    append(
+        EvolutionEventType.EVOLUTION_STARTED,
+        EvolutionStarted(policy_digest=candidate_policy_digest(authority)),
+        "start",
+    )
+    append(
+        EvolutionEventType.HYPOTHESIS_LINKED,
+        HypothesisLinked(hypothesis_id="sha256:" + "a" * 64, source_commit="a" * 40),
+        "hypothesis",
+    )
+    append(
+        EvolutionEventType.CANDIDATE_PREPARED,
+        CandidatePrepared(iteration=1, candidate_workspace_id="workspace-1"),
+        "prepare",
+    )
+    append(
+        EvolutionEventType.CANDIDATE_SUBMITTED,
+        CandidateSubmitted(
+            candidate_id="sha256:" + "b" * 64, candidate_commit="c" * 40
+        ),
+        "submit",
+    )
+    candidate = _receipt("run-1", RunSide.CANDIDATE, "c" * 40, VerifierVerdict.PASS)
+    append(
+        EvolutionEventType.RUN_COMPLETED,
+        RunCompleted(run_id="run-1", receipt_id=candidate.receipt_id),
+        "complete",
+    )
+    accepted = _receipt("baseline", RunSide.ACCEPTED, "a" * 40, VerifierVerdict.FAIL)
+    decision = decide_promotion(authority, accepted, candidate)
+    controller = EvolutionController(
+        workspace_root=root,
+        ledger=ledger,
+        policy_repository=PolicyRepository(authority),
+        hypothesis_repository=HypothesisRepository(),
+    )
+    observation = controller.advance(
+        _request(
+            root,
+            "decide",
+            promotion_decision=decision,
+            evaluated_run_receipt=candidate,
+            accepted_run_receipt=accepted,
+        )
+    )
+    assert observation.phase is EvolutionPhase.AWAITING_PUBLICATION
 
 
 def test_illegal_action_and_stopped_state_are_typed(tmp_path: Path) -> None:
