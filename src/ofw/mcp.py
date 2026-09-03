@@ -108,7 +108,9 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
         "record authoritative outcomes, compact failure diagnoses, exact patterns, and "
         "evidence-backed hypotheses and isolated candidates. Never infer outcomes, mutate "
-        "traces, copy trace payloads into local storage, or broaden candidate edit authority."
+        "traces, copy trace payloads into local storage, or broaden candidate edit authority. "
+        "The evolution controller owns publication, rollback, budgets, and stopping; after "
+        "rollback, require a fresh Harbor run for attribution."
     ),
     log_level="DEBUG",
 )

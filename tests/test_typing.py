@@ -117,3 +117,16 @@ def test_namespace_exports_candidate_contracts_without_restoring_runtime_plane()
     assert expected <= set(package.__all__)
     assert {"E2BSandbox", "CanaryCase", "CommandLoop"}.isdisjoint(package.__all__)
     assert {"CandidateBlocker", "CandidateOutcomeReceipt"}.isdisjoint(package.__all__)
+
+
+def test_namespace_exports_prepared_experiment_integration_without_live_planes() -> None:
+    expected = {
+        "HarborEvidenceService",
+        "PreparedExperimentIntegration",
+        "RunEvidenceInput",
+        "baseline_run_for_evidence",
+    }
+
+    assert expected <= set(package.__all__)
+    assert {"ScenarioId", "LiveRunService", "PlatformAdapter"}.isdisjoint(package.__all__)
+    assert find_spec("ofw.live") is None

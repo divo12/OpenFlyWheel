@@ -7,7 +7,6 @@ import os
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -15,18 +14,11 @@ from typing import Literal
 from pydantic import Field
 
 from ofw.evaluation.outcome import (
-    EvaluatedRunBlocker,
     EvaluatedRunReceipt,
-    EvaluatedTaskReceipt,
-    EvidenceReference,
-    OutcomeEvaluation,
     RunSide,
-    TaskId,
-    VerifierId,
     VerifierVerdict,
 )
 from ofw.evolution.candidate import (
-    CandidateBlockerCode,
     CandidateErrorCode,
     CandidateExecutionInput,
     CandidateExecutionObservation,
@@ -38,18 +30,19 @@ from ofw.evolution.candidate import (
     CandidateStatus,
     CandidateTraceLocator,
     CandidateWorkspace,
-    TraceMatchRequest,
     candidate_policy_digest,
 )
 from ofw.evolution.candidate_git import CandidateGitGateway
 from ofw.evolution.hypothesis import HarnessHypothesis, HypothesisFailure, StrictModel
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
-from ofw.observability.langfuse.domain import TraceId
+from ofw.evolution.integration import (
+    HarborEvidenceService,
+    PreparedExperimentIntegration,
+    RunEvidenceInput,
+)
 from ofw.preparation.contracts import (
     ExperimentControls,
     ExperimentRun,
-    ExperimentSummary,
-    ExperimentTrial,
     PreparationErrorCode,
     PreparationFailure,
 )
@@ -76,12 +69,6 @@ class _CandidateState(StrictModel):
     error_code: CandidateErrorCode | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class _OutcomeReduction:
-    receipts: tuple[EvaluatedTaskReceipt, ...]
-    blockers: tuple[EvaluatedRunBlocker, ...]
-
-
 class CandidateExecutionService:
     def __init__(
         self,
@@ -95,8 +82,8 @@ class CandidateExecutionService:
         self._workspace = workspace
         self._hypotheses = hypotheses
         self._runner = runner
-        self._trace_locator = trace_locator
-        self._outcome_store = outcome_store
+        self._evidence = HarborEvidenceService(trace_locator, outcome_store)
+        self._integration = PreparedExperimentIntegration(runner, self._evidence)
 
     def execute(self, request: CandidateExecutionInput) -> CandidateExecutionObservation:
         try:
@@ -228,22 +215,26 @@ class CandidateExecutionService:
     ) -> CandidateExecutionObservation:
         controls = self._validated_controls(request, policy)
         run = _run_from_state(request, state, controls)
-        summary = self._runner.summarize(run)
-        if summary is None:
+        if state.candidate_commit is None or state.candidate_tree is None:
+            raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, run.run_id)
+        evaluated = self._integration.poll(
+            RunEvidenceInput(
+                run=run,
+                side=RunSide.CANDIDATE,
+                policy_digest=state.policy_digest,
+                controls_digest=state.controls_digest,
+                evaluated_commit=state.candidate_commit,
+                evaluated_tree=state.candidate_tree,
+                controls=controls,
+            )
+        )
+        if evaluated is None:
             if _deadline_expired(state):
                 self._runner.cancel(run, state.process_id)
                 failed = _failed_state(state, CandidateErrorCode.CANDIDATE_TIMEOUT)
                 _write_state(control, failed)
                 return _persisted_failure_observation(request, failed)
             return _running_observation(request, state)
-        reduction = _record_outcomes(
-            summary,
-            run,
-            controls,
-            self._trace_locator,
-            self._outcome_store,
-        )
-        evaluated = _evaluated_receipt(state, run, controls, reduction)
         complete = _complete_state(state, evaluated)
         _write_state(control, complete)
         return _complete_observation(request, complete)
@@ -261,149 +252,6 @@ class CandidateExecutionService:
         if actual != _policy_controls(policy):
             raise CandidateFailure(CandidateErrorCode.CONTROLS_DRIFT, policy.experiment_id)
         return actual
-
-
-def _record_outcomes(
-    summary: ExperimentSummary,
-    run: ExperimentRun,
-    controls: ExperimentControls,
-    trace_locator: CandidateTraceLocator,
-    outcome_store: CandidateOutcomeStore,
-) -> _OutcomeReduction:
-    receipts: list[EvaluatedTaskReceipt] = []
-    blockers: list[EvaluatedRunBlocker] = []
-    for trial in summary.trials:
-        result = _authoritative_result(trial)
-        if isinstance(result, EvaluatedRunBlocker):
-            blockers.append(result)
-            continue
-        match = trace_locator.locate(_trace_request(trial, run, controls))
-        if match.trace_id is None:
-            blockers.append(_trace_blocker(trial, match.blocker))
-            continue
-        outcome = _outcome(trial, controls, match.trace_id, result)
-        try:
-            submission = outcome_store.store(outcome)
-        except Exception:
-            raise CandidateFailure(
-                CandidateErrorCode.OUTCOME_STORE_FAILED,
-                trial.task_id,
-            ) from None
-        receipts.append(
-            EvaluatedTaskReceipt(
-                task_id=trial.task_id,
-                trace_id=match.trace_id,
-                score_id=submission.score_id.value,
-                verdict=result[0],
-                verifier_id=outcome.verifier_id.value,
-                normalized_score=result[1],
-                cost_usd=match.cost_usd,
-                latency_seconds=trial.latency_seconds,
-            )
-        )
-    return _OutcomeReduction(tuple(receipts), tuple(blockers))
-
-
-def _evaluated_receipt(
-    state: _CandidateState,
-    run: ExperimentRun,
-    controls: ExperimentControls,
-    reduction: _OutcomeReduction,
-) -> EvaluatedRunReceipt:
-    if state.candidate_commit is None or state.candidate_tree is None:
-        raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, run.run_id)
-    return EvaluatedRunReceipt.build(
-        run_id=run.run_id,
-        side=RunSide.CANDIDATE,
-        policy_digest=state.policy_digest,
-        controls_digest=state.controls_digest,
-        evaluated_commit=state.candidate_commit,
-        evaluated_tree=state.candidate_tree,
-        task_ids=controls.task_ids,
-        outcome_receipts=reduction.receipts,
-        blockers=reduction.blockers,
-    )
-
-
-def _authoritative_result(
-    trial: ExperimentTrial,
-) -> tuple[VerifierVerdict, float | None] | EvaluatedRunBlocker:
-    if trial.exception:
-        return _blocker(trial, CandidateBlockerCode.UNVERIFIED, "agent_exception")
-    reward = _reward_result(trial)
-    if reward is not None:
-        return reward
-    return _verdict_result(trial)
-
-
-def _reward_result(
-    trial: ExperimentTrial,
-) -> tuple[VerifierVerdict, float] | EvaluatedRunBlocker | None:
-    if trial.reward == 1.0:
-        return VerifierVerdict.PASS, 1.0
-    if trial.reward == 0.0:
-        return VerifierVerdict.FAIL, 0.0
-    if trial.reward is not None:
-        return _blocker(trial, CandidateBlockerCode.UNSUPPORTED_REWARD, str(trial.reward))
-    return None
-
-
-def _verdict_result(
-    trial: ExperimentTrial,
-) -> tuple[VerifierVerdict, None] | EvaluatedRunBlocker:
-    if trial.verdict in (VerifierVerdict.ABSTAIN.value, VerifierVerdict.ERROR.value):
-        return VerifierVerdict(trial.verdict), None
-    return _blocker(trial, CandidateBlockerCode.UNVERIFIED, "missing_verifier_result")
-
-
-def _trace_request(
-    trial: ExperimentTrial,
-    run: ExperimentRun,
-    controls: ExperimentControls,
-) -> TraceMatchRequest:
-    return TraceMatchRequest(
-        task_id=trial.task_id,
-        session_id=run.session_id,
-        environment=controls.environment,
-        release=run.release,
-        started_at=trial.started_at,
-        finished_at=trial.finished_at,
-    )
-
-
-def _trace_blocker(
-    trial: ExperimentTrial,
-    code: CandidateBlockerCode | None,
-) -> EvaluatedRunBlocker:
-    if code is None:
-        raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, trial.task_id)
-    return _blocker(trial, code, "trace_mapping")
-
-
-def _blocker(
-    trial: ExperimentTrial,
-    code: CandidateBlockerCode,
-    subject: str,
-) -> EvaluatedRunBlocker:
-    return EvaluatedRunBlocker(task_id=trial.task_id, code=code.value, subject=subject)
-
-
-def _outcome(
-    trial: ExperimentTrial,
-    controls: ExperimentControls,
-    trace_id: str,
-    result: tuple[VerifierVerdict, float | None],
-) -> OutcomeEvaluation:
-    verdict, score = result
-    return OutcomeEvaluation(
-        trace_id=TraceId(trace_id),
-        task_id=TaskId(trial.task_id),
-        verifier_id=VerifierId(f"{controls.verifier}@{trial.task_checksum}"),
-        evaluated_at=trial.evaluated_at,
-        verdict=verdict,
-        score=score,
-        evidence=tuple(EvidenceReference(value) for value in trial.evidence),
-    )
 
 
 def _policy_controls(policy: ExperimentPolicySnapshot) -> ExperimentControls:

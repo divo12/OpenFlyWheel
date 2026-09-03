@@ -16,6 +16,7 @@ from ofw.evolution.candidate import candidate_policy_digest
 from ofw.evolution.gate import PromotionDecision, PromotionStatus, decide_promotion
 from ofw.evolution.hypothesis import HarnessHypothesis, HypothesisFailure
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
+from ofw.evolution.integration import accepted_view
 from ofw.evolution.ledger import (
     CandidateAccepted,
     CandidatePrepared,
@@ -788,14 +789,21 @@ class EvolutionController:
             )
         self._validate_decision_identity(decision, policy, state)
         candidate = request.evaluated_run_receipt
-        accepted = request.accepted_run_receipt
-        if candidate is None or accepted is None:
+        accepted_input = request.accepted_run_receipt
+        if candidate is None or accepted_input is None:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.MISSING_INPUT, "gate_receipts"
             )
+        accepted = accepted_view(accepted_input)
         if candidate.receipt_id != state.candidate_receipt_id:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, candidate.receipt_id
+            )
+        expected_commit, _ = self._accepted_source(request, policy, state)
+        if accepted.evaluated_commit != expected_commit:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.STALE_RECEIPT,
+                accepted.evaluated_commit,
             )
         if decide_promotion(policy, accepted, candidate) != decision:
             raise EvolutionControllerFailure(

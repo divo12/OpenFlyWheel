@@ -74,4 +74,5 @@ verifier shows that the required environment state was not achieved.
 
 For every candidate run, report verifier passes, verifier failures, unverified trials,
 outcome receipts, trace-mapping blockers, the count and values of unsupported-reward mapping
-blockers, total Langfuse cost, latency, and the gate decision.
+blockers, total Langfuse cost, latency, the gate decision, publication or rollback receipt,
+accepted commit, and deterministic stop reason. Keep task results ordered by task ID.
