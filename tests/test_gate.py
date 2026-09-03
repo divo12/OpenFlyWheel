@@ -230,6 +230,30 @@ def test_unsupported_and_unverified_blockers_are_inconclusive() -> None:
     assert decide_promotion(policy, accepted, all_blocked).status is PromotionStatus.INCONCLUSIVE
 
 
+def test_interleaved_outcomes_and_blockers_follow_each_partition_order() -> None:
+    policy = _policy()
+    accepted, candidate = _runs(
+        policy,
+        (VerifierVerdict.FAIL, VerifierVerdict.FAIL, VerifierVerdict.FAIL),
+        (VerifierVerdict.FAIL, VerifierVerdict.PASS, VerifierVerdict.FAIL),
+    )
+    interleaved = EvaluatedRunReceipt.model_construct(
+        receipt_id=candidate.receipt_id,
+        run_id=candidate.run_id,
+        side=candidate.side,
+        policy_digest=candidate.policy_digest,
+        controls_digest=candidate.controls_digest,
+        evaluated_commit=candidate.evaluated_commit,
+        evaluated_tree=candidate.evaluated_tree,
+        task_ids=candidate.task_ids,
+        outcome_receipts=(candidate.outcome_receipts[0], candidate.outcome_receipts[2]),
+        blockers=(_blocker("task-2"),),
+    )
+    decision = decide_promotion(policy, accepted, _rehashed(interleaved))
+    assert decision.status is PromotionStatus.INCONCLUSIVE
+    assert decision.reasons == (PromotionReason.UNVERIFIED_OUTCOME,)
+
+
 @pytest.mark.parametrize(
     "field", ("policy_digest", "controls_digest", "evaluated_commit", "evaluated_tree")
 )
@@ -448,6 +472,77 @@ def test_configured_metrics_require_explicit_measurements(
     decision = decide_promotion(policy, accepted, candidate)
     assert decision.status is PromotionStatus.INCONCLUSIVE
     assert reason in decision.reasons
+
+
+@pytest.mark.parametrize(
+    ("field", "limit", "reason"),
+    (
+        ("cost_usd", 1.0, PromotionReason.COST_LIMIT_EXCEEDED),
+        ("latency_seconds", 1.0, PromotionReason.LATENCY_LIMIT_EXCEEDED),
+    ),
+)
+def test_candidate_metric_violation_wins_over_missing_accepted_metric(
+    field: str, limit: float, reason: PromotionReason
+) -> None:
+    policy = _policy(
+        max_cost_per_task_usd=limit if field == "cost_usd" else None,
+        max_latency_seconds=limit if field == "latency_seconds" else None,
+    )
+    accepted = _receipt(
+        policy,
+        tuple(
+            _task(task_id, VerifierVerdict.FAIL, cost_usd=None, latency_seconds=None)
+            for task_id in policy.task_ids
+        ),
+        side=RunSide.ACCEPTED,
+        run_id="accepted-run",
+    )
+    candidate = _receipt(
+        policy,
+        tuple(
+            _task(
+                task_id,
+                verdict,
+                cost_usd=limit + 0.01 if field == "cost_usd" else 0.25,
+                latency_seconds=limit + 0.01 if field == "latency_seconds" else 1.5,
+            )
+            for task_id, verdict in zip(
+                policy.task_ids,
+                (VerifierVerdict.FAIL, VerifierVerdict.PASS, VerifierVerdict.FAIL),
+                strict=True,
+            )
+        ),
+        run_id="candidate-run",
+        evaluated_commit="c" * 40,
+        evaluated_tree="d" * 40,
+    )
+    decision = decide_promotion(policy, accepted, candidate)
+    assert decision.status is PromotionStatus.REJECT
+    assert reason in decision.reasons
+
+
+def test_incomplete_run_metrics_are_not_reported_as_totals() -> None:
+    policy = _policy()
+    accepted, candidate = _runs(
+        policy,
+        (VerifierVerdict.FAIL, VerifierVerdict.FAIL, VerifierVerdict.FAIL),
+        (VerifierVerdict.FAIL, VerifierVerdict.PASS, VerifierVerdict.FAIL),
+    )
+    incomplete = EvaluatedRunReceipt.model_construct(
+        receipt_id=candidate.receipt_id,
+        run_id=candidate.run_id,
+        side=candidate.side,
+        policy_digest=candidate.policy_digest,
+        controls_digest=candidate.controls_digest,
+        evaluated_commit=candidate.evaluated_commit,
+        evaluated_tree=candidate.evaluated_tree,
+        task_ids=candidate.task_ids,
+        outcome_receipts=(candidate.outcome_receipts[0],),
+        blockers=(_blocker("task-2"), _blocker("task-3")),
+    )
+    decision = decide_promotion(policy, accepted, _rehashed(incomplete))
+    assert decision.candidate_cost_usd is None
+    assert decision.candidate_latency_seconds is None
 
 
 @pytest.mark.parametrize(
