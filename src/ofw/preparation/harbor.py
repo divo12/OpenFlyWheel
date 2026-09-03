@@ -7,7 +7,7 @@ import os
 import signal
 import subprocess  # nosec B404
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
@@ -194,8 +194,7 @@ class HarborExperimentRunner:
         return ExperimentSummary(trials)
 
     def cancel(self, run: ExperimentRun, process_id: int | None) -> None:
-        del run
-        if process_id is None:
+        if process_id is None or not _process_identity_matches(process_id, run.started_at):
             return
         try:
             os.killpg(process_id, signal.SIGTERM)
@@ -203,6 +202,41 @@ class HarborExperimentRunner:
             return
         except OSError as error:
             raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "cancel") from error
+
+
+def _process_identity_matches(process_id: int, started_at: datetime | None) -> bool:
+    if started_at is None:
+        return False
+    try:
+        result = subprocess.run(
+            ("ps", "-p", str(process_id), "-o", "etime="),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        elapsed_seconds = _parse_elapsed_seconds(result.stdout.strip())
+    except (OSError, ValueError):
+        return False
+    if result.returncode != 0:
+        return False
+    age_seconds = (datetime.now(UTC) - started_at).total_seconds()
+    return abs(age_seconds - elapsed_seconds) <= 2
+
+
+def _parse_elapsed_seconds(value: str) -> int:
+    date_parts = value.split("-")
+    if len(date_parts) > 2:
+        raise ValueError("invalid process age")
+    days = int(date_parts[0]) if len(date_parts) == 2 else 0
+    clock_parts = tuple(int(part) for part in date_parts[-1].split(":"))
+    if len(clock_parts) == 2:
+        hours = 0
+        minutes, seconds = clock_parts
+    elif len(clock_parts) == 3:
+        hours, minutes, seconds = clock_parts
+    else:
+        raise ValueError("invalid process age")
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
 def _trial_ids(trials: tuple[ExperimentTrial, ...]) -> tuple[str, ...]:

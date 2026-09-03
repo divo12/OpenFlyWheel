@@ -231,6 +231,7 @@ class ExperimentRun:
     release: str
     session_id: str
     controls: ExperimentControls
+    started_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

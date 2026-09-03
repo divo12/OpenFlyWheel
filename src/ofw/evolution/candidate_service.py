@@ -191,8 +191,16 @@ class CandidateExecutionService:
             candidate_id,
             request.experiment_id,
         )
-        run = _new_run(request, control, workspace, controls, candidate_id, committed.commit)
         started_at = datetime.now(UTC)
+        run = _new_run(
+            request,
+            control,
+            workspace,
+            controls,
+            candidate_id,
+            committed.commit,
+            started_at,
+        )
         running = _running_state(
             state,
             candidate_id,
@@ -406,6 +414,7 @@ def _new_run(
     controls: ExperimentControls,
     candidate_id: CandidateId,
     candidate_commit: str,
+    started_at: datetime,
 ) -> ExperimentRun:
     run_id = f"ofw-candidate-{candidate_id.value.removeprefix('sha256:')[:24]}"
     return ExperimentRun(
@@ -419,6 +428,7 @@ def _new_run(
         release=candidate_commit,
         session_id=candidate_id.value,
         controls=controls,
+        started_at=started_at,
     )
 
 
@@ -444,6 +454,7 @@ def _run_from_state(
         release=candidate_commit,
         session_id=candidate_id,
         controls=controls,
+        started_at=state.started_at,
     )
 
 

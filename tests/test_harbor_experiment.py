@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,7 @@ def _cancel_run(tmp_path: Path) -> ExperimentRun:
             concurrency=1,
             max_retries=0,
         ),
+        started_at=datetime.now(UTC),
     )
 
 
@@ -317,23 +319,49 @@ def test_generalized_harbor_cancel_handles_absent_and_failed_processes(
     runner = HarborExperimentRunner()
     run = _cancel_run(tmp_path)
     runner.cancel(run, None)
+    process = subprocess.Popen(  # nosec B603
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        start_new_session=True,
+    )
+    try:
+        run = _cancel_run(tmp_path)
 
-    def missing(process_id: int, signal_number: int) -> None:
-        del process_id, signal_number
-        raise ProcessLookupError
+        def missing(process_id: int, signal_number: int) -> None:
+            del process_id, signal_number
+            raise ProcessLookupError
 
-    monkeypatch.setattr(os, "killpg", missing)
-    runner.cancel(run, 123)
+        monkeypatch.setattr(os, "killpg", missing)
+        runner.cancel(run, process.pid)
 
-    def denied(process_id: int, signal_number: int) -> None:
-        del process_id, signal_number
-        raise PermissionError
+        def denied(process_id: int, signal_number: int) -> None:
+            del process_id, signal_number
+            raise PermissionError
 
-    monkeypatch.setattr(os, "killpg", denied)
-    with pytest.raises(PreparationFailure) as raised:
-        runner.cancel(run, 123)
+        monkeypatch.setattr(os, "killpg", denied)
+        with pytest.raises(PreparationFailure) as raised:
+            runner.cancel(run, process.pid)
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
 
     assert raised.value.code is PreparationErrorCode.LAUNCH_FAILED
+
+
+def test_generalized_harbor_cancel_skips_a_reused_process_identity(
+    tmp_path: Path,
+) -> None:
+    process = subprocess.Popen(  # nosec B603
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        start_new_session=True,
+    )
+    run = replace(_cancel_run(tmp_path), started_at=datetime.now(UTC) - timedelta(days=1))
+    try:
+        HarborExperimentRunner().cancel(run, process.pid)
+        assert process.poll() is None
+    finally:
+        process.kill()
+        process.wait(timeout=5)
 
 
 @pytest.mark.parametrize(
