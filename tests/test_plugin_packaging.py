@@ -28,7 +28,7 @@ def test_openflywheel_mcp_uses_pinned_portable_runtime() -> None:
     manifest = _McpManifest.model_validate_json(path.read_text(encoding="utf-8"))
     server = manifest.mcpServers["openflywheel"]
     assert (
-        "git+https://github.com/divo12/OpenFlyWheel.git@4aa2f2e3e2bf2bf08286c092a42eedd4250dd43f"
+        "git+https://github.com/divo12/OpenFlyWheel.git@9041db3c08a89df0fe9f8f2476a303b46dd2812a"
         in server.args
     )
     runtime = (root / "src/ofw/mcp.py").read_text(encoding="utf-8")
