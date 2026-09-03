@@ -118,7 +118,7 @@ def _decide_quality(
             PromotionStatus.REJECT,
             (PromotionReason.PASS_REGRESSION,),
         )
-    if len(candidate_passes) <= len(accepted_passes):
+    if not _has_exact_improvement(accepted_run, candidate_run):
         return _decision(
             policy,
             accepted_run,
@@ -132,6 +132,28 @@ def _decide_quality(
         candidate_run,
         PromotionStatus.ACCEPT,
         (PromotionReason.IMPROVEMENT,),
+    )
+
+
+def _has_exact_improvement(
+    accepted: EvaluatedRunReceipt,
+    candidate: EvaluatedRunReceipt,
+) -> bool:
+    return any(_is_exact_improvement(accepted, item) for item in candidate.outcome_receipts)
+
+
+def _is_exact_improvement(
+    accepted: EvaluatedRunReceipt,
+    candidate_task: EvaluatedTaskReceipt,
+) -> bool:
+    accepted_task = next(
+        (item for item in accepted.outcome_receipts if item.task_id == candidate_task.task_id),
+        None,
+    )
+    return (
+        accepted_task is not None
+        and accepted_task.verdict is not VerifierVerdict.PASS
+        and candidate_task.verdict is VerifierVerdict.PASS
     )
 
 

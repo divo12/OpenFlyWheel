@@ -45,6 +45,13 @@ from ofw.evolution.hypothesis import (
     RecordHypothesisInput,
 )
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
+from ofw.evolution.integration import (
+    HarborEvidenceService,
+    PreparedExperimentIntegration,
+    RunEvidenceInput,
+    accepted_view,
+    baseline_run_for_evidence,
+)
 from ofw.evolution.ledger import (
     CandidateAccepted,
     CandidatePrepared,
@@ -140,7 +147,12 @@ __all__ = [
     "HypothesisService",
     "HypothesisStatus",
     "LangfuseCandidateTraceLocator",
+    "HarborEvidenceService",
+    "PreparedExperimentIntegration",
     "RecordHypothesisInput",
+    "RunEvidenceInput",
+    "accepted_view",
+    "baseline_run_for_evidence",
     "decide_promotion",
     "AcceptedCasToken",
     "AcceptedPublication",

@@ -73,7 +73,7 @@ def test_failure_pattern_miner_skill_is_packaged() -> None:
     assert "mine_failure_patterns" in skill.read_text(encoding="utf-8")
 
 
-def test_program_routes_hypothesis_receipt_into_candidate_execution() -> None:
+def test_program_routes_hypothesis_receipt_into_controlled_execution() -> None:
     root = Path(__file__).parents[1]
     skill = root / "plugins/openflywheel/skills/hypothesis-former/SKILL.md"
     program = (
@@ -88,7 +88,9 @@ def test_program_routes_hypothesis_receipt_into_candidate_execution() -> None:
     assert "stable hypothesis receipt" in program
     assert "execute_candidate" in program
     assert "identical request" in program
-    assert "Stop before" in program
+    assert "controller owns publication, rollback, budgets, and stopping" in program
+    assert "reuse accepted candidate" in program
+    assert "fresh attribution" in program
 
 
 def test_base_program_stops_after_repeated_managed_mcp_timeout() -> None:
