@@ -50,12 +50,15 @@ class PolicyRepository:
 
 
 class HypothesisRepository:
+    def __init__(self, source_commit: str = "a" * 40) -> None:
+        self.source_commit = source_commit
+
     def load(self, workspace_root: Path, hypothesis_id: str) -> HarnessHypothesis:
         del workspace_root
         return HarnessHypothesis(
             id=HypothesisId(hypothesis_id),
             experiment_id="experiment-one",
-            source_commit="a" * 40,
+            source_commit=self.source_commit,
             curation_id="00000000-0000-0000-0000-000000000001",
             curation_group_id="00000000-0000-0000-0000-000000000002",
             patterns=(),

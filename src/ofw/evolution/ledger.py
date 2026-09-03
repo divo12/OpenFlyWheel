@@ -79,6 +79,9 @@ class EvolutionStopReason(StrEnum):
 
 class EvolutionStarted(StrictModel):
     policy_digest: Digest
+    accepted_commit: str | None = Field(default=None, pattern=_COMMIT)
+    accepted_content_id: Digest | None = None
+    accepted_release_id: Identifier | None = None
 
 
 class HypothesisLinked(StrictModel):
@@ -89,6 +92,9 @@ class HypothesisLinked(StrictModel):
 class CandidatePrepared(StrictModel):
     iteration: int = Field(strict=True, ge=1, le=100)
     candidate_workspace_id: Identifier
+    source_commit: str | None = Field(default=None, pattern=_COMMIT)
+    source_content_id: Digest | None = None
+    source_release_id: Identifier | None = None
 
 
 class CandidateSubmitted(StrictModel):
@@ -116,6 +122,8 @@ class GateDecided(StrictModel):
 class CandidateAccepted(StrictModel):
     candidate_id: Digest
     decision_id: Digest
+    candidate_commit: str | None = Field(default=None, pattern=_COMMIT)
+    accepted_content_id: Digest | None = None
 
 
 class CandidateRejected(StrictModel):
@@ -126,11 +134,16 @@ class CandidateRejected(StrictModel):
 
 class ReleasePublished(StrictModel):
     release_id: Identifier
+    content_commit: str | None = Field(default=None, pattern=_COMMIT)
+    content_id: Digest | None = None
+    target_reached: bool = False
 
 
 class ReleaseRolledBack(StrictModel):
     release_id: Identifier
     target_release_id: Identifier
+    content_commit: str | None = Field(default=None, pattern=_COMMIT)
+    content_id: Digest | None = None
 
 
 class EvolutionStopped(StrictModel):
@@ -616,7 +629,9 @@ def _decode_cursor(value: str, experiment_id: str) -> int:
     try:
         raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
         version, actual_experiment, sequence_text, digest = raw.split(b"\0")
-        return _cursor_sequence(version, actual_experiment, sequence_text, digest, experiment_id)
+        return _cursor_sequence(
+            version, actual_experiment, sequence_text, digest, experiment_id
+        )
     except (ValueError, UnicodeError, binascii.Error):
         raise EvolutionLedgerFailure(
             EvolutionLedgerErrorCode.CURSOR_INVALID,

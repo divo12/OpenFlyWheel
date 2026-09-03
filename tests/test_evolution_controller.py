@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -19,11 +20,15 @@ from ofw.evolution.controller import (
 )
 from ofw.evolution.gate import PromotionDecision, PromotionReason, PromotionStatus
 from ofw.evolution.ledger import (
+    CandidatePrepared,
     EvolutionEvent,
     EvolutionEventDraft,
+    EvolutionEventType,
     EvolutionLedgerErrorCode,
     EvolutionLedgerFailure,
     FileEvolutionLedger,
+    ReleasePublished,
+    ReleaseRolledBack,
 )
 from ofw.preparation.policy import (
     ExperimentPolicyErrorCode,
@@ -66,6 +71,10 @@ def _request(
     *,
     action: EvolutionAdvanceAction = EvolutionAdvanceAction.AUTO,
     hypothesis_id: str | None = None,
+    source_commit: str | None = None,
+    accepted_commit: str | None = None,
+    accepted_content_id: str | None = None,
+    accepted_release_id: str | None = None,
     candidate_workspace_id: str | None = None,
     candidate_id: str | None = None,
     candidate_commit: str | None = None,
@@ -84,6 +93,10 @@ def _request(
         request_id=request_id,
         action=action,
         hypothesis_id=hypothesis_id,
+        source_commit=source_commit,
+        accepted_commit=accepted_commit,
+        accepted_content_id=accepted_content_id,
+        accepted_release_id=accepted_release_id,
         candidate_workspace_id=candidate_workspace_id,
         candidate_id=candidate_id,
         candidate_commit=candidate_commit,
@@ -151,6 +164,10 @@ def test_accepted_candidate_is_stuck_until_publication_package(tmp_path: Path) -
     )
     accepted = controller.advance(_request(root, "r6", promotion_decision=decision))
     assert accepted.phase is EvolutionPhase.AWAITING_PUBLICATION
+    assert (accepted.accepted_commit, accepted.accepted_content_id) == (
+        "a" * 40,
+        "sha256:" + "b" * 64,
+    )
     from ofw.evolution.controller import (
         EvolutionControllerErrorCode,
         EvolutionControllerFailure,
@@ -221,9 +238,10 @@ def test_missing_and_stale_hypothesis_receipts_fail_closed(tmp_path: Path) -> No
     root = _repo(tmp_path)
     from tests.support_policy import PolicyRepository
 
+    ledger = FileEvolutionLedger()
     controller = EvolutionController(
         workspace_root=root,
-        ledger=FileEvolutionLedger(),
+        ledger=ledger,
         policy_repository=PolicyRepository(policy()),
     )
     controller.advance(_request(root, "start"))
@@ -423,3 +441,96 @@ def test_illegal_action_and_stopped_state_are_typed(tmp_path: Path) -> None:
         controller.advance(_request(root, "after"))
     assert raised.value.code is EvolutionControllerErrorCode.STOPPED
     assert stopped.phase is EvolutionPhase.STOPPED
+
+
+def test_current_accepted_identity_is_replayed_and_exposed(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    accepted_commit = "b" * 40
+    accepted_content_id = "sha256:" + "c" * 64
+    from tests.support_policy import HypothesisRepository, PolicyRepository
+
+    ledger = FileEvolutionLedger()
+    controller = EvolutionController(
+        workspace_root=root,
+        ledger=ledger,
+        policy_repository=PolicyRepository(policy()),
+        hypothesis_repository=HypothesisRepository(accepted_commit),
+    )
+    started = controller.advance(
+        _request(
+            root,
+            "start",
+            accepted_commit=accepted_commit,
+            accepted_content_id=accepted_content_id,
+            accepted_release_id="release-a",
+        )
+    )
+    assert (started.accepted_commit, started.accepted_content_id) == (
+        accepted_commit,
+        accepted_content_id,
+    )
+    controller.advance(
+        _request(
+            root,
+            "hypothesis",
+            hypothesis_id="sha256:" + "a" * 64,
+            source_commit=accepted_commit,
+        )
+    )
+    prepared = controller.advance(
+        _request(root, "candidate", candidate_workspace_id="workspace-1")
+    )
+    event = ledger.events(root, "experiment-one")[-1]
+    assert isinstance(event.payload, CandidatePrepared)
+    assert (event.payload.source_commit, event.payload.source_content_id) == (
+        accepted_commit,
+        accepted_content_id,
+    )
+    assert (prepared.accepted_commit, prepared.accepted_content_id) == (
+        accepted_commit,
+        accepted_content_id,
+    )
+
+    ledger.append(
+        root,
+        EvolutionEventDraft(
+            event_type=EvolutionEventType.RELEASE_PUBLISHED,
+            experiment_id="experiment-one",
+            payload=ReleasePublished(
+                release_id="release-b",
+                content_commit="d" * 40,
+                content_id="sha256:" + "e" * 64,
+                target_reached=True,
+            ),
+            occurred_at=datetime(2026, 9, 3, 0, 0, 1, tzinfo=UTC),
+            causation_id="publish-b",
+            correlation_id="publish-b",
+        ),
+    )
+    published = controller.status("experiment-one")
+    assert (published.phase, published.stop_reason, published.accepted_release_id) == (
+        EvolutionPhase.STOPPED,
+        EvolutionStopReason.QUALITY_TARGET,
+        "release-b",
+    )
+    ledger.append(
+        root,
+        EvolutionEventDraft(
+            event_type=EvolutionEventType.RELEASE_ROLLED_BACK,
+            experiment_id="experiment-one",
+            payload=ReleaseRolledBack(
+                release_id="release-c",
+                target_release_id="release-a",
+                content_commit=accepted_commit,
+                content_id=accepted_content_id,
+            ),
+            occurred_at=datetime(2026, 9, 3, 0, 0, 2, tzinfo=UTC),
+            causation_id="rollback-c",
+            correlation_id="rollback-c",
+        ),
+    )
+    rolled_back = controller.status("experiment-one")
+    assert (rolled_back.phase, rolled_back.accepted_commit) == (
+        EvolutionPhase.AWAITING_HYPOTHESIS,
+        accepted_commit,
+    )

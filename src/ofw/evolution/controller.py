@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -35,6 +35,8 @@ from ofw.evolution.ledger import (
     FileEvolutionLedger,
     GateDecided,
     HypothesisLinked,
+    ReleasePublished,
+    ReleaseRolledBack,
     RunCompleted,
     RunStarted,
 )
@@ -122,6 +124,11 @@ class AdvanceEvolutionInput(StrictModel):
     action: EvolutionAdvanceAction = EvolutionAdvanceAction.AUTO
     hypothesis_id: str | None = Field(default=None, pattern=_DIGEST)
     source_commit: str | None = Field(default=None, pattern=r"[0-9a-f]{40}")
+    accepted_commit: str | None = Field(default=None, pattern=r"[0-9a-f]{40}")
+    accepted_content_id: str | None = Field(default=None, pattern=_DIGEST)
+    accepted_release_id: str | None = Field(
+        default=None, max_length=256, pattern=_IDENTIFIER
+    )
     candidate_workspace_id: str | None = Field(
         default=None, max_length=256, pattern=_IDENTIFIER
     )
@@ -167,6 +174,8 @@ class EvolutionObservation(StrictModel):
     run_id: str | None = Field(default=None, max_length=256)
     decision_id: str | None = Field(default=None, pattern=_DIGEST)
     accepted_release_id: str | None = Field(default=None, max_length=256)
+    accepted_commit: str | None = Field(default=None, pattern=r"[0-9a-f]{40}")
+    accepted_content_id: str | None = Field(default=None, pattern=_DIGEST)
     stop_reason: EvolutionStopReason | None = None
     error_code: EvolutionControllerErrorCode | None = None
 
@@ -204,6 +213,9 @@ class _EvolutionState:
     gate_status: PromotionStatus | None = None
     accepted_release_id: str | None = None
     stop_reason: EvolutionStopReason | None = None
+    accepted_commit: str | None = None
+    accepted_content_id: str | None = None
+    candidate_commit: str | None = None
 
 
 class EvolutionController:
@@ -226,7 +238,7 @@ class EvolutionController:
         self._hypotheses = hypothesis_repository or FileHypothesisRepository()
 
     def status(self, experiment_id: str) -> EvolutionObservation:
-        self._policy(experiment_id)
+        policy = self._policy(experiment_id)
         try:
             events = self._ledger.events(self._workspace_root, experiment_id)
         except EvolutionLedgerFailure as error:
@@ -234,7 +246,7 @@ class EvolutionController:
                 EvolutionControllerErrorCode.LEDGER_INVALID,
                 experiment_id,
             ) from error
-        state = _reduce(events)
+        state = _accepted_identity(_reduce(events), policy)
         return _observation(experiment_id, state, events[-1].sequence if events else 0)
 
     def advance(self, request: AdvanceEvolutionInput) -> EvolutionObservation:
@@ -397,10 +409,19 @@ class EvolutionController:
         request: AdvanceEvolutionInput,
         policy: ExperimentPolicySnapshot,
     ) -> EvolutionObservation:
+        accepted_commit = request.accepted_commit or policy.initialization_commit
+        accepted_content_id = request.accepted_content_id or _content_identity(
+            accepted_commit
+        )
         self._append(
             request,
             EvolutionEventType.EVOLUTION_STARTED,
-            EvolutionStarted(policy_digest=candidate_policy_digest(policy)),
+            EvolutionStarted(
+                policy_digest=candidate_policy_digest(policy),
+                accepted_commit=accepted_commit,
+                accepted_content_id=accepted_content_id,
+                accepted_release_id=request.accepted_release_id,
+            ),
         )
         return self.status(request.experiment_id)
 
@@ -440,7 +461,10 @@ class EvolutionController:
                 EvolutionControllerErrorCode.INVALID_TRANSITION, state.phase.value
             )
         hypothesis = self._load_hypothesis(hypothesis_id)
-        self._validate_hypothesis_identity(request, policy, hypothesis, hypothesis_id)
+        expected_commit = state.accepted_commit or policy.initialization_commit
+        self._validate_hypothesis_identity(
+            request, expected_commit, hypothesis, hypothesis_id
+        )
         return hypothesis_id, request.source_commit or hypothesis.source_commit
 
     def _load_hypothesis(self, hypothesis_id: str) -> HarnessHypothesis:
@@ -454,7 +478,7 @@ class EvolutionController:
     def _validate_hypothesis_identity(
         self,
         request: AdvanceEvolutionInput,
-        policy: ExperimentPolicySnapshot,
+        expected_commit: str,
         hypothesis: HarnessHypothesis,
         hypothesis_id: str,
     ) -> None:
@@ -466,7 +490,7 @@ class EvolutionController:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, hypothesis_id
             )
-        if source_commit != policy.initialization_commit:
+        if source_commit != expected_commit:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, hypothesis_id
             )
@@ -502,6 +526,8 @@ class EvolutionController:
             return self._stop_with_reason(
                 request, state, EvolutionStopReason.MAX_ITERATIONS
             )
+        source_commit = state.accepted_commit or policy.initialization_commit
+        source_content_id = state.accepted_content_id or _content_identity(source_commit)
         key = _operation_key(
             request.experiment_id, "candidate-prepare", state.iteration
         )
@@ -510,7 +536,11 @@ class EvolutionController:
             request,
             EvolutionEventType.CANDIDATE_PREPARED,
             CandidatePrepared(
-                iteration=state.iteration + 1, candidate_workspace_id=workspace_id
+                iteration=state.iteration + 1,
+                candidate_workspace_id=workspace_id,
+                source_commit=source_commit,
+                source_content_id=source_content_id,
+                source_release_id=state.accepted_release_id,
             ),
         )
         return self.status(request.experiment_id)
@@ -697,6 +727,8 @@ class EvolutionController:
                 CandidateAccepted(
                     candidate_id=state.candidate_id or "sha256:" + "0" * 64,
                     decision_id=decision.decision_id,
+                    candidate_commit=state.candidate_commit,
+                    accepted_content_id=state.candidate_id,
                 ),
             )
             return self.status(request.experiment_id)
@@ -860,6 +892,15 @@ def _reduce(events: tuple[EvolutionEvent, ...]) -> _EvolutionState:
 
 def _apply_event(event: EvolutionEvent, state: _EvolutionState) -> _EvolutionState:
     payload = event.payload
+    if isinstance(payload, EvolutionStarted):
+        return replace(
+            state,
+            accepted_commit=payload.accepted_commit,
+            accepted_content_id=payload.accepted_content_id,
+            accepted_release_id=payload.accepted_release_id,
+        )
+    if isinstance(payload, (ReleasePublished, ReleaseRolledBack)):
+        return _apply_release(payload, state)
     if isinstance(payload, (HypothesisLinked, CandidatePrepared)):
         return _apply_candidate_preparation(payload, state)
     if isinstance(payload, (CandidateSubmitted, RunStarted)):
@@ -873,18 +914,49 @@ def _apply_event(event: EvolutionEvent, state: _EvolutionState) -> _EvolutionSta
     return state
 
 
+def _apply_release(
+    payload: ReleasePublished | ReleaseRolledBack, state: _EvolutionState
+) -> _EvolutionState:
+    if isinstance(payload, ReleasePublished):
+        target_reached = payload.target_reached
+        return replace(
+            state,
+            phase=(
+                EvolutionPhase.STOPPED
+                if target_reached
+                else EvolutionPhase.AWAITING_HYPOTHESIS
+            ),
+            accepted_release_id=payload.release_id,
+            accepted_commit=payload.content_commit or state.accepted_commit,
+            accepted_content_id=payload.content_id or state.accepted_content_id,
+            stop_reason=(
+                EvolutionStopReason.QUALITY_TARGET if target_reached else None
+            ),
+        )
+    return replace(
+        state,
+        phase=EvolutionPhase.AWAITING_HYPOTHESIS,
+        accepted_release_id=payload.release_id,
+        accepted_commit=payload.content_commit or state.accepted_commit,
+        accepted_content_id=payload.content_id or state.accepted_content_id,
+        stop_reason=None,
+    )
+
+
 def _apply_candidate_preparation(
     payload: HypothesisLinked | CandidatePrepared, state: _EvolutionState
 ) -> _EvolutionState:
     if isinstance(payload, HypothesisLinked):
-        return _EvolutionState(
-            EvolutionPhase.AWAITING_CANDIDATE, state.iteration, payload.hypothesis_id
+        return replace(
+            state,
+            phase=EvolutionPhase.AWAITING_CANDIDATE,
+            hypothesis_id=payload.hypothesis_id,
         )
-    return _EvolutionState(
-        EvolutionPhase.AWAITING_CANDIDATE,
-        payload.iteration,
-        state.hypothesis_id,
-        payload.candidate_workspace_id,
+    return replace(
+        state,
+        phase=EvolutionPhase.AWAITING_CANDIDATE,
+        iteration=payload.iteration,
+        candidate_workspace_id=payload.candidate_workspace_id,
     )
 
 
@@ -892,21 +964,16 @@ def _apply_run_start(
     payload: CandidateSubmitted | RunStarted, state: _EvolutionState
 ) -> _EvolutionState:
     if isinstance(payload, CandidateSubmitted):
-        return _EvolutionState(
-            EvolutionPhase.CANDIDATE_RUNNING,
-            state.iteration,
-            state.hypothesis_id,
-            state.candidate_workspace_id,
-            payload.candidate_id,
+        return replace(
+            state,
+            phase=EvolutionPhase.CANDIDATE_RUNNING,
+            candidate_id=payload.candidate_id,
+            candidate_commit=payload.candidate_commit,
         )
-    return _EvolutionState(
-        EvolutionPhase.CANDIDATE_RUNNING,
-        state.iteration,
-        state.hypothesis_id,
-        state.candidate_workspace_id,
-        state.candidate_id,
-        payload.run_id,
-        state.candidate_receipt_id,
+    return replace(
+        state,
+        phase=EvolutionPhase.CANDIDATE_RUNNING,
+        run_id=payload.run_id,
     )
 
 
@@ -914,37 +981,27 @@ def _apply_progress(
     payload: RunCompleted | GateDecided | CandidateAccepted, state: _EvolutionState
 ) -> _EvolutionState:
     if isinstance(payload, RunCompleted):
-        return _EvolutionState(
-            EvolutionPhase.GATE_READY,
-            state.iteration,
-            state.hypothesis_id,
-            state.candidate_workspace_id,
-            state.candidate_id,
-            payload.run_id,
-            payload.receipt_id,
+        return replace(
+            state,
+            phase=EvolutionPhase.GATE_READY,
+            run_id=payload.run_id,
+            candidate_receipt_id=payload.receipt_id,
         )
     if isinstance(payload, GateDecided):
-        return _EvolutionState(
-            EvolutionPhase.GATE_READY,
-            state.iteration,
-            state.hypothesis_id,
-            state.candidate_workspace_id,
-            state.candidate_id,
-            state.run_id,
-            state.candidate_receipt_id,
-            payload.decision_id,
-            payload.status,
-            state.accepted_release_id,
+        return replace(
+            state,
+            phase=EvolutionPhase.GATE_READY,
+            decision_id=payload.decision_id,
+            gate_status=payload.status,
         )
-    return _EvolutionState(
-        EvolutionPhase.AWAITING_PUBLICATION,
-        state.iteration,
-        state.hypothesis_id,
-        state.candidate_workspace_id,
-        payload.candidate_id,
-        state.run_id,
-        state.candidate_receipt_id,
-        payload.decision_id,
+    return replace(
+        state,
+        phase=EvolutionPhase.AWAITING_PUBLICATION,
+        candidate_id=payload.candidate_id,
+        decision_id=payload.decision_id,
+        candidate_commit=payload.candidate_commit or state.candidate_commit,
+        accepted_commit=payload.candidate_commit or state.candidate_commit,
+        accepted_content_id=payload.accepted_content_id or payload.candidate_id,
     )
 
 
@@ -953,33 +1010,28 @@ def _apply_terminal(
     state: _EvolutionState,
 ) -> _EvolutionState:
     if isinstance(payload, CandidateRejected):
-        return _EvolutionState(EvolutionPhase.AWAITING_HYPOTHESIS, state.iteration)
-    if isinstance(payload, EvolutionStopped):
-        return _EvolutionState(
-            EvolutionPhase.STOPPED,
-            state.iteration,
-            state.hypothesis_id,
-            state.candidate_workspace_id,
-            state.candidate_id,
-            state.run_id,
-            state.candidate_receipt_id,
-            state.decision_id,
-            state.gate_status,
-            state.accepted_release_id,
-            payload.reason,
+        return replace(
+            state,
+            phase=EvolutionPhase.AWAITING_HYPOTHESIS,
+            hypothesis_id=None,
+            candidate_workspace_id=None,
+            candidate_id=None,
+            candidate_commit=None,
+            run_id=None,
+            candidate_receipt_id=None,
+            decision_id=None,
+            gate_status=None,
         )
-    return _EvolutionState(
-        EvolutionPhase.BLOCKED,
-        state.iteration,
-        state.hypothesis_id,
-        state.candidate_workspace_id,
-        state.candidate_id,
-        state.run_id,
-        state.candidate_receipt_id,
-        state.decision_id,
-        state.gate_status,
-        state.accepted_release_id,
-        EvolutionStopReason.BLOCKED,
+    if isinstance(payload, EvolutionStopped):
+        return replace(
+            state,
+            phase=EvolutionPhase.STOPPED,
+            stop_reason=payload.reason,
+        )
+    return replace(
+        state,
+        phase=EvolutionPhase.BLOCKED,
+        stop_reason=EvolutionStopReason.BLOCKED,
     )
 
 
@@ -1046,6 +1098,8 @@ def _observation(
         run_id=state.run_id,
         decision_id=state.decision_id,
         accepted_release_id=state.accepted_release_id,
+        accepted_commit=state.accepted_commit,
+        accepted_content_id=state.accepted_content_id,
         stop_reason=state.stop_reason,
     )
 
@@ -1053,3 +1107,20 @@ def _observation(
 def _operation_key(experiment_id: str, operation: str, iteration: int) -> str:
     value = f"{experiment_id}\0{operation}\0{iteration}"
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _content_identity(commit: str) -> str:
+    return "sha256:" + hashlib.sha256(f"git-commit\0{commit}".encode()).hexdigest()
+
+
+def _accepted_identity(
+    state: _EvolutionState, policy: ExperimentPolicySnapshot
+) -> _EvolutionState:
+    if state.accepted_commit is not None and state.accepted_content_id is not None:
+        return state
+    commit = state.accepted_commit or policy.initialization_commit
+    return replace(
+        state,
+        accepted_commit=commit,
+        accepted_content_id=state.accepted_content_id or _content_identity(commit),
+    )
