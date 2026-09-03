@@ -18,8 +18,9 @@ _IDENTIFIER_LIMIT = 256
 _EVIDENCE_LIMIT = 10
 _EVIDENCE_VALUE_LIMIT = 1024
 _RUN_ID_LIMIT = 256
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
-_DIGEST_PATTERN = r"sha256:[0-9a-f]{64}"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
+_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
+_RUN_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@/-]*$"
 _RUN_METRIC_LIMIT = 172800.0
 _COST_LIMIT = 1_000_000.0
 
@@ -95,7 +96,7 @@ class EvaluatedRunReceipt(_ReceiptModel):
     run_id: StrictStr = Field(
         min_length=1,
         max_length=_RUN_ID_LIMIT,
-        pattern=_IDENTIFIER_PATTERN.pattern,
+        pattern=_RUN_ID_PATTERN,
     )
     side: RunSide
     policy_digest: StrictStr = Field(pattern=_DIGEST_PATTERN)
@@ -159,8 +160,8 @@ class EvaluatedRunReceipt(_ReceiptModel):
         blocker_ids = tuple(item.task_id for item in self.blockers)
         all_result_ids = outcome_ids + blocker_ids
         _validate_partition(all_result_ids, task_ids)
-        if not _follows_task_order(all_result_ids, task_ids):
-            raise ValueError("outcomes and blockers must follow task_ids order")
+        _validate_result_order(outcome_ids, task_ids)
+        _validate_result_order(blocker_ids, task_ids)
         return self
 
 
@@ -188,6 +189,11 @@ def _validate_partition(
 def _validate_unique_ids(values: tuple[str, ...], field: str) -> None:
     if len(set(values)) != len(values):
         raise ValueError(f"{field} must be unique")
+
+
+def _validate_result_order(result_ids: tuple[str, ...], task_ids: tuple[str, ...]) -> None:
+    if not _follows_task_order(result_ids, task_ids):
+        raise ValueError("outcomes and blockers must follow task_ids order")
 
 
 def _validate_run_metric(

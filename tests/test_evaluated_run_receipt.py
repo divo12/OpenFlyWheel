@@ -112,8 +112,7 @@ def test_evaluated_run_receipt_requires_task_order_within_each_partition() -> No
     with pytest.raises((ValidationError, ValueError)):
         _receipt(
             task_ids=("task-1", "task-2"),
-            outcomes=(_task("task-2"),),
-            blockers=(_blocker("task-1"),),
+            outcomes=(_task("task-2"), _task("task-1")),
         )
 
 
@@ -135,18 +134,26 @@ def test_evaluated_task_receipt_validates_decisive_scores(
 
 
 @pytest.mark.parametrize(
-    "field",
-    ("normalized_score", "cost_usd", "latency_seconds"),
+    ("field", "value"),
+    (
+        ("normalized_score", 2.0),
+        ("cost_usd", 1_000_001.0),
+        ("latency_seconds", 172_801.0),
+        ("normalized_score", math.inf),
+        ("cost_usd", math.inf),
+        ("latency_seconds", math.inf),
+    ),
 )
 def test_evaluated_task_receipt_rejects_non_finite_or_out_of_bound_metrics(
     field: str,
+    value: float,
 ) -> None:
     values = {
         "normalized_score": 1.0,
         "cost_usd": 0.25,
         "latency_seconds": 1.5,
     }
-    values[field] = math.inf
+    values[field] = value
     with pytest.raises(ValidationError):
         EvaluatedTaskReceipt(
             task_id="task-1",
