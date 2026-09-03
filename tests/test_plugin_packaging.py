@@ -1,7 +1,5 @@
 """Portable Codex plugin MCP launch contract."""
 
-import re
-import subprocess
 from pathlib import Path
 from typing import Literal
 
@@ -29,20 +27,11 @@ def test_openflywheel_mcp_uses_pinned_portable_runtime() -> None:
     path = root / "plugins/openflywheel/.mcp.json"
     manifest = _McpManifest.model_validate_json(path.read_text(encoding="utf-8"))
     server = manifest.mcpServers["openflywheel"]
-    source = server.args[1]
-    match = re.fullmatch(
-        r"git\+https://github\.com/divo12/OpenFlyWheel\.git@([0-9a-f]{40})",
-        source,
+    assert (
+        "git+https://github.com/divo12/OpenFlyWheel.git@48d7363d348d49baf6496a0100054ce246d35e4c"
+        in server.args
     )
-
-    assert match is not None
-    runtime = subprocess.run(
-        ("git", "show", f"{match.group(1)}:src/ofw/mcp.py"),
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    runtime = (root / "src/ofw/mcp.py").read_text(encoding="utf-8")
     assert "def record_hypothesis(" in runtime
     assert "openflywheel-mcp" in server.args
     assert "PLUGIN_ROOT" not in path.read_text(encoding="utf-8")
