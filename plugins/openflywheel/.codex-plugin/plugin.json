@@ -1,7 +1,7 @@
 {
   "name": "openflywheel",
   "version": "0.8.0",
-  "description": "Prepare ITSM-bench workspaces and record evidence-backed harness hypotheses.",
+  "description": "Prepare ITSM-bench workspaces, record hypotheses, and execute isolated candidates.",
   "author": {
     "name": "OpenFlyWheel"
   },
@@ -10,14 +10,14 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "OpenFlyWheel",
-    "shortDescription": "Record evidence-backed harness hypotheses",
-    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, inspect bounded Langfuse evidence, record authoritative outcomes and compact diagnoses, mine exact recurring patterns, and persist one evidence-backed hypothesis before candidate editing without copying trace payloads.",
+    "shortDescription": "Execute isolated harness candidates",
+    "longDescription": "Initialize an ITSM-bench agent-harness optimization workspace, inspect bounded Langfuse evidence, record authoritative outcomes and compact diagnoses, mine exact recurring patterns, persist one evidence-backed hypothesis, execute one isolated candidate, and stop before admission without copying trace payloads.",
     "developerName": "OpenFlyWheel",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
     "defaultPrompt": [
       "Read this repository, identify the primary agent harness the user wants to evaluate with ITSM-bench, and use $workspace-init to collect its experiment configuration and perform the initial setup.",
-      "When PROGRAM.md is ready, read it, record one evidence-backed hypothesis, and stop before candidate editing."
+      "When PROGRAM.md is ready, read it, record one evidence-backed hypothesis, execute one isolated candidate, and stop before admission."
     ]
   },
   "mcpServers": "./.mcp.json"
