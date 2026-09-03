@@ -39,6 +39,13 @@ from ofw.evolution.hypothesis import (
     HypothesisId,
 )
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
+from ofw.evolution.ledger import (
+    EvolutionEventDraft,
+    EvolutionEventType,
+    EvolutionStarted,
+    FileEvolutionLedger,
+    ReleasePublished,
+)
 from ofw.observability.langfuse.domain import (
     JsonDocument,
     ObservationId,
@@ -400,6 +407,61 @@ def test_candidate_git_gateway_isolates_validates_and_commits_one_tree(tmp_path:
     message = _git(workspace.worktree_path, "show", "-s", "--format=%B", committed.commit)
     assert message.count("OFW-Experiment: experiment-one") == 1
     assert message.count(f"OFW-Run: {candidate_id.value}") == 1
+
+
+def test_candidate_git_gateway_uses_the_current_published_commit(
+    tmp_path: Path,
+) -> None:
+    root, policy, hypothesis = _authority(tmp_path)
+    ledger = FileEvolutionLedger()
+    ledger.append(
+        root,
+        EvolutionEventDraft(
+            event_type=EvolutionEventType.EVOLUTION_STARTED,
+            experiment_id=policy.experiment_id,
+            payload=EvolutionStarted(
+                policy_digest=candidate_policy_digest(policy),
+                accepted_commit=policy.initialization_commit,
+                accepted_release_id="initial",
+            ),
+            occurred_at=datetime(2026, 9, 3, tzinfo=UTC),
+            causation_id="start",
+            correlation_id="start",
+        ),
+    )
+    _git(root, "switch", "-c", "published-source")
+    (root / "prompt.md").write_text("published source\n", encoding="utf-8")
+    _git(root, "add", "prompt.md")
+    _git(root, "commit", "-qm", "published source")
+    published_commit = _git(root, "rev-parse", "HEAD")
+    published_tree = _git(root, "rev-parse", "HEAD^{tree}")
+    _git(root, "switch", "ofw/experiment-one")
+    _git(root, "merge", "--ff-only", "published-source")
+    ledger.append(
+        root,
+        EvolutionEventDraft(
+            event_type=EvolutionEventType.RELEASE_PUBLISHED,
+            experiment_id=policy.experiment_id,
+            payload=ReleasePublished(
+                release_id="published-1",
+                content_commit=published_commit,
+                content_tree=published_tree,
+                policy_digest=candidate_policy_digest(policy),
+                parent_release_id="initial",
+            ),
+            occurred_at=datetime(2026, 9, 3, 0, 0, 1, tzinfo=UTC),
+            causation_id="publish",
+            correlation_id="publish",
+        ),
+    )
+    current_hypothesis = replace(hypothesis, source_commit=published_commit)
+    parent = tmp_path / "candidates"
+    parent.mkdir()
+
+    workspace = CandidateGitGateway().prepare(root, parent, policy, current_hypothesis)
+
+    assert workspace.source_commit == published_commit
+    assert _git(workspace.worktree_path, "rev-parse", "HEAD") == published_commit
 
 
 def test_candidate_git_gateway_rejects_an_empty_candidate(tmp_path: Path) -> None:

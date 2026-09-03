@@ -136,6 +136,12 @@ class ReleasePublished(StrictModel):
     content_commit: str | None = Field(default=None, pattern=_COMMIT)
     content_id: Digest | None = None
     target_reached: bool = False
+    content_tree: str | None = Field(default=None, pattern=_COMMIT)
+    parent_release_id: Identifier | None = None
+    expected_current_commit: str | None = Field(default=None, pattern=_COMMIT)
+    policy_digest: Digest | None = None
+    operation_id: Digest | None = None
+    intent_event_id: Digest | None = None
 
 
 class ReleaseRolledBack(StrictModel):
@@ -143,6 +149,12 @@ class ReleaseRolledBack(StrictModel):
     target_release_id: Identifier
     content_commit: str | None = Field(default=None, pattern=_COMMIT)
     content_id: Digest | None = None
+    content_tree: str | None = Field(default=None, pattern=_COMMIT)
+    parent_release_id: Identifier | None = None
+    expected_current_commit: str | None = Field(default=None, pattern=_COMMIT)
+    policy_digest: Digest | None = None
+    operation_id: Digest | None = None
+    intent_event_id: Digest | None = None
 
 
 class EvolutionStopped(StrictModel):
@@ -153,6 +165,13 @@ class ExternalOperationIntent(StrictModel):
     operation: ExternalOperation
     idempotency_key: Digest
     target: Identifier
+    expected_current_commit: str | None = Field(default=None, pattern=_COMMIT)
+    candidate_commit: str | None = Field(default=None, pattern=_COMMIT)
+    content_tree: str | None = Field(default=None, pattern=_COMMIT)
+    policy_digest: Digest | None = None
+    parent_release_id: Identifier | None = None
+    target_release_id: Identifier | None = None
+    target_reached: bool = False
 
 
 class ExternalOperationBlocked(StrictModel):
@@ -253,8 +272,8 @@ class EvolutionEvent(StrictModel):
 
     @model_validator(mode="after")
     def validate_payload_digest(self) -> EvolutionEvent:
-        if self.payload_digest is not None and self.payload_digest != _digest(
-            self.payload.model_dump_json()
+        if self.payload_digest is not None and not _payload_digest_matches(
+            self.payload, self.payload_digest
         ):
             raise ValueError("payload_digest does not match payload")
         return self
@@ -561,7 +580,9 @@ def _validate_event_identity(
     if event.payload_digest is None:
         return
     identity = _event_identity(event)
-    if event.event_id != _digest(identity):
+    if event.event_id == _digest(identity):
+        return
+    if event.event_id != _digest(_event_identity(event, legacy=True)):
         raise EvolutionLedgerFailure(
             EvolutionLedgerErrorCode.CORRUPT_LEDGER, experiment_id, last
         )
@@ -588,9 +609,9 @@ def _draft_identity(draft: EvolutionEventDraft, event: EvolutionEvent) -> str:
     )
 
 
-def _event_identity(event: EvolutionEvent) -> str:
+def _event_identity(event: EvolutionEvent, *, legacy: bool = False) -> str:
     fingerprint = (
-        event.fingerprint()
+        _event_fingerprint(event, legacy=legacy)
         if event.causation_id is None and event.correlation_id is None
         else ""
     )
@@ -603,6 +624,45 @@ def _event_identity(event: EvolutionEvent) -> str:
             fingerprint,
         )
     )
+
+
+def _event_fingerprint(event: EvolutionEvent, *, legacy: bool) -> str:
+    payload_json = _payload_json(event.payload, legacy=legacy)
+    content = event.model_dump_json(exclude={"sequence", "event_id", "payload"})
+    return _digest(f'{content[:-1]},"payload":{payload_json}}}')
+
+
+def _payload_digest_matches(payload: EvolutionEventPayload, digest: str) -> bool:
+    return digest in {
+        _digest(_payload_json(payload, legacy=False)),
+        _digest(_payload_json(payload, legacy=True)),
+    }
+
+
+def _payload_json(payload: EvolutionEventPayload, *, legacy: bool) -> str:
+    if not legacy:
+        return payload.model_dump_json()
+    excluded: set[str] = set()
+    if isinstance(payload, (ReleasePublished, ReleaseRolledBack)):
+        excluded = {
+            "content_tree",
+            "parent_release_id",
+            "expected_current_commit",
+            "policy_digest",
+            "operation_id",
+            "intent_event_id",
+        }
+    elif isinstance(payload, ExternalOperationIntent):
+        excluded = {
+            "expected_current_commit",
+            "candidate_commit",
+            "content_tree",
+            "policy_digest",
+            "parent_release_id",
+            "target_release_id",
+            "target_reached",
+        }
+    return payload.model_dump_json(exclude=excluded)
 
 
 def _append_event(directory: int, event: EvolutionEvent) -> None:

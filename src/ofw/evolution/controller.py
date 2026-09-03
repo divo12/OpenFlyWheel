@@ -40,6 +40,7 @@ from ofw.evolution.ledger import (
     RunCompleted,
     RunStarted,
 )
+from ofw.evolution.publication import PublicationFailure, PublicationService
 from ofw.preparation.contracts import StrictModel
 from ofw.preparation.policy import (
     ExperimentPolicyFailure,
@@ -104,6 +105,7 @@ class EvolutionControllerErrorCode(StrEnum):
     EVIDENCE_UNAVAILABLE = "evidence_unavailable"
     MAX_ITERATIONS = "max_iterations"
     NO_IMPROVEMENT = "no_improvement"
+    PUBLICATION_FAILED = "publication_failed"
 
 
 class EvolutionControllerFailure(Exception):
@@ -227,6 +229,7 @@ class EvolutionController:
         ledger: EvolutionLedger | None = None,
         policy_repository: EvolutionPolicyRepository | None = None,
         hypothesis_repository: EvolutionHypothesisRepository | None = None,
+        publication: PublicationService | None = None,
     ) -> None:
         if not workspace_root.is_absolute():
             raise EvolutionControllerFailure(
@@ -237,6 +240,7 @@ class EvolutionController:
         self._ledger = ledger or FileEvolutionLedger()
         self._policies = policy_repository or FileExperimentPolicyRepository()
         self._hypotheses = hypothesis_repository or FileHypothesisRepository()
+        self._publication = publication or PublicationService(self._ledger)
 
     def status(self, experiment_id: str) -> EvolutionObservation:
         policy = self._policy(experiment_id)
@@ -371,11 +375,52 @@ class EvolutionController:
         self, request: AdvanceEvolutionInput, state: _EvolutionState
     ) -> EvolutionObservation:
         if state.phase is EvolutionPhase.AWAITING_PUBLICATION:
+            if request.action is EvolutionAdvanceAction.PUBLISH:
+                return self._publish(request, state)
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.PUBLICATION_REQUIRED,
                 request.experiment_id,
             )
         return self._retry(request, state)
+
+    def _publish(
+        self, request: AdvanceEvolutionInput, state: _EvolutionState
+    ) -> EvolutionObservation:
+        if (
+            state.candidate_commit is None
+            or request.release_id is None
+            or request.promotion_decision is None
+        ):
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.MISSING_INPUT,
+                "publication",
+            )
+        try:
+            policy = self._policy(request.experiment_id)
+            current = self._publication.current_accepted(
+                self._workspace_root,
+                request.experiment_id,
+                candidate_policy_digest(policy),
+            )
+            self._publication.promote(
+                root=self._workspace_root,
+                experiment_id=request.experiment_id,
+                policy_digest=current.policy_digest,
+                operation_id=request.digest(),
+                publication_id=request.release_id,
+                expected=current.cas_token,
+                candidate_commit=state.candidate_commit,
+                candidate_tree=self._publication.commit_tree(
+                    self._workspace_root, state.candidate_commit
+                ),
+                gate=request.promotion_decision,
+            )
+        except PublicationFailure:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.PUBLICATION_FAILED,
+                request.experiment_id,
+            ) from None
+        return self.status(request.experiment_id)
 
     def _resume_after_crash(
         self,
@@ -470,7 +515,7 @@ class EvolutionController:
                 EvolutionControllerErrorCode.INVALID_TRANSITION, state.phase.value
             )
         hypothesis = self._load_hypothesis(hypothesis_id)
-        expected_commit = state.accepted_commit or policy.initialization_commit
+        expected_commit, _ = self._accepted_source(request, policy, state)
         self._validate_hypothesis_identity(
             request, expected_commit, hypothesis, hypothesis_id
         )
@@ -551,10 +596,7 @@ class EvolutionController:
             return self._stop_with_reason(
                 request, state, EvolutionStopReason.MAX_ITERATIONS
             )
-        source_commit = state.accepted_commit or policy.initialization_commit
-        source_content_id = state.accepted_content_id or _content_identity(
-            source_commit
-        )
+        source_commit, source_content_id = self._accepted_source(request, policy, state)
         key = _operation_key(
             request.experiment_id, "candidate-prepare", state.iteration
         )
@@ -571,6 +613,29 @@ class EvolutionController:
             ),
         )
         return self.status(request.experiment_id)
+
+    def _accepted_source(
+        self,
+        request: AdvanceEvolutionInput,
+        policy: ExperimentPolicySnapshot,
+        state: _EvolutionState,
+    ) -> tuple[str, str]:
+        events = self._events(request.experiment_id)
+        if not _has_publication(events):
+            commit = state.accepted_commit or policy.initialization_commit
+            return commit, state.accepted_content_id or _content_identity(commit)
+        try:
+            current = self._publication.current_accepted(
+                self._workspace_root,
+                request.experiment_id,
+                candidate_policy_digest(policy),
+            )
+        except PublicationFailure:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.PUBLICATION_FAILED,
+                request.experiment_id,
+            ) from None
+        return current.content_commit, _tree_content_identity(current.content_tree)
 
     def _ensure_candidate_intent(
         self, request: AdvanceEvolutionInput, key: str, target: str
@@ -1196,6 +1261,18 @@ def _operation_key(experiment_id: str, operation: str, iteration: int) -> str:
 
 def _content_identity(commit: str) -> str:
     return "sha256:" + hashlib.sha256(f"git-commit\0{commit}".encode()).hexdigest()
+
+
+def _tree_content_identity(tree: str) -> str:
+    return "sha256:" + hashlib.sha256(f"git-tree\0{tree}".encode()).hexdigest()
+
+
+def _has_publication(events: tuple[EvolutionEvent, ...]) -> bool:
+    return any(
+        event.event_type
+        in (EvolutionEventType.RELEASE_PUBLISHED, EvolutionEventType.RELEASE_ROLLED_BACK)
+        for event in events
+    )
 
 
 def _accepted_identity(
