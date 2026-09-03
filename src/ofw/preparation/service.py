@@ -392,26 +392,6 @@ def _configuration_from_state(state: _PreparationStateWire) -> BaselineConfigura
     )
 
 
-def _prepared_from_state(state: _PreparationStateWire) -> PreparedGitWorkspace:
-    return PreparedGitWorkspace(
-        branch_name=state.branch_name,
-        worktree_path=state.worktree_path,
-        base_commit=state.base_commit,
-        initialization_commit=state.initialization_commit,
-        program_path=state.program_path,
-    )
-
-
-def _configuration_from_state(state: _PreparationStateWire) -> BaselineConfiguration:
-    return BaselineConfiguration(
-        model=state.model,
-        task_ids=state.task_ids,
-        benchmark_config_digest=state.benchmark_config_digest,
-        verifier=state.verifier,
-        environment=state.environment,
-    )
-
-
 def _ready_state(
     state: _PreparationStateWire,
     summary: BaselineSummary,
