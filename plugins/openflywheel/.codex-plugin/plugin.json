@@ -1,6 +1,6 @@
 {
   "name": "openflywheel",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Initialize ITSM-bench workspaces, mine exact failure patterns, and record evidence-bound curations.",
   "author": {
     "name": "OpenFlyWheel"
