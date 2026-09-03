@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from ofw.evolution.ledger import (
     EvolutionStarted,
     FileEvolutionLedger,
     HypothesisLinked,
+    ReleasePublished,
 )
 
 
@@ -167,6 +169,47 @@ def test_invalid_workspace_and_payload_fail_closed(tmp_path: Path) -> None:
                 source_commit="a" * 40,
             ),
         )
+
+
+def test_legacy_release_payloads_remain_readable_after_publication_fields_are_added(
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    ledger = FileEvolutionLedger()
+    ledger.append(root, _draft())
+    payload_json = ReleasePublished(
+        release_id="legacy",
+        content_commit="a" * 40,
+        content_id=None,
+        target_reached=False,
+    ).model_dump_json(
+        exclude={
+            "content_tree",
+            "parent_release_id",
+            "expected_current_commit",
+            "policy_digest",
+            "operation_id",
+            "intent_event_id",
+        }
+    )
+    identity = "\0".join(("experiment-one", "ReleasePublished", "old", "old", ""))
+    event_json = (
+        '{"schema_version":1,"experiment_id":"experiment-one","sequence":2,'
+        '"event_id":"sha256:'
+        + hashlib.sha256(identity.encode()).hexdigest()
+        + '","event_type":"ReleasePublished","occurred_at":"2026-09-03T00:00:00Z",'
+        '"causation_id":"old","correlation_id":"old","request_digest":null,'
+        '"payload_digest":"sha256:'
+        + hashlib.sha256(payload_json.encode()).hexdigest()
+        + '","payload":'
+        + payload_json
+        + "}"
+    )
+    path = root / ".git/ofw/preparations/experiment-one/evolution.jsonl"
+    with path.open("ab") as stream:
+        stream.write((event_json + "\n").encode())
+
+    assert isinstance(ledger.events(root, "experiment-one")[-1].payload, ReleasePublished)
 
 
 def test_writer_owner_lock_is_exclusive(tmp_path: Path) -> None:

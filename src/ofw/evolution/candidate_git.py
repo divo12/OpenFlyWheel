@@ -13,8 +13,11 @@ from ofw.evolution.candidate import (
     CandidateId,
     CandidateTree,
     CandidateWorkspace,
+    candidate_policy_digest,
 )
 from ofw.evolution.hypothesis import HarnessHypothesis
+from ofw.evolution.ledger import EvolutionEventType, FileEvolutionLedger
+from ofw.evolution.publication import PublicationFailure, PublicationService
 from ofw.preparation.policy import ExperimentPolicySnapshot
 
 _MANAGED_PATHS = frozenset(("PROGRAM.md", "experiment_config.yaml"))
@@ -60,11 +63,12 @@ class CandidateGitGateway:
         worktree = parent / _worktree_name(root, policy, hypothesis)
         if worktree.exists():
             raise CandidateFailure(CandidateErrorCode.WORKTREE_EXISTS, str(worktree))
-        _git(root, "worktree", "add", "--detach", str(worktree), policy.initialization_commit)
+        source_commit = _accepted_source(root, policy)
+        _git(root, "worktree", "add", "--detach", str(worktree), source_commit)
         return CandidateWorkspace(
             accepted_root=root,
             worktree_path=worktree,
-            source_commit=policy.initialization_commit,
+            source_commit=source_commit,
         )
 
     def inspect(
@@ -123,8 +127,9 @@ def _validate_authority(
     hypothesis: HarnessHypothesis,
 ) -> None:
     _require_experiment(policy, hypothesis)
-    _require_source(policy, hypothesis)
-    _require_head(root, policy.initialization_commit)
+    source_commit = _accepted_source(root, policy)
+    _require_source(source_commit, hypothesis)
+    _require_head(root, source_commit)
     _require_branch(root, policy)
     _require_targets(policy, hypothesis)
 
@@ -138,11 +143,29 @@ def _require_experiment(
 
 
 def _require_source(
-    policy: ExperimentPolicySnapshot,
+    source_commit: str,
     hypothesis: HarnessHypothesis,
 ) -> None:
-    if hypothesis.source_commit != policy.initialization_commit:
+    if hypothesis.source_commit != source_commit:
         raise CandidateFailure(CandidateErrorCode.STALE_COMMIT, hypothesis.id.value)
+
+
+def _accepted_source(root: Path, policy: ExperimentPolicySnapshot) -> str:
+    try:
+        events = FileEvolutionLedger().events(root, policy.experiment_id)
+        if not any(
+            event.event_type
+            in (EvolutionEventType.RELEASE_PUBLISHED, EvolutionEventType.RELEASE_ROLLED_BACK)
+            for event in events
+        ):
+            return policy.initialization_commit
+        return (
+            PublicationService(FileEvolutionLedger())
+            .current_accepted(root, policy.experiment_id, candidate_policy_digest(policy))
+            .content_commit
+        )
+    except PublicationFailure:
+        raise CandidateFailure(CandidateErrorCode.STALE_COMMIT, policy.experiment_id) from None
 
 
 def _require_branch(root: Path, policy: ExperimentPolicySnapshot) -> None:
