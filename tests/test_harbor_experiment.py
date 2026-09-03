@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -95,6 +97,29 @@ for index, reward in enumerate((1.0, 0.0), start=1):
     )
     executable.chmod(0o755)
     return root, executable, config
+
+
+def _cancel_run(tmp_path: Path) -> ExperimentRun:
+    return ExperimentRun(
+        run_id="candidate-one",
+        benchmark_root=tmp_path,
+        harbor_executable=Path(sys.executable),
+        harbor_config=tmp_path / "config.json",
+        job_path=tmp_path / "jobs/candidate-one",
+        log_path=tmp_path / "candidate.log",
+        source_root=tmp_path,
+        release="a" * 40,
+        session_id="candidate-session",
+        controls=ExperimentControls(
+            model="model",
+            task_ids=("task-1",),
+            benchmark_config_digest="sha256:" + "b" * 64,
+            verifier="itsm-bench",
+            environment="itsm-bench",
+            concurrency=1,
+            max_retries=0,
+        ),
+    )
 
 
 def test_generalized_harbor_runner_freezes_controls_environment_and_trials(
@@ -222,6 +247,7 @@ def test_harbor_rejects_existing_jobs_and_baseline_launch_recomputes_controls(
         log_path=tmp_path / "baseline.log",
         worktree_path=source,
         initialization_commit="a" * 40,
+        controls=controls,
     )
     pid = HarborBaselineRunner().start(baseline_run)
     waited, status = os.waitpid(pid, 0)
@@ -230,6 +256,84 @@ def test_harbor_rejects_existing_jobs_and_baseline_launch_recomputes_controls(
     assert waited == pid
     assert os.waitstatus_to_exitcode(status) == 0
     assert baseline_run.job_path.is_dir()
+
+
+def test_baseline_launch_rejects_controls_changed_after_the_persisted_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark, executable, config = _benchmark(tmp_path)
+    source = tmp_path / "candidate"
+    source.mkdir()
+    _credentials(monkeypatch)
+    controls = HarborExperimentRunner().validate(
+        benchmark,
+        executable,
+        config.relative_to(benchmark),
+    )
+    run = BaselineRun(
+        experiment_id="baseline",
+        benchmark_root=benchmark,
+        harbor_executable=executable,
+        harbor_config=config,
+        job_path=benchmark / "jobs/baseline",
+        log_path=tmp_path / "baseline.log",
+        worktree_path=source,
+        initialization_commit="a" * 40,
+        controls=controls,
+    )
+    config.write_text(config.read_text().replace("gpt-5.4-mini", "different-model"))
+
+    with pytest.raises(PreparationFailure) as raised:
+        HarborBaselineRunner().start(run)
+
+    assert raised.value.code is PreparationErrorCode.INVALID_HARBOR_CONFIG
+    assert not run.job_path.exists()
+
+
+def test_generalized_harbor_cancel_terminates_and_reaps_the_process_group(
+    tmp_path: Path,
+) -> None:
+    process = subprocess.Popen(  # nosec B603
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        start_new_session=True,
+    )
+    run = _cancel_run(tmp_path)
+    try:
+        HarborExperimentRunner().cancel(run, process.pid)
+        return_code = process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert return_code < 0
+
+
+def test_generalized_harbor_cancel_handles_absent_and_failed_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = HarborExperimentRunner()
+    run = _cancel_run(tmp_path)
+    runner.cancel(run, None)
+
+    def missing(process_id: int, signal_number: int) -> None:
+        del process_id, signal_number
+        raise ProcessLookupError
+
+    monkeypatch.setattr(os, "killpg", missing)
+    runner.cancel(run, 123)
+
+    def denied(process_id: int, signal_number: int) -> None:
+        del process_id, signal_number
+        raise PermissionError
+
+    monkeypatch.setattr(os, "killpg", denied)
+    with pytest.raises(PreparationFailure) as raised:
+        runner.cancel(run, 123)
+
+    assert raised.value.code is PreparationErrorCode.LAUNCH_FAILED
 
 
 @pytest.mark.parametrize(
