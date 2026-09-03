@@ -7,11 +7,12 @@ import re
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ofw.contracts import ComponentKind
+from ofw.evaluation.failure_curation import FailureCurationArtifact, FailureGroupArtifact
 from ofw.evaluation.failure_patterns import (
     FailurePatternMiningError,
     FailurePatternMiningObservation,
@@ -19,13 +20,17 @@ from ofw.evaluation.failure_patterns import (
     MineFailurePatternsInput,
 )
 from ofw.preparation.contracts import contained_relative_path
-from ofw.preparation.policy import ExperimentPolicyErrorCode, ExperimentPolicyFailure
+from ofw.preparation.policy import (
+    ExperimentPolicyErrorCode,
+    ExperimentPolicyFailure,
+    ExperimentPolicySnapshot,
+)
 
-_ARTIFACT_ID_PATTERN = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-_PATTERN_ID_PATTERN = r"sha256:[0-9a-f]{64}"
+_ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+_PATTERN_ID_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _HYPOTHESIS_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
-_EXPERIMENT_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
+_EXPERIMENT_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 HypothesisTextValue = Annotated[str, Field(min_length=1, max_length=4000)]
 ArtifactIdsValue = Annotated[
     tuple[Annotated[str, Field(pattern=_ARTIFACT_ID_PATTERN)], ...],
@@ -70,6 +75,8 @@ class RecordHypothesisInput(StrictModel):
     workspace_root: Path = Field(strict=False)
     experiment_id: str = Field(min_length=1, max_length=80, pattern=_EXPERIMENT_PATTERN)
     source_commit: str = Field(pattern=_COMMIT_PATTERN)
+    curation_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    curation_group_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
     patterns: tuple[FailurePatternReferenceInput, ...] = Field(
         strict=False,
         min_length=1,
@@ -146,6 +153,8 @@ class HarnessHypothesis:
     id: HypothesisId
     experiment_id: str
     source_commit: str
+    curation_id: str
+    curation_group_id: str
     patterns: tuple[FailurePatternReference, ...]
     statement: str
     rationale: str
@@ -158,6 +167,8 @@ class _HypothesisContent(StrictModel):
     schema_version: Literal[1] = 1
     experiment_id: str = Field(min_length=1, max_length=80, pattern=_EXPERIMENT_PATTERN)
     source_commit: str = Field(pattern=_COMMIT_PATTERN)
+    curation_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    curation_group_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
     patterns: tuple[FailurePatternReferenceInput, ...] = Field(min_length=1, max_length=50)
     statement: HypothesisTextValue
     rationale: HypothesisTextValue
@@ -175,6 +186,8 @@ class HypothesisArtifact(_HypothesisContent):
             hypothesis_id=hypothesis.id.value,
             experiment_id=hypothesis.experiment_id,
             source_commit=hypothesis.source_commit,
+            curation_id=hypothesis.curation_id,
+            curation_group_id=hypothesis.curation_group_id,
             patterns=tuple(
                 FailurePatternReferenceInput(
                     pattern_id=pattern.pattern_id,
@@ -203,8 +216,10 @@ class HypothesisObservation(StrictModel):
     next_actions: tuple[str, ...] = Field(max_length=2)
     artifacts: tuple[str, ...] = Field(min_length=2, max_length=2)
     hypothesis_id: str = Field(pattern=_PATTERN_ID_PATTERN)
-    experiment_id: str = Field(min_length=1, max_length=80)
+    experiment_id: str = Field(min_length=1, max_length=80, pattern=_EXPERIMENT_PATTERN)
     source_commit: str = Field(pattern=_COMMIT_PATTERN)
+    curation_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    curation_group_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
     relative_path: Path
     pattern_count: int = Field(strict=True, ge=1, le=50)
     diagnosis_count: int = Field(strict=True, ge=1, le=50)
@@ -217,6 +232,10 @@ class HypothesisErrorCode(StrEnum):
     STALE_POLICY = "stale_policy"
     STALE_COMMIT = "stale_commit"
     DIRTY_WORKSPACE = "dirty_workspace"
+    CURATION_NOT_FOUND = "curation_not_found"
+    CURATION_INVALID = "curation_invalid"
+    CURATION_GROUP_NOT_FOUND = "curation_group_not_found"
+    CURATION_EVIDENCE_MISMATCH = "curation_evidence_mismatch"
     PATTERN_EVIDENCE_MISMATCH = "pattern_evidence_mismatch"
     INCONCLUSIVE_EVIDENCE = "inconclusive_evidence"
     TARGET_NOT_EDITABLE = "target_not_editable"
@@ -237,10 +256,26 @@ class HypothesisFailure(Exception):
         super().__init__(f"{code.value}: {subject}")
 
 
+class HypothesisGateway(Protocol):
+    def load_policy(self, root: Path, experiment_id: str) -> ExperimentPolicySnapshot: ...
+
+    def load_curation(self, root: Path, curation_id: str) -> FailureCurationArtifact: ...
+
+    def validate_workspace(
+        self,
+        root: Path,
+        policy: ExperimentPolicySnapshot,
+        source_commit: str,
+        paths: tuple[Path, ...],
+    ) -> None: ...
+
+    def store(self, root: Path, hypothesis: HarnessHypothesis) -> Path: ...
+
+
 @dataclass(frozen=True, slots=True)
 class HypothesisService:
     pattern_miner: FailurePatternMiningService
-    repository: FileHypothesisRepository
+    repository: HypothesisGateway
 
     def record(self, request: RecordHypothesisInput) -> HypothesisObservation:
         policy = _load_policy(self.repository, request)
@@ -253,7 +288,9 @@ class HypothesisService:
             request.source_commit,
             paths,
         )
+        group = _load_curation_group(self.repository, request)
         patterns = _canonical_patterns(request.patterns)
+        _validate_curated_evidence(request, group, patterns)
         mined = _mine_patterns(self.pattern_miner, request.workspace_root, patterns)
         _validate_mined_patterns(patterns, mined)
         hypothesis = _hypothesis(request, patterns, paths)
@@ -262,7 +299,7 @@ class HypothesisService:
 
 
 def _load_policy(
-    repository: FileHypothesisRepository,
+    repository: HypothesisGateway,
     request: RecordHypothesisInput,
 ) -> ExperimentPolicySnapshot:
     try:
@@ -274,6 +311,23 @@ def _load_policy(
             else HypothesisErrorCode.POLICY_INVALID
         )
         raise HypothesisFailure(code, request.experiment_id) from None
+
+
+def _load_curation_group(
+    repository: HypothesisGateway,
+    request: RecordHypothesisInput,
+) -> FailureGroupArtifact:
+    curation = repository.load_curation(request.workspace_root, request.curation_id)
+    group = next(
+        (item for item in curation.groups if item.group_id == request.curation_group_id),
+        None,
+    )
+    if group is None:
+        raise HypothesisFailure(
+            HypothesisErrorCode.CURATION_GROUP_NOT_FOUND,
+            request.curation_group_id,
+        )
+    return group
 
 
 def _validate_policy(
@@ -300,6 +354,39 @@ def _canonical_patterns(
         )
         for pattern in sorted(patterns, key=_pattern_reference_id)
     )
+
+
+def _validate_curated_evidence(
+    request: RecordHypothesisInput,
+    group: FailureGroupArtifact,
+    patterns: tuple[FailurePatternReference, ...],
+) -> None:
+    if _declared_artifact_ids(patterns) != _curated_artifact_ids(group):
+        raise HypothesisFailure(
+            HypothesisErrorCode.CURATION_EVIDENCE_MISMATCH,
+            request.curation_group_id,
+        )
+    if request.target.component_kind is not group.target_component:
+        raise HypothesisFailure(
+            HypothesisErrorCode.CURATION_EVIDENCE_MISMATCH,
+            request.curation_group_id,
+        )
+
+
+def _declared_artifact_ids(
+    patterns: tuple[FailurePatternReference, ...],
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            artifact_id
+            for pattern in patterns
+            for artifact_id in pattern.diagnosis_artifact_ids
+        )
+    )
+
+
+def _curated_artifact_ids(group: FailureGroupArtifact) -> tuple[str, ...]:
+    return tuple(sorted(member.artifact_id for member in group.members))
 
 
 def _pattern_reference_id(pattern: FailurePatternReferenceInput) -> str:
@@ -370,6 +457,8 @@ def _hypothesis(
         hypothesis_id,
         request.experiment_id,
         request.source_commit,
+        request.curation_id,
+        request.curation_group_id,
         patterns,
         request.statement,
         request.rationale,
@@ -388,6 +477,8 @@ def _content(
     return _HypothesisContent(
         experiment_id=request.experiment_id,
         source_commit=request.source_commit,
+        curation_id=request.curation_id,
+        curation_group_id=request.curation_group_id,
         patterns=tuple(
             FailurePatternReferenceInput(
                 pattern_id=pattern.pattern_id,
@@ -416,6 +507,8 @@ def _observation(hypothesis: HarnessHypothesis, relative_path: Path) -> Hypothes
         hypothesis_id=hypothesis.id.value,
         experiment_id=hypothesis.experiment_id,
         source_commit=hypothesis.source_commit,
+        curation_id=hypothesis.curation_id,
+        curation_group_id=hypothesis.curation_group_id,
         relative_path=relative_path,
         pattern_count=len(hypothesis.patterns),
         diagnosis_count=diagnosis_count,
@@ -438,7 +531,3 @@ def _normalized_text(value: str) -> str:
     if not normalized:
         raise ValueError("hypothesis text must not be blank")
     return normalized
-
-
-from ofw.evolution.hypothesis_repository import FileHypothesisRepository  # noqa: E402
-from ofw.preparation.policy import ExperimentPolicySnapshot  # noqa: E402

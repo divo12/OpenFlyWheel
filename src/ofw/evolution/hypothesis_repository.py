@@ -6,6 +6,9 @@ import stat
 import subprocess  # nosec B404
 from pathlib import Path
 
+from pydantic import ValidationError
+
+from ofw.evaluation.failure_curation import FailureCurationArtifact
 from ofw.evolution.hypothesis import (
     HarnessHypothesis,
     HypothesisArtifact,
@@ -19,8 +22,10 @@ from ofw.preparation.policy import (
 from ofw.safe_file import (
     SafeFileErrorCode,
     SafeFileFailure,
+    open_child_directory,
     open_directory_chain,
     publish_idempotent,
+    read_bounded,
 )
 
 _HYPOTHESIS_LIMIT_BYTES = 64 * 1024
@@ -32,6 +37,30 @@ class FileHypothesisRepository:
 
     def load_policy(self, root: Path, experiment_id: str) -> ExperimentPolicySnapshot:
         return FileExperimentPolicyRepository().load(root, experiment_id)
+
+    def load_curation(self, root: Path, curation_id: str) -> FailureCurationArtifact:
+        prepared_root = _prepared_root(root)
+        try:
+            with open_directory_chain(
+                prepared_root,
+                (".workspace", "failure-curations"),
+                create=False,
+            ) as directory:
+                content = read_bounded(
+                    directory,
+                    f"{curation_id}.json",
+                    maximum_bytes=_HYPOTHESIS_LIMIT_BYTES,
+                    subject=curation_id,
+                )
+            artifact = FailureCurationArtifact.model_validate_json(content)
+            artifact.require_valid_identity()
+        except FileNotFoundError:
+            raise HypothesisFailure(HypothesisErrorCode.CURATION_NOT_FOUND, curation_id) from None
+        except (SafeFileFailure, ValidationError, ValueError):
+            raise HypothesisFailure(HypothesisErrorCode.CURATION_INVALID, curation_id) from None
+        if artifact.curation_id != curation_id:
+            raise HypothesisFailure(HypothesisErrorCode.CURATION_INVALID, curation_id)
+        return artifact
 
     def validate_workspace(
         self,
@@ -55,19 +84,20 @@ class FileHypothesisRepository:
         artifact = HypothesisArtifact.from_hypothesis(hypothesis)
         content = (artifact.model_dump_json(indent=2) + "\n").encode("utf-8")
         try:
-            _ensure_workspace_ignore(prepared_root)
             with open_directory_chain(
                 prepared_root,
-                (".workspace", "hypotheses"),
+                (".workspace",),
                 create=True,
-            ) as directory:
-                publish_idempotent(
-                    directory,
-                    f"{hypothesis.id.value}.json",
-                    content,
-                    maximum_bytes=_HYPOTHESIS_LIMIT_BYTES,
-                    subject=hypothesis.id.value,
-                )
+            ) as workspace:
+                _publish_workspace_ignore(workspace)
+                with open_child_directory(workspace, "hypotheses", create=True) as directory:
+                    publish_idempotent(
+                        directory,
+                        f"{hypothesis.id.value}.json",
+                        content,
+                        maximum_bytes=_HYPOTHESIS_LIMIT_BYTES,
+                        subject=hypothesis.id.value,
+                    )
         except SafeFileFailure as error:
             raise _storage_failure(error, hypothesis.id.value) from None
         except OSError:
@@ -106,15 +136,14 @@ def _require_regular_target(root: Path, relative: Path) -> None:
         raise HypothesisFailure(HypothesisErrorCode.INVALID_TARGET, relative.as_posix())
 
 
-def _ensure_workspace_ignore(root: Path) -> None:
-    with open_directory_chain(root, (".workspace",), create=True) as workspace:
-        publish_idempotent(
-            workspace,
-            ".gitignore",
-            b"*\n",
-            maximum_bytes=16,
-            subject=".workspace",
-        )
+def _publish_workspace_ignore(workspace: int) -> None:
+    publish_idempotent(
+        workspace,
+        ".gitignore",
+        b"*\n",
+        maximum_bytes=16,
+        subject=".workspace",
+    )
 
 
 def _git(root: Path, *arguments: str) -> str:

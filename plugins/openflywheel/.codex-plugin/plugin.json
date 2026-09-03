@@ -1,6 +1,6 @@
 {
   "name": "openflywheel",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Prepare ITSM-bench workspaces and record evidence-backed harness hypotheses.",
   "author": {
     "name": "OpenFlyWheel"

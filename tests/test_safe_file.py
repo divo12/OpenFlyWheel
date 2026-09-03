@@ -10,10 +10,41 @@ import pytest
 from ofw.safe_file import (
     SafeFileErrorCode,
     SafeFileFailure,
+    open_child_directory,
     open_directory,
     publish_idempotent,
     read_bounded,
 )
+
+
+def test_child_directory_swap_is_detected_without_redirecting_publication(
+    tmp_path: Path,
+) -> None:
+    parent_path = tmp_path / "parent"
+    child_path = parent_path / "child"
+    moved_path = parent_path / "moved"
+    replacement_path = parent_path / "replacement"
+    child_path.mkdir(parents=True)
+    replacement_path.mkdir()
+
+    with (
+        pytest.raises(SafeFileFailure) as raised,
+        open_directory(parent_path) as parent,
+        open_child_directory(parent, "child", create=False) as child,
+    ):
+        child_path.rename(moved_path)
+        replacement_path.rename(child_path)
+        publish_idempotent(
+            child,
+            "artifact.json",
+            b"{}\n",
+            maximum_bytes=16,
+            subject="artifact",
+        )
+
+    assert raised.value.code is SafeFileErrorCode.DIRECTORY_CHANGED
+    assert not (child_path / "artifact.json").exists()
+    assert (moved_path / "artifact.json").read_bytes() == b"{}\n"
 
 
 def test_regular_file_reader_rejects_device() -> None:

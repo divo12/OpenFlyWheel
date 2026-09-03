@@ -41,6 +41,18 @@ def open_directory(path: Path) -> Iterator[int]:
 
 
 @contextmanager
+def open_child_directory(parent: int, name: str, *, create: bool) -> Iterator[int]:
+    """Open one child directory and reject replacement while its descriptor is in use."""
+    descriptor = _open_child(parent, name, create=create)
+    try:
+        _require_child_identity(parent, name, descriptor)
+        yield descriptor
+        _require_child_identity(parent, name, descriptor)
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
 def open_directory_chain(
     root: Path,
     parts: tuple[str, ...],

@@ -35,12 +35,13 @@ from ofw.preparation.policy import (
     build_experiment_policy,
 )
 
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
+_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
 
 class _PreparationStateWire(StrictModel):
     schema_version: int = Field(default=2, ge=2, le=2)
-    request_digest: str = Field(pattern=r"sha256:[0-9a-f]{64}")
+    request_digest: str = Field(pattern=_DIGEST_PATTERN)
     phase: PreparationPhase
     branch_name: str
     worktree_path: Path
@@ -51,7 +52,7 @@ class _PreparationStateWire(StrictModel):
     log_path: Path
     model: str = Field(min_length=1, max_length=256)
     task_ids: tuple[str, ...] = Field(min_length=1, max_length=500)
-    benchmark_config_digest: str = Field(pattern=r"sha256:[0-9a-f]{64}")
+    benchmark_config_digest: str = Field(pattern=_DIGEST_PATTERN)
     verifier: str = Field(min_length=1, max_length=128)
     environment: str = Field(min_length=1, max_length=128)
     policy_published: bool = False

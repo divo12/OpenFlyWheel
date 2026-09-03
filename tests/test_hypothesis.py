@@ -13,10 +13,17 @@ from pydantic import ValidationError
 
 from ofw.contracts import ComponentKind
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
+from ofw.evaluation.failure_curation import (
+    FailureCurationArtifact,
+    FailureCurationService,
+    FailureGroupInput,
+    RecordFailureCurationInput,
+)
 from ofw.evaluation.failure_patterns import FailurePatternMiningService, failure_pattern_id
 from ofw.evaluation.failure_workspace import (
     FailedOutcomeInput,
     FailureWorkspaceService,
+    FileFailureCurationWorkspace,
     FileFailureWorkspace,
     RecordFailureInput,
 )
@@ -152,11 +159,49 @@ def _service() -> HypothesisService:
     )
 
 
-def _request(root: Path, commit: str, artifacts: tuple[str, ...]) -> RecordHypothesisInput:
+def _curation(root: Path, artifacts: tuple[str, ...]) -> tuple[str, str]:
+    observation = FailureCurationService(FileFailureCurationWorkspace()).record(
+        RecordFailureCurationInput(
+            workspace_root=root,
+            source_artifact_ids=artifacts,
+            groups=(
+                FailureGroupInput(
+                    pattern_key="premature-completion",
+                    title="Premature completion",
+                    mechanism="The agent finalizes before verification.",
+                    prevention="Require verification before completion.",
+                    target_component=ComponentKind.PROMPT,
+                    failure_artifact_ids=artifacts,
+                ),
+            ),
+            deferred=(),
+        )
+    )
+    artifact = FailureCurationArtifact.model_validate_json(
+        (root / observation.relative_path).read_text(encoding="utf-8")
+    )
+    return observation.curation_id, artifact.groups[0].group_id
+
+
+def _request(
+    root: Path,
+    commit: str,
+    artifacts: tuple[str, ...],
+    *,
+    curation_artifacts: tuple[str, ...] | None = None,
+) -> RecordHypothesisInput:
+    selected_curation_artifacts = curation_artifacts or artifacts
+    if len(selected_curation_artifacts) >= 2:
+        curation_id, curation_group_id = _curation(root, selected_curation_artifacts)
+    else:
+        curation_id = "00000000-0000-0000-0000-000000000010"
+        curation_group_id = "00000000-0000-0000-0000-000000000011"
     return RecordHypothesisInput(
         workspace_root=root,
         experiment_id="experiment-one",
         source_commit=commit,
+        curation_id=curation_id,
+        curation_group_id=curation_group_id,
         patterns=(
             FailurePatternReferenceInput(
                 pattern_id=failure_pattern_id(
@@ -185,6 +230,8 @@ def _with_patterns(
         workspace_root=request.workspace_root,
         experiment_id=request.experiment_id,
         source_commit=request.source_commit,
+        curation_id=request.curation_id,
+        curation_group_id=request.curation_group_id,
         patterns=patterns,
         statement=request.statement,
         rationale=request.rationale,
@@ -202,10 +249,31 @@ def _with_target(
         workspace_root=request.workspace_root,
         experiment_id=request.experiment_id,
         source_commit=request.source_commit,
+        curation_id=request.curation_id,
+        curation_group_id=request.curation_group_id,
         patterns=request.patterns,
         statement=request.statement,
         rationale=request.rationale,
         target=target,
+        expected_effect=request.expected_effect,
+        regression_risks=request.regression_risks,
+    )
+
+
+def _with_curation_group(
+    request: RecordHypothesisInput,
+    curation_group_id: str,
+) -> RecordHypothesisInput:
+    return RecordHypothesisInput(
+        workspace_root=request.workspace_root,
+        experiment_id=request.experiment_id,
+        source_commit=request.source_commit,
+        curation_id=request.curation_id,
+        curation_group_id=curation_group_id,
+        patterns=request.patterns,
+        statement=request.statement,
+        rationale=request.rationale,
+        target=request.target,
         expected_effect=request.expected_effect,
         regression_risks=request.regression_risks,
     )
@@ -238,6 +306,8 @@ def test_record_hypothesis_recomputes_evidence_and_is_deterministic(tmp_path: Pa
     assert first == repeated
     assert first.status is HypothesisStatus.SUCCESS
     assert first.source_commit == commit
+    assert first.curation_id == request.curation_id
+    assert first.curation_group_id == request.curation_group_id
     assert first.pattern_count == 1
     assert first.diagnosis_count == 2
     assert first.target_paths == (Path("prompt.md"),)
@@ -271,7 +341,8 @@ def test_hypothesis_fails_closed_on_inexact_evidence(tmp_path: Path, case: str) 
     other = _diagnosis(root, "3", root_cause="The tool result is ignored after mutation.")
     inconclusive = _diagnosis(root, "4", supported=False)
     artifacts = _evidence_case(case, first, second, other, inconclusive)
-    request = _request(root, commit, artifacts)
+    curation_artifacts = (first, other) if case == "misassigned" else (first, second)
+    request = _request(root, commit, artifacts, curation_artifacts=curation_artifacts)
     if case == "misassigned":
         request = _with_patterns(
             request,
@@ -297,9 +368,9 @@ def test_hypothesis_fails_closed_on_inexact_evidence(tmp_path: Path, case: str) 
         _service().record(request)
 
     expected = (
-        HypothesisErrorCode.INCONCLUSIVE_EVIDENCE
-        if case == "inconclusive"
-        else HypothesisErrorCode.PATTERN_EVIDENCE_MISMATCH
+        HypothesisErrorCode.PATTERN_EVIDENCE_MISMATCH
+        if case == "misassigned"
+        else HypothesisErrorCode.CURATION_EVIDENCE_MISMATCH
     )
     assert raised.value.code is expected
 
@@ -340,6 +411,7 @@ def test_hypothesis_rejects_stale_or_drifted_workspace(tmp_path: Path, drift: st
 def test_hypothesis_rejects_semantically_tampered_diagnosis(tmp_path: Path) -> None:
     root, commit = _workspace(tmp_path)
     artifacts = (_diagnosis(root, "1"), _diagnosis(root, "2"))
+    request = _request(root, commit, artifacts)
     path = root / ".workspace/failures" / f"{artifacts[0]}.json"
     content = path.read_text(encoding="utf-8")
     path.write_text(
@@ -351,7 +423,7 @@ def test_hypothesis_rejects_semantically_tampered_diagnosis(tmp_path: Path) -> N
     )
 
     with pytest.raises(HypothesisFailure) as raised:
-        _service().record(_request(root, commit, artifacts))
+        _service().record(request)
 
     assert raised.value.code is HypothesisErrorCode.PATTERN_EVIDENCE_MISMATCH
 
@@ -414,6 +486,8 @@ def test_hypothesis_input_rejects_duplicates_escapes_empty_and_extra_fields(tmp_
             workspace_root=request.workspace_root,
             experiment_id=request.experiment_id,
             source_commit=request.source_commit,
+            curation_id=request.curation_id,
+            curation_group_id=request.curation_group_id,
             patterns=request.patterns,
             statement=request.statement,
             rationale=request.rationale,
@@ -423,12 +497,67 @@ def test_hypothesis_input_rejects_duplicates_escapes_empty_and_extra_fields(tmp_
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    (
+        ("experiment_id", "Xexperiment-one!"),
+        ("source_commit", "x" + "1" * 40 + "y"),
+        ("curation_id", "x00000000-0000-0000-0000-000000000001y"),
+        ("curation_group_id", "x00000000-0000-0000-0000-000000000002y"),
+    ),
+)
+def test_hypothesis_input_rejects_prefixed_and_suffixed_identifiers(
+    tmp_path: Path,
+    field: str,
+    malformed: str,
+) -> None:
+    root, commit = _workspace(tmp_path)
+    artifact = _diagnosis(root, "1")
+    request = _request(root, commit, (artifact,))
+    originals: dict[str, str] = {
+        "experiment_id": request.experiment_id,
+        "source_commit": request.source_commit,
+        "curation_id": request.curation_id,
+        "curation_group_id": request.curation_group_id,
+    }
+    payload = request.model_dump_json().replace(
+        f'"{field}":"{originals[field]}"',
+        f'"{field}":"{malformed}"',
+    )
+
+    with pytest.raises(ValidationError, match=field):
+        RecordHypothesisInput.model_validate_json(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    (
+        ("pattern_id", "xsha256:" + "1" * 64 + "y"),
+        ("diagnosis_artifact_ids", ("x00000000-0000-0000-0000-000000000001y",)),
+    ),
+)
+def test_pattern_reference_rejects_prefixed_and_suffixed_identifiers(
+    field: str,
+    malformed: str | tuple[str, ...],
+) -> None:
+    payload: dict[str, str | tuple[str, ...]] = {
+        "pattern_id": "sha256:" + "1" * 64,
+        "diagnosis_artifact_ids": ("00000000-0000-0000-0000-000000000001",),
+    }
+    payload[field] = malformed
+
+    with pytest.raises(ValidationError):
+        FailurePatternReferenceInput.model_validate(payload)
+
+
 def test_hypothesis_input_accepts_its_exact_global_maximum() -> None:
     artifacts = tuple(f"00000000-0000-0000-0000-{index:012x}" for index in range(50))
     request = RecordHypothesisInput(
         workspace_root=Path("/prepared"),
         experiment_id="maximum",
         source_commit="1" * 40,
+        curation_id="00000000-0000-0000-0000-000000000001",
+        curation_group_id="00000000-0000-0000-0000-000000000002",
         patterns=(
             FailurePatternReferenceInput(
                 pattern_id="sha256:" + "1" * 64,
@@ -448,6 +577,78 @@ def test_hypothesis_input_accepts_its_exact_global_maximum() -> None:
     assert len(request.patterns[0].diagnosis_artifact_ids) == 50
     assert len(request.target.relative_paths) == 50
     assert len(request.regression_risks) == 10
+
+
+def test_hypothesis_rejects_an_incomplete_curation_group(tmp_path: Path) -> None:
+    root, commit = _workspace(tmp_path)
+    first = _diagnosis(root, "1")
+    second = _diagnosis(root, "2")
+    request = _request(root, commit, (first, second))
+    incomplete = _with_patterns(
+        request,
+        (
+            FailurePatternReferenceInput(
+                pattern_id=request.patterns[0].pattern_id,
+                diagnosis_artifact_ids=(first,),
+            ),
+        ),
+    )
+
+    with pytest.raises(HypothesisFailure) as raised:
+        _service().record(incomplete)
+
+    assert raised.value.code is HypothesisErrorCode.CURATION_EVIDENCE_MISMATCH
+
+
+def test_hypothesis_rejects_a_missing_curation_group(tmp_path: Path) -> None:
+    root, commit = _workspace(tmp_path)
+    artifacts = (_diagnosis(root, "1"), _diagnosis(root, "2"))
+    request = _with_curation_group(
+        _request(root, commit, artifacts),
+        "00000000-0000-0000-0000-000000000099",
+    )
+
+    with pytest.raises(HypothesisFailure) as raised:
+        _service().record(request)
+
+    assert raised.value.code is HypothesisErrorCode.CURATION_GROUP_NOT_FOUND
+
+
+def test_hypothesis_rejects_a_target_outside_the_curated_component(tmp_path: Path) -> None:
+    root, commit = _workspace(tmp_path)
+    artifacts = (_diagnosis(root, "1"), _diagnosis(root, "2"))
+    request = _with_target(
+        _request(root, commit, artifacts),
+        HarnessChangeTargetInput(
+            component_kind=ComponentKind.TOOL,
+            relative_paths=(Path("prompt.md"),),
+        ),
+    )
+
+    with pytest.raises(HypothesisFailure) as raised:
+        _service().record(request)
+
+    assert raised.value.code is HypothesisErrorCode.CURATION_EVIDENCE_MISMATCH
+
+
+def test_hypothesis_rejects_a_tampered_curation_receipt(tmp_path: Path) -> None:
+    root, commit = _workspace(tmp_path)
+    artifacts = (_diagnosis(root, "1"), _diagnosis(root, "2"))
+    request = _request(root, commit, artifacts)
+    path = root / ".workspace/failure-curations" / f"{request.curation_id}.json"
+    content = path.read_text(encoding="utf-8")
+    path.write_text(
+        content.replace(
+            "The agent finalizes before verification.",
+            "The curation was changed after recording.",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HypothesisFailure) as raised:
+        _service().record(request)
+
+    assert raised.value.code is HypothesisErrorCode.CURATION_INVALID
 
 
 def test_hypothesis_missing_policy_is_typed(tmp_path: Path) -> None:

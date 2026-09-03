@@ -9,9 +9,9 @@ from typing import Annotated, Protocol
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
-_EXPERIMENT_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
-_REF_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._/@-]*"
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
+_EXPERIMENT_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+_REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/@-]*$"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
 
 
 def _normalized_score(value: object) -> float:

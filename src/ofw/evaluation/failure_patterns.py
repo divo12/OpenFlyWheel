@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ofw.evaluation.failure import FailureDiagnosis, FailureEvidenceStatus, FailureType
 
 _ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-_PATTERN_ID_PATTERN = r"sha256:[0-9a-f]{64}"
+_PATTERN_ID_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _ABSOLUTE_PATH = re.compile(r"(?:/[\w.+-]+){2,}")
 _OPAQUE_ID = re.compile(
     r"\b(?:(?:request|trace|span|observation|score|session|run)(?:[_-]?id)?|rq)"

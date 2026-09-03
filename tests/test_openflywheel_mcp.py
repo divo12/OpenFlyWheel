@@ -79,6 +79,7 @@ from ofw.preparation import (
 _FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
 _SECOND_FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
 _CURATION_ID = "00000000-0000-0000-0000-000000000003"
+_CURATION_GROUP_ID = "00000000-0000-0000-0000-000000000004"
 _PATTERN_ID = "sha256:" + "1" * 64
 _HYPOTHESIS_ID = "sha256:" + "2" * 64
 _COMMIT = "1" * 40
@@ -340,6 +341,8 @@ def _hypothesis_request(root: Path) -> RecordHypothesisInput:
         workspace_root=root,
         experiment_id="experiment-one",
         source_commit=_COMMIT,
+        curation_id=_CURATION_ID,
+        curation_group_id=_CURATION_GROUP_ID,
         patterns=(
             FailurePatternReferenceInput(
                 pattern_id=_PATTERN_ID,
@@ -367,6 +370,8 @@ def _hypothesis_observation() -> HypothesisObservation:
         hypothesis_id=_HYPOTHESIS_ID,
         experiment_id="experiment-one",
         source_commit=_COMMIT,
+        curation_id=_CURATION_ID,
+        curation_group_id=_CURATION_GROUP_ID,
         relative_path=relative_path,
         pattern_count=1,
         diagnosis_count=1,

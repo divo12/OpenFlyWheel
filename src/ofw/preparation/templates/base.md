@@ -48,8 +48,8 @@ State the failure pattern, supporting trace and verifier evidence, proposed harn
 expected improvement, and possible regressions. Stop if the evidence cannot distinguish
 between materially different changes.
 
-Use `$hypothesis-former` with only exact supported pattern and diagnosis receipt IDs, then call
-`record_hypothesis`. Retain the stable hypothesis receipt and stop before candidate editing.
+Use `$hypothesis-former` with one curation receipt and group ID plus every exact supported
+pattern and diagnosis receipt ID in that group, then call `record_hypothesis`. Retain the stable hypothesis receipt and stop before candidate editing.
 Candidate editing requires a later package and must not begin in this prepared program.
 
 ## Package boundary

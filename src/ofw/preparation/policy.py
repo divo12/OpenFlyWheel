@@ -34,9 +34,9 @@ from ofw.safe_file import (
 )
 
 _POLICY_LIMIT_BYTES = 256 * 1024
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
-_DIGEST_PATTERN = r"sha256:[0-9a-f]{64}"
-_TASK_ID_PATTERN = r"[^\x00]+"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
+_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
+_TASK_ID_PATTERN = r"^[^\x00]+$"
 TaskIds = Annotated[
     tuple[Annotated[str, Field(min_length=1, max_length=256, pattern=_TASK_ID_PATTERN)], ...],
     Field(min_length=1, max_length=500),

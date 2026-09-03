@@ -178,6 +178,34 @@ def test_policy_schema_rejects_extra_fields_and_tampered_controls(tmp_path: Path
         ExperimentPolicySnapshot.model_validate_json(escaped)
 
 
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    (
+        ("base_commit", "x" + "1" * 40 + "y"),
+        ("initialization_commit", "x" + "2" * 40 + "y"),
+        ("benchmark_config_digest", "xsha256:" + "3" * 64 + "y"),
+    ),
+)
+def test_policy_schema_rejects_prefixed_and_suffixed_identifiers(
+    tmp_path: Path,
+    field: str,
+    malformed: str,
+) -> None:
+    _, policy = _snapshot(tmp_path)
+    originals: dict[str, str] = {
+        "base_commit": policy.base_commit,
+        "initialization_commit": policy.initialization_commit,
+        "benchmark_config_digest": policy.benchmark_config_digest,
+    }
+    payload = policy.model_dump_json().replace(
+        f'"{field}":"{originals[field]}"',
+        f'"{field}":"{malformed}"',
+    )
+
+    with pytest.raises(ValidationError, match=field):
+        ExperimentPolicySnapshot.model_validate_json(payload)
+
+
 def test_policy_publish_is_atomic_idempotent_and_conflict_detecting(tmp_path: Path) -> None:
     root, policy = _snapshot(tmp_path)
     control = _control_directory(root)
