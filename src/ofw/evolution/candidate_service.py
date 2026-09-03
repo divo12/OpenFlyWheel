@@ -72,6 +72,7 @@ class _CandidateState(StrictModel):
     deadline_at: datetime | None = None
     outcome_receipts: tuple[CandidateOutcomeReceipt, ...] = Field(max_length=500)
     blockers: tuple[CandidateBlocker, ...] = Field(max_length=500)
+    error_code: CandidateErrorCode | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +118,8 @@ class CandidateExecutionService:
                 return self._prepare(request, policy, hypothesis, control)
             _validate_state(request, policy, state)
             self._workspace.validate_accepted(request.workspace_root, policy, hypothesis)
+            if state.phase is CandidatePhase.FAILED:
+                return _persisted_failure_observation(request, state)
             if state.phase is CandidatePhase.COMPLETE:
                 return _complete_observation(request, state)
             if state.phase is CandidatePhase.RUNNING:
@@ -201,7 +204,13 @@ class CandidateExecutionService:
             policy.max_baseline_seconds,
         )
         _write_state(control, running)
-        process_id = self._runner.start(run)
+        try:
+            process_id = self._runner.start(run)
+        except PreparationFailure as error:
+            failure = _runner_failure(error)
+            failed = _failed_state(running, failure.code)
+            _write_state(control, failed)
+            return _persisted_failure_observation(request, failed)
         launched = _running_state(
             state,
             candidate_id,
@@ -228,7 +237,10 @@ class CandidateExecutionService:
         run = _run_from_state(request, state, controls)
         summary = self._runner.summarize(run)
         if summary is None:
-            _require_before_deadline(state)
+            if _deadline_expired(state):
+                failed = _failed_state(state, CandidateErrorCode.CANDIDATE_TIMEOUT)
+                _write_state(control, failed)
+                return _persisted_failure_observation(request, failed)
             return _running_observation(request, state)
         reduction = _record_outcomes(
             summary,
@@ -496,6 +508,28 @@ def _complete_state(state: _CandidateState, reduction: _OutcomeReduction) -> _Ca
     )
 
 
+def _failed_state(state: _CandidateState, code: CandidateErrorCode) -> _CandidateState:
+    return _CandidateState(
+        request_digest=state.request_digest,
+        phase=CandidatePhase.FAILED,
+        source_commit=state.source_commit,
+        policy_digest=state.policy_digest,
+        controls_digest=state.controls_digest,
+        worktree_path=state.worktree_path,
+        candidate_id=state.candidate_id,
+        candidate_tree=state.candidate_tree,
+        candidate_commit=state.candidate_commit,
+        job_path=state.job_path,
+        log_path=state.log_path,
+        process_id=state.process_id,
+        started_at=state.started_at,
+        deadline_at=state.deadline_at,
+        outcome_receipts=state.outcome_receipts,
+        blockers=state.blockers,
+        error_code=code,
+    )
+
+
 def _validate_state(
     request: CandidateExecutionInput,
     policy: ExperimentPolicySnapshot,
@@ -509,9 +543,8 @@ def _validate_state(
         raise CandidateFailure(CandidateErrorCode.CONTROLS_DRIFT, request.experiment_id)
 
 
-def _require_before_deadline(state: _CandidateState) -> None:
-    if state.deadline_at is not None and datetime.now(UTC) > state.deadline_at:
-        raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, "candidate_timeout")
+def _deadline_expired(state: _CandidateState) -> bool:
+    return state.deadline_at is not None and datetime.now(UTC) > state.deadline_at
 
 
 def _editing_observation(
@@ -568,7 +601,7 @@ def _complete_observation(
     failures = sum(item.verdict is VerifierVerdict.FAIL for item in state.outcome_receipts)
     terminal = len(state.outcome_receipts) + len(state.blockers)
     return CandidateExecutionObservation(
-        status=CandidateStatus.SUCCESS,
+        status=CandidateStatus.WARNING if state.blockers else CandidateStatus.SUCCESS,
         summary="The candidate run is complete with authoritative outcome receipts.",
         next_actions=("Retain the candidate and outcome receipts for the admission gate.",),
         artifacts=_artifacts(state),
@@ -606,6 +639,32 @@ def _failure_observation(
         outcome_receipts=(),
         blockers=(),
         error_code=error.code,
+    )
+
+
+def _persisted_failure_observation(
+    request: CandidateExecutionInput,
+    state: _CandidateState,
+) -> CandidateExecutionObservation:
+    code = state.error_code or CandidateErrorCode.INVALID_RESULT
+    return CandidateExecutionObservation(
+        status=CandidateStatus.ERROR,
+        summary=f"Candidate execution stopped: {code.value}.",
+        next_actions=("Retain the terminal candidate failure receipt.",),
+        artifacts=_artifacts(state),
+        phase=CandidatePhase.FAILED,
+        experiment_id=request.experiment_id,
+        hypothesis_id=request.hypothesis_id,
+        source_commit=state.source_commit,
+        candidate_id=state.candidate_id,
+        candidate_tree=state.candidate_tree,
+        candidate_commit=state.candidate_commit,
+        worktree_path=state.worktree_path,
+        job_path=state.job_path,
+        session_id=state.candidate_id,
+        outcome_receipts=state.outcome_receipts,
+        blockers=state.blockers,
+        error_code=code,
     )
 
 

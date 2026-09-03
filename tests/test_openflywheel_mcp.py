@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -103,7 +104,7 @@ class OpenFlywheelMcpModule(Protocol):
 
     def _hypothesis_service(self) -> HypothesisService: ...
 
-    def _candidate_service(self) -> CandidateExecutionService: ...
+    def _candidate_service(self) -> AbstractContextManager[CandidateExecutionService]: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -230,14 +231,12 @@ class _FakeHypothesisService:
         return self.observation
 
 
-class _FakeCandidateService:
-    def __init__(self, observation: CandidateExecutionObservation) -> None:
-        self.observation = observation
-        self.requests: list[CandidateExecutionInput] = []
+class _FakeTraceClient:
+    def __init__(self) -> None:
+        self.close_count = 0
 
-    def execute(self, request: CandidateExecutionInput) -> CandidateExecutionObservation:
-        self.requests.append(request)
-        return self.observation
+    def close(self) -> None:
+        self.close_count += 1
 
 
 def _module() -> OpenFlywheelMcpModule:
@@ -781,9 +780,24 @@ def test_execute_candidate_passes_one_strict_object_to_the_service(
         outcome_receipts=(),
         blockers=(),
     )
-    service = _FakeCandidateService(expected)
-    monkeypatch.setattr(module, "_candidate_service", lambda: service)
+    client = _FakeTraceClient()
+    store = _FakeOutcomeStore()
+    requests: list[CandidateExecutionInput] = []
+
+    def execute(
+        service: CandidateExecutionService,
+        candidate_request: CandidateExecutionInput,
+    ) -> CandidateExecutionObservation:
+        del service
+        requests.append(candidate_request)
+        return expected
+
+    monkeypatch.setattr(module, "_client", lambda: client)
+    monkeypatch.setattr(module, "_outcome_store", lambda: store)
+    monkeypatch.setattr(CandidateExecutionService, "execute", execute)
 
     assert module.execute_candidate(request) == expected
-    assert service.requests == [request]
+    assert requests == [request]
+    assert client.close_count == 1
+    assert store.close_count == 1
     assert CandidateExecutionInput.model_validate(_json_request(request)) == request

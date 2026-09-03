@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from enum import StrEnum
 from importlib.resources import files
@@ -175,15 +176,23 @@ def _hypothesis_service() -> HypothesisService:
     )
 
 
-def _candidate_service() -> CandidateExecutionService:
+@contextmanager
+def _candidate_service() -> Iterator[CandidateExecutionService]:
     client = _client()
-    return CandidateExecutionService(
-        workspace=CandidateGitGateway(),
-        hypotheses=FileHypothesisRepository(),
-        runner=HarborExperimentRunner(),
-        trace_locator=LangfuseCandidateTraceLocator(client),
-        outcome_store=_outcome_store(),
-    )
+    try:
+        store = _outcome_store()
+        try:
+            yield CandidateExecutionService(
+                workspace=CandidateGitGateway(),
+                hypotheses=FileHypothesisRepository(),
+                runner=HarborExperimentRunner(),
+                trace_locator=LangfuseCandidateTraceLocator(client),
+                outcome_store=store,
+            )
+        finally:
+            store.close()
+    finally:
+        client.close()
 
 
 def _program_template(name: str) -> str:
@@ -338,7 +347,8 @@ def execute_candidate(
     request: CandidateExecutionInput,
 ) -> CandidateExecutionObservation:
     """Create, seal, launch, or poll one exact hypothesis candidate."""
-    return _candidate_service().execute(request)
+    with _candidate_service() as service:
+        return service.execute(request)
 
 
 def main() -> None:

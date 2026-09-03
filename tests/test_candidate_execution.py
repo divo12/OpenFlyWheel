@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import ofw.evolution.candidate_service as candidate_service_module
 from ofw.contracts import ComponentKind, Sha256Digest
 from ofw.evaluation.langfuse import OutcomeScoreSubmission
 from ofw.evaluation.outcome import OutcomeEvaluation
@@ -33,6 +35,7 @@ from ofw.evolution.hypothesis import (
     FailurePatternReference,
     HarnessChangeTarget,
     HarnessHypothesis,
+    HypothesisArtifact,
     HypothesisId,
 )
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
@@ -143,6 +146,10 @@ def _authority(tmp_path: Path) -> tuple[Path, ExperimentPolicySnapshot, HarnessH
         expected_effect="The agent verifies completion.",
         regression_risks=(),
     )
+    hypothesis = replace(
+        hypothesis,
+        id=HypothesisArtifact.from_hypothesis(hypothesis).recomputed_id(),
+    )
     control = root / ".git/ofw/preparations/experiment-one"
     control.mkdir(parents=True)
     FileExperimentPolicyRepository().publish(control, policy)
@@ -156,6 +163,8 @@ class _FakeRunner:
         self.runs: list[ExperimentRun] = []
         self.summary: ExperimentSummary | None = None
         self.failure: PreparationFailure | None = None
+        self.start_failure: PreparationFailure | None = None
+        self.start_count = 0
 
     def validate(
         self,
@@ -168,6 +177,9 @@ class _FakeRunner:
         return self.controls
 
     def start(self, run: ExperimentRun) -> int:
+        self.start_count += 1
+        if self.start_failure is not None:
+            raise self.start_failure
         self.runs.append(run)
         return 123
 
@@ -326,6 +338,14 @@ def test_candidate_id_changes_when_any_authority_input_changes() -> None:
         assert CandidateId.build(**changed) != baseline
 
 
+@pytest.mark.parametrize("trace_id", ("", "invalid trace", "x" * 257))
+def test_trace_match_rejects_invalid_trace_identifiers(trace_id: str) -> None:
+    with pytest.raises(CandidateFailure) as raised:
+        TraceMatch(trace_id=trace_id, blocker=None)
+
+    assert raised.value.code is CandidateErrorCode.INVALID_RESULT
+
+
 def test_candidate_input_rejects_extra_relative_and_escaped_paths(tmp_path: Path) -> None:
     root, _, hypothesis = _authority(tmp_path)
     request = _candidate_request(tmp_path, root, hypothesis)
@@ -419,6 +439,23 @@ def test_candidate_git_gateway_rechecks_the_tree_before_commit(tmp_path: Path) -
 
     assert raised.value.code is CandidateErrorCode.STALE_COMMIT
     assert _git(workspace.worktree_path, "rev-parse", "HEAD") == policy.initialization_commit
+
+
+def test_candidate_git_gateway_rejects_hard_linked_targets(tmp_path: Path) -> None:
+    root, policy, hypothesis = _authority(tmp_path)
+    parent = tmp_path / "candidates"
+    parent.mkdir()
+    gateway = CandidateGitGateway()
+    workspace = gateway.prepare(root, parent, policy, hypothesis)
+    candidate_target = workspace.worktree_path / "prompt.md"
+    candidate_target.unlink()
+    os.link(root / "prompt.md", candidate_target)
+    candidate_target.write_text("shared mutation\n")
+
+    with pytest.raises(CandidateFailure) as raised:
+        gateway.inspect(workspace, policy, hypothesis)
+
+    assert raised.value.code is CandidateErrorCode.UNSAFE_PATH
 
 
 @pytest.mark.parametrize(
@@ -711,6 +748,72 @@ def test_candidate_service_sanitizes_missing_runtime_credentials(tmp_path: Path)
     assert "secret" not in rejected.summary
 
 
+def test_candidate_service_persists_a_terminal_launch_failure(tmp_path: Path) -> None:
+    root, policy, hypothesis = _authority(tmp_path)
+    (tmp_path / "candidates").mkdir()
+    request = _candidate_request(tmp_path, root, hypothesis)
+    runner = _FakeRunner(_controls(policy))
+    runner.start_failure = PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "harbor")
+    service = CandidateExecutionService(
+        workspace=CandidateGitGateway(),
+        hypotheses=FileHypothesisRepository(),
+        runner=runner,
+        trace_locator=_FakeTraceLocator(),
+        outcome_store=_FakeOutcomeStore(),
+    )
+    editing = service.execute(request)
+    assert editing.worktree_path is not None
+    (editing.worktree_path / "prompt.md").write_text("changed\n")
+
+    failed = service.execute(request)
+    repeated = service.execute(request)
+
+    assert failed == repeated
+    assert failed.phase is CandidatePhase.FAILED
+    assert failed.error_code is CandidateErrorCode.LAUNCH_FAILED
+    assert failed.candidate_commit is not None
+    assert runner.start_count == 1
+
+
+def test_candidate_service_persists_timeout_and_ignores_late_results(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, policy, hypothesis = _authority(tmp_path)
+    (tmp_path / "candidates").mkdir()
+    request = _candidate_request(tmp_path, root, hypothesis)
+    runner = _FakeRunner(_controls(policy))
+    outcomes = _FakeOutcomeStore()
+    service = CandidateExecutionService(
+        workspace=CandidateGitGateway(),
+        hypotheses=FileHypothesisRepository(),
+        runner=runner,
+        trace_locator=_FakeTraceLocator(),
+        outcome_store=outcomes,
+    )
+    editing = service.execute(request)
+    assert editing.worktree_path is not None
+    (editing.worktree_path / "prompt.md").write_text("changed\n")
+    running = service.execute(request)
+    assert running.phase is CandidatePhase.RUNNING
+
+    class _ExpiredDateTime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> _ExpiredDateTime:
+            del tz
+            return cls(2100, 1, 1, tzinfo=UTC)
+
+    monkeypatch.setattr(candidate_service_module, "datetime", _ExpiredDateTime)
+    timed_out = service.execute(request)
+    runner.summary = ExperimentSummary(())
+    repeated = service.execute(request)
+
+    assert timed_out == repeated
+    assert timed_out.phase is CandidatePhase.FAILED
+    assert timed_out.error_code is CandidateErrorCode.CANDIDATE_TIMEOUT
+    assert outcomes.outcomes == []
+
+
 def test_candidate_service_rejects_a_missing_hypothesis_receipt(tmp_path: Path) -> None:
     root, policy, hypothesis = _authority(tmp_path)
     request = _candidate_request(tmp_path, root, hypothesis)
@@ -816,6 +919,7 @@ def test_candidate_service_keeps_unsupported_and_ambiguous_trials_unverified(
     complete = service.execute(request)
 
     assert complete.outcome_receipts == ()
+    assert complete.status is CandidateStatus.WARNING
     assert tuple(blocker.code for blocker in complete.blockers) == (
         CandidateBlockerCode.UNSUPPORTED_REWARD,
         CandidateBlockerCode.TRACE_AMBIGUOUS,

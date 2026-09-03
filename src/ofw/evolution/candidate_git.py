@@ -223,7 +223,7 @@ def _require_regular_path(root: Path, relative: Path) -> None:
         path.resolve(strict=True).relative_to(root.resolve(strict=True))
     except (OSError, ValueError):
         raise CandidateFailure(CandidateErrorCode.UNSAFE_PATH, relative.as_posix()) from None
-    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise CandidateFailure(CandidateErrorCode.UNSAFE_PATH, relative.as_posix())
 
 

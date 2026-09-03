@@ -73,6 +73,7 @@ class _HarborVerifierWire(_WireModel):
 
 
 class _HarborTrialResultWire(_WireModel):
+    task_id: str | None = None
     task_name: str | None = None
     task_checksum: str | None = None
     exception_info: JsonValue | None = None
@@ -201,7 +202,6 @@ class HarborBaselineRunner:
 
     def __init__(self) -> None:
         self._runner = HarborExperimentRunner()
-        self._controls: ExperimentControls | None = None
 
     def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
         controls = self._runner.validate(
@@ -216,7 +216,6 @@ class HarborBaselineRunner:
                 str(len(controls.task_ids)),
             )
         _credentials()
-        self._controls = controls
         return BaselineConfiguration(
             model=controls.model,
             task_ids=controls.task_ids,
@@ -226,9 +225,12 @@ class HarborBaselineRunner:
         )
 
     def start(self, run: BaselineRun) -> int:
-        if self._controls is None:
-            raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "controls")
-        return self._runner.start(_baseline_experiment_run(run, self._controls))
+        controls = self._runner.validate(
+            run.benchmark_root,
+            run.harbor_executable,
+            _relative_run_config(run.benchmark_root, run.harbor_config),
+        )
+        return self._runner.start(_baseline_experiment_run(run, controls))
 
     def summarize(self, run: BaselineRun) -> BaselineSummary | None:
         root = _finished_job_result(run.job_path)
@@ -405,27 +407,33 @@ def _experiment_trial(
     verifier = wire.verifier_result
     reward = None if verifier is None or verifier.rewards is None else verifier.rewards.reward
     verdict = None if verifier is None else verifier.verdict
-    return ExperimentTrial(
-        task_id=task_name,
-        task_checksum=task_checksum,
-        exception=wire.exception_info is not None,
-        verdict=verdict,
-        reward=reward,
-        started_at=execution.started_at,
-        finished_at=execution.finished_at,
-        evaluated_at=verifier_wire.finished_at,
-        evidence=(
-            f"harbor://{run.run_id}/{directory_name}/result.json",
-            f"harbor://{run.run_id}/{directory_name}/verifier",
-        ),
-    )
+    try:
+        return ExperimentTrial(
+            task_id=task_name,
+            task_checksum=task_checksum,
+            exception=wire.exception_info is not None,
+            verdict=verdict,
+            reward=reward,
+            started_at=execution.started_at,
+            finished_at=execution.finished_at,
+            evaluated_at=verifier_wire.finished_at,
+            evidence=(
+                f"harbor://{run.run_id}/{directory_name}/result.json",
+                f"harbor://{run.run_id}/{directory_name}/verifier",
+            ),
+        )
+    except ValueError:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "trial timestamps",
+        ) from None
 
 
 def _required_trial_fields(
     wire: _HarborTrialResultWire,
     directory_name: str,
 ) -> tuple[str, str, _HarborExecutionWire, _HarborVerifierWire]:
-    if wire.task_name is None:
+    if wire.task_id is None:
         raise _invalid_trial(directory_name)
     if wire.task_checksum is None:
         raise _invalid_trial(directory_name)
@@ -433,7 +441,7 @@ def _required_trial_fields(
         raise _invalid_trial(directory_name)
     if wire.verifier is None:
         raise _invalid_trial(directory_name)
-    return wire.task_name, wire.task_checksum, wire.agent_execution, wire.verifier
+    return wire.task_id, wire.task_checksum, wire.agent_execution, wire.verifier
 
 
 def _invalid_trial(directory_name: str) -> PreparationFailure:
@@ -517,12 +525,7 @@ def _process_environment(run: ExperimentRun) -> dict[str, str]:
 
 
 def _require_run_controls(runner: HarborExperimentRunner, run: ExperimentRun) -> None:
-    try:
-        relative_config = run.harbor_config.resolve(strict=True).relative_to(
-            run.benchmark_root.resolve(strict=True)
-        )
-    except (OSError, ValueError):
-        raise PreparationFailure(PreparationErrorCode.INVALID_HARBOR_CONFIG, "controls") from None
+    relative_config = _relative_run_config(run.benchmark_root, run.harbor_config)
     actual = runner.validate(
         run.benchmark_root,
         run.harbor_executable,
@@ -530,6 +533,13 @@ def _require_run_controls(runner: HarborExperimentRunner, run: ExperimentRun) ->
     )
     if actual != run.controls:
         raise PreparationFailure(PreparationErrorCode.INVALID_HARBOR_CONFIG, "controls")
+
+
+def _relative_run_config(benchmark_root: Path, harbor_config: Path) -> Path:
+    try:
+        return harbor_config.resolve(strict=True).relative_to(benchmark_root.resolve(strict=True))
+    except (OSError, ValueError):
+        raise PreparationFailure(PreparationErrorCode.INVALID_HARBOR_CONFIG, "controls") from None
 
 
 def _baseline_experiment_run(
