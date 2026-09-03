@@ -45,6 +45,10 @@ class _HarborTaskWire(_WireModel):
     path: str = Field(min_length=1, max_length=256)
 
 
+class _HarborTaskIdWire(_WireModel):
+    path: str = Field(min_length=1, max_length=256)
+
+
 class _HarborConfigWire(_WireModel):
     agents: tuple[_HarborAgentWire, ...] = Field(min_length=1, max_length=1)
     tasks: tuple[_HarborTaskWire, ...] = Field(min_length=1, max_length=500)
@@ -74,7 +78,7 @@ class _HarborVerifierWire(_WireModel):
 
 
 class _HarborTrialResultWire(_WireModel):
-    task_id: str | None = None
+    task_id: str | _HarborTaskIdWire | None = None
     task_checksum: str | None = None
     exception_info: JsonValue | None = None
     agent_execution: _HarborExecutionWire | None = None
@@ -443,15 +447,18 @@ def _required_trial_fields(
     wire: _HarborTrialResultWire,
     directory_name: str,
 ) -> tuple[str, str, _HarborExecutionWire, _HarborVerifierWire]:
-    if wire.task_id is None:
+    task_id = wire.task_id
+    if task_id is None:
         raise _invalid_trial(directory_name)
+    if isinstance(task_id, _HarborTaskIdWire):
+        task_id = task_id.path
     if wire.task_checksum is None:
         raise _invalid_trial(directory_name)
     if wire.agent_execution is None:
         raise _invalid_trial(directory_name)
     if wire.verifier is None:
         raise _invalid_trial(directory_name)
-    return wire.task_id, wire.task_checksum, wire.agent_execution, wire.verifier
+    return task_id, wire.task_checksum, wire.agent_execution, wire.verifier
 
 
 def _invalid_trial(directory_name: str) -> PreparationFailure:

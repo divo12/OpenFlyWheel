@@ -79,7 +79,7 @@ for index, reward in enumerate((1.0, 0.0), start=1):
     (trial / "verifier").mkdir(parents=True)
     (trial / "result.json").write_text(json.dumps({
         "task_name": f"display-{index}",
-        "task_id": f"task-{index}",
+        "task_id": {"path": f"task-{index}"},
         "task_checksum": f"checksum-{index}",
         "exception_info": None,
         "agent_execution": {
