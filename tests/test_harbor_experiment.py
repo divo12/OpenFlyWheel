@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import time
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -76,7 +76,8 @@ for index, reward in enumerate((1.0, 0.0), start=1):
     trial = root / f"task-{index}__trial"
     (trial / "verifier").mkdir(parents=True)
     (trial / "result.json").write_text(json.dumps({
-        "task_name": f"task-{index}",
+        "task_name": f"display-{index}",
+        "task_id": f"task-{index}",
         "task_checksum": f"checksum-{index}",
         "exception_info": None,
         "agent_execution": {
@@ -119,13 +120,9 @@ def test_generalized_harbor_runner_freezes_controls_environment_and_trials(
         session_id="sha256-" + "b" * 64,
         controls=controls,
     )
-    runner.start(run)
-    summary = None
-    for _ in range(100):
-        summary = runner.summarize(run)
-        if summary is not None:
-            break
-        time.sleep(0.01)
+    pid = runner.start(run)
+    waited, status = os.waitpid(pid, 0)
+    summary = runner.summarize(run)
 
     assert controls == ExperimentControls(
         model="openai/gpt-5.4-mini",
@@ -136,6 +133,8 @@ def test_generalized_harbor_runner_freezes_controls_environment_and_trials(
         concurrency=1,
         max_retries=0,
     )
+    assert waited == pid
+    assert os.waitstatus_to_exitcode(status) == 0
     assert isinstance(summary, ExperimentSummary)
     assert tuple(trial.task_id for trial in summary.trials) == ("task-1", "task-2")
     assert summary.trials[0].reward == 1.0
@@ -187,7 +186,7 @@ def test_generalized_harbor_runner_rechecks_controls_immediately_before_launch(
     assert not run.job_path.exists()
 
 
-def test_harbor_runners_reject_existing_jobs_and_unvalidated_baseline_launches(
+def test_harbor_rejects_existing_jobs_and_baseline_launch_recomputes_controls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -214,22 +213,91 @@ def test_harbor_runners_reject_existing_jobs_and_unvalidated_baseline_launches(
 
     with pytest.raises(PreparationFailure) as existing:
         experiment.start(run)
-    with pytest.raises(PreparationFailure) as unvalidated:
-        HarborBaselineRunner().start(
-            BaselineRun(
-                experiment_id="baseline",
-                benchmark_root=benchmark,
-                harbor_executable=executable,
-                harbor_config=config,
-                job_path=benchmark / "jobs/baseline",
-                log_path=tmp_path / "baseline.log",
-                worktree_path=source,
-                initialization_commit="a" * 40,
-            )
-        )
+    baseline_run = BaselineRun(
+        experiment_id="baseline",
+        benchmark_root=benchmark,
+        harbor_executable=executable,
+        harbor_config=config,
+        job_path=benchmark / "jobs/baseline",
+        log_path=tmp_path / "baseline.log",
+        worktree_path=source,
+        initialization_commit="a" * 40,
+    )
+    pid = HarborBaselineRunner().start(baseline_run)
+    waited, status = os.waitpid(pid, 0)
 
     assert existing.value.code is PreparationErrorCode.LAUNCH_FAILED
-    assert unvalidated.value.code is PreparationErrorCode.LAUNCH_FAILED
+    assert waited == pid
+    assert os.waitstatus_to_exitcode(status) == 0
+    assert baseline_run.job_path.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("started_at", "finished_at", "evaluated_at"),
+    (
+        (
+            "2026-09-02T10:01:00",
+            "2026-09-02T10:01:30Z",
+            "2026-09-02T10:01:31Z",
+        ),
+        (
+            "2026-09-02T10:01:30Z",
+            "2026-09-02T10:01:00Z",
+            "2026-09-02T10:01:31Z",
+        ),
+        (
+            "2026-09-02T10:01:00Z",
+            "2026-09-02T10:01:30Z",
+            "2026-09-02T10:01:29Z",
+        ),
+    ),
+)
+def test_generalized_harbor_runner_maps_invalid_trial_time_to_typed_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    started_at: str,
+    finished_at: str,
+    evaluated_at: str,
+) -> None:
+    benchmark, executable, config = _benchmark(tmp_path)
+    source = tmp_path / "candidate"
+    source.mkdir()
+    _credentials(monkeypatch)
+    runner = HarborExperimentRunner()
+    controls = runner.validate(benchmark, executable, config.relative_to(benchmark))
+    job = benchmark / "jobs/candidate-one"
+    trial = job / "task-1__trial"
+    trial.mkdir(parents=True)
+    (job / "result.json").write_text('{"finished_at":"2026-09-02T10:03:00Z","n_total_trials":1}')
+    (trial / "result.json").write_text(
+        f"""{{
+  "task_id": "task-1",
+  "task_name": "display name",
+  "task_checksum": "checksum-1",
+  "exception_info": null,
+  "agent_execution": {{"started_at": "{started_at}", "finished_at": "{finished_at}"}},
+  "verifier": {{"finished_at": "{evaluated_at}"}},
+  "verifier_result": {{"rewards": {{"reward": 1.0}}}}
+}}"""
+    )
+    run = ExperimentRun(
+        run_id="candidate-one",
+        benchmark_root=benchmark,
+        harbor_executable=executable,
+        harbor_config=config,
+        job_path=job,
+        log_path=tmp_path / "candidate.log",
+        source_root=source,
+        release="a" * 40,
+        session_id="candidate-session",
+        controls=controls,
+    )
+
+    with pytest.raises(PreparationFailure) as raised:
+        runner.summarize(run)
+
+    assert raised.value.code is PreparationErrorCode.INVALID_BASELINE_RESULT
+    assert raised.value.subject == "trial timestamps"
 
 
 def test_generalized_harbor_runner_rejects_trials_without_mapping_fields(

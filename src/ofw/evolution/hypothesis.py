@@ -214,6 +214,20 @@ class HypothesisArtifact(_HypothesisContent):
             regression_risks=self.regression_risks,
         )
 
+    def recomputed_id(self) -> HypothesisId:
+        return _hypothesis_id(
+            _HypothesisContent(
+                experiment_id=self.experiment_id,
+                source_commit=self.source_commit,
+                patterns=self.patterns,
+                statement=self.statement,
+                rationale=self.rationale,
+                target=self.target,
+                expected_effect=self.expected_effect,
+                regression_risks=self.regression_risks,
+            )
+        )
+
 
 class HypothesisStatus(StrEnum):
     SUCCESS = "success"
@@ -383,9 +397,7 @@ def _hypothesis(
     target = HarnessChangeTarget(request.target.component_kind, paths)
     risks = tuple(sorted(request.regression_risks))
     content = _content(request, patterns, target, risks)
-    hypothesis_id = HypothesisId(
-        f"sha256:{hashlib.sha256(content.model_dump_json().encode('utf-8')).hexdigest()}"
-    )
+    hypothesis_id = _hypothesis_id(content)
     return HarnessHypothesis(
         hypothesis_id,
         request.experiment_id,
@@ -397,6 +409,11 @@ def _hypothesis(
         request.expected_effect,
         risks,
     )
+
+
+def _hypothesis_id(content: _HypothesisContent) -> HypothesisId:
+    digest = hashlib.sha256(content.model_dump_json().encode("utf-8")).hexdigest()
+    return HypothesisId(f"sha256:{digest}")
 
 
 def _content(

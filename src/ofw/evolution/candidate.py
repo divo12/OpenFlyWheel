@@ -25,6 +25,7 @@ from ofw.preparation.contracts import (
 from ofw.preparation.policy import ExperimentPolicySnapshot
 
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]*")
 
 
 class _CandidateIdentity(StrictModel):
@@ -87,6 +88,7 @@ class CandidateErrorCode(StrEnum):
     REQUEST_CONFLICT = "request_conflict"
     MISSING_ENVIRONMENT = "missing_environment"
     LAUNCH_FAILED = "launch_failed"
+    CANDIDATE_TIMEOUT = "candidate_timeout"
     INVALID_RESULT = "invalid_result"
     OUTCOME_STORE_FAILED = "outcome_store_failed"
     GIT_FAILED = "git_failed"
@@ -222,6 +224,10 @@ class TraceMatch:
     def __post_init__(self) -> None:
         if (self.trace_id is None) == (self.blocker is None):
             raise ValueError("trace match requires exactly one result")
+        if self.trace_id is not None and (
+            len(self.trace_id) > 256 or _IDENTIFIER_PATTERN.fullmatch(self.trace_id) is None
+        ):
+            raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, "trace_id")
 
 
 class CandidateWorkspaceGateway(Protocol):

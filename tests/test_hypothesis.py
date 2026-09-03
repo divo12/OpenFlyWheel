@@ -484,6 +484,27 @@ def test_hypothesis_conflicting_existing_artifact_is_rejected(tmp_path: Path) ->
     assert raised.value.code is HypothesisErrorCode.HYPOTHESIS_CONFLICT
 
 
+def test_hypothesis_reload_rejects_content_tampering_under_the_original_id(
+    tmp_path: Path,
+) -> None:
+    root, commit = _workspace(tmp_path)
+    request = _request(root, commit, (_diagnosis(root, "1"), _diagnosis(root, "2")))
+    recorded = _service().record(request)
+    path = root / recorded.relative_path
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            request.statement,
+            "A different candidate target authority.",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(HypothesisFailure) as raised:
+        FileHypothesisRepository().load(root, recorded.hypothesis_id)
+
+    assert raised.value.code is HypothesisErrorCode.STALE_POLICY
+
+
 @pytest.mark.parametrize("kind", ("symlink", "fifo"))
 def test_hypothesis_rejects_non_regular_artifact_target(tmp_path: Path, kind: str) -> None:
     root, commit = _workspace(tmp_path)

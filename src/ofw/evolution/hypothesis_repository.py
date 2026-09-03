@@ -53,7 +53,10 @@ class FileHypothesisRepository:
             artifact = HypothesisArtifact.model_validate_json(content)
         except (FileNotFoundError, SafeFileFailure, ValidationError, ValueError, OSError):
             raise HypothesisFailure(HypothesisErrorCode.STALE_POLICY, hypothesis_id) from None
-        if artifact.hypothesis_id != hypothesis_id:
+        if (
+            artifact.hypothesis_id != hypothesis_id
+            or artifact.recomputed_id().value != hypothesis_id
+        ):
             raise HypothesisFailure(HypothesisErrorCode.STALE_POLICY, hypothesis_id)
         return artifact.to_hypothesis()
 

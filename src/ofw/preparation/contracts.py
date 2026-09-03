@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Protocol
@@ -243,6 +243,13 @@ class ExperimentTrial:
     finished_at: datetime
     evaluated_at: datetime
     evidence: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        timestamps = (self.started_at, self.finished_at, self.evaluated_at)
+        if any(value.utcoffset() != timedelta(0) for value in timestamps):
+            raise ValueError("trial timestamps must be UTC")
+        if self.started_at >= self.finished_at or self.finished_at > self.evaluated_at:
+            raise ValueError("trial timestamps must be ordered")
 
 
 @dataclass(frozen=True, slots=True)
