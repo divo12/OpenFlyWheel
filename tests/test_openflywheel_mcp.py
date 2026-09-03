@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -52,6 +53,11 @@ from ofw.evaluation.outcome import (
     VerifierVerdict,
 )
 from ofw.evolution import (
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateExecutionService,
+    CandidatePhase,
+    CandidateStatus,
     FailurePatternReferenceInput,
     HarnessChangeTargetInput,
     HypothesisObservation,
@@ -97,6 +103,8 @@ class OpenFlywheelMcpModule(Protocol):
     def _curation_service(self) -> FailureCurationService: ...
 
     def _hypothesis_service(self) -> HypothesisService: ...
+
+    def _candidate_service(self) -> AbstractContextManager[CandidateExecutionService]: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -155,6 +163,11 @@ class OpenFlywheelMcpModule(Protocol):
     ) -> FailureCurationObservation: ...
 
     def record_hypothesis(self, request: RecordHypothesisInput) -> HypothesisObservation: ...
+
+    def execute_candidate(
+        self,
+        request: CandidateExecutionInput,
+    ) -> CandidateExecutionObservation: ...
 
 
 class _FakeOutcomeStore:
@@ -216,6 +229,14 @@ class _FakeHypothesisService:
     def record(self, request: RecordHypothesisInput) -> HypothesisObservation:
         self.requests.append(request)
         return self.observation
+
+
+class _FakeTraceClient:
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
 
 
 def _module() -> OpenFlywheelMcpModule:
@@ -397,6 +418,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "mine_failure_patterns",
         "record_failure_curation",
         "record_hypothesis",
+        "execute_candidate",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -407,6 +429,7 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (False, False, True),
         (False, False, True),
         (True, False, True),
+        (False, False, True),
         (False, False, True),
         (False, False, True),
     )
@@ -728,3 +751,53 @@ def test_record_hypothesis_accepts_mcp_json_mapping(tmp_path: Path) -> None:
     request = _hypothesis_request(tmp_path)
 
     assert RecordHypothesisInput.model_validate(_json_request(request)) == request
+
+
+def test_execute_candidate_passes_one_strict_object_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    request = CandidateExecutionInput(
+        workspace_root=tmp_path / "accepted",
+        worktree_parent=tmp_path / "candidates",
+        benchmark_root=tmp_path / "benchmark",
+        harbor_executable=tmp_path / "harbor",
+        harbor_config=Path("config.json"),
+        experiment_id="experiment-one",
+        hypothesis_id=_HYPOTHESIS_ID,
+    )
+    expected = CandidateExecutionObservation(
+        status=CandidateStatus.WARNING,
+        summary="The isolated candidate worktree is ready for the hypothesis edit.",
+        next_actions=("Edit the candidate, then poll.",),
+        artifacts=(str(tmp_path / "candidate"),),
+        phase=CandidatePhase.EDITING,
+        experiment_id="experiment-one",
+        hypothesis_id=_HYPOTHESIS_ID,
+        source_commit=_COMMIT,
+        worktree_path=tmp_path / "candidate",
+        outcome_receipts=(),
+        blockers=(),
+    )
+    client = _FakeTraceClient()
+    store = _FakeOutcomeStore()
+    requests: list[CandidateExecutionInput] = []
+
+    def execute(
+        service: CandidateExecutionService,
+        candidate_request: CandidateExecutionInput,
+    ) -> CandidateExecutionObservation:
+        del service
+        requests.append(candidate_request)
+        return expected
+
+    monkeypatch.setattr(module, "_client", lambda: client)
+    monkeypatch.setattr(module, "_outcome_store", lambda: store)
+    monkeypatch.setattr(CandidateExecutionService, "execute", execute)
+
+    assert module.execute_candidate(request) == expected
+    assert requests == [request]
+    assert client.close_count == 1
+    assert store.close_count == 1
+    assert CandidateExecutionInput.model_validate(_json_request(request)) == request

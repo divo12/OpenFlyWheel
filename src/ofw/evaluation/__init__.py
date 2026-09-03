@@ -32,10 +32,14 @@ from ofw.evaluation.langfuse import (
     OutcomeStoreStatus,
 )
 from ofw.evaluation.outcome import (
+    EvaluatedRunBlocker,
+    EvaluatedRunReceipt,
+    EvaluatedTaskReceipt,
     EvidenceReference,
     OutcomeErrorCode,
     OutcomeEvaluation,
     OutcomeEvaluationError,
+    RunSide,
     TaskId,
     VerifierId,
     VerifierResult,
@@ -45,6 +49,9 @@ from ofw.evaluation.outcome import (
 __all__ = [
     "DeferredFailure",
     "EvidenceReference",
+    "EvaluatedRunBlocker",
+    "EvaluatedRunReceipt",
+    "EvaluatedTaskReceipt",
     "FailureCuration",
     "FailureCurationErrorCode",
     "FailureCurationFailure",
@@ -67,6 +74,7 @@ __all__ = [
     "OutcomeErrorCode",
     "OutcomeEvaluation",
     "OutcomeEvaluationError",
+    "RunSide",
     "OutcomeScoreSubmission",
     "OutcomeStoreObservation",
     "OutcomeStoreStatus",

@@ -223,6 +223,50 @@ class HypothesisArtifact(_HypothesisContent):
             regression_risks=hypothesis.regression_risks,
         )
 
+    def to_hypothesis(self) -> HarnessHypothesis:
+        return HarnessHypothesis(
+            id=HypothesisId(self.hypothesis_id),
+            experiment_id=self.experiment_id,
+            source_commit=self.source_commit,
+            curation_id=self.curation_id,
+            curation_group_id=self.curation_group_id,
+            predicted_task_ids=self.predicted_task_ids,
+            at_risk_task_ids=self.at_risk_task_ids,
+            patterns=tuple(
+                FailurePatternReference(
+                    pattern.pattern_id,
+                    pattern.diagnosis_artifact_ids,
+                )
+                for pattern in self.patterns
+            ),
+            statement=self.statement,
+            rationale=self.rationale,
+            target=HarnessChangeTarget(
+                self.target.component_kind,
+                self.target.relative_paths,
+            ),
+            expected_effect=self.expected_effect,
+            regression_risks=self.regression_risks,
+        )
+
+    def recomputed_id(self) -> HypothesisId:
+        return _hypothesis_id(
+            _HypothesisContent(
+                experiment_id=self.experiment_id,
+                source_commit=self.source_commit,
+                curation_id=self.curation_id,
+                curation_group_id=self.curation_group_id,
+                predicted_task_ids=self.predicted_task_ids,
+                at_risk_task_ids=self.at_risk_task_ids,
+                patterns=self.patterns,
+                statement=self.statement,
+                rationale=self.rationale,
+                target=self.target,
+                expected_effect=self.expected_effect,
+                regression_risks=self.regression_risks,
+            )
+        )
+
 
 class HypothesisStatus(StrEnum):
     SUCCESS = "success"
@@ -428,9 +472,7 @@ def _mine_patterns(
 ) -> FailurePatternMiningObservation:
     artifact_ids = tuple(
         sorted(
-            artifact_id
-            for pattern in patterns
-            for artifact_id in pattern.diagnosis_artifact_ids
+            artifact_id for pattern in patterns for artifact_id in pattern.diagnosis_artifact_ids
         )
     )
     try:
@@ -478,9 +520,7 @@ def _hypothesis(
     target = HarnessChangeTarget(request.target.component_kind, paths)
     risks = tuple(sorted(request.regression_risks))
     content = _content(request, patterns, target, risks)
-    hypothesis_id = HypothesisId(
-        f"sha256:{hashlib.sha256(content.model_dump_json().encode('utf-8')).hexdigest()}"
-    )
+    hypothesis_id = _hypothesis_id(content)
     return HarnessHypothesis(
         hypothesis_id,
         request.experiment_id,
@@ -496,6 +536,11 @@ def _hypothesis(
         request.expected_effect,
         risks,
     )
+
+
+def _hypothesis_id(content: _HypothesisContent) -> HypothesisId:
+    digest = hashlib.sha256(content.model_dump_json().encode("utf-8")).hexdigest()
+    return HypothesisId(f"sha256:{digest}")
 
 
 def _content(
