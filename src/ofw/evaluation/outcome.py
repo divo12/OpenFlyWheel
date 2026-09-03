@@ -66,9 +66,9 @@ class EvaluatedTaskReceipt(_ReceiptModel):
     score_id: StrictStr = Field(min_length=1, max_length=_IDENTIFIER_LIMIT)
     verdict: VerifierVerdict
     verifier_id: StrictStr = Field(min_length=1, max_length=_IDENTIFIER_LIMIT)
-    normalized_score: float | None
-    cost_usd: float | None
-    latency_seconds: float | None
+    normalized_score: float | None = None
+    cost_usd: float | None = None
+    latency_seconds: float | None = None
 
     @model_validator(mode="after")
     def validate_metrics(self) -> EvaluatedTaskReceipt:
