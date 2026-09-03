@@ -62,6 +62,8 @@ class HypothesisRepository:
             curation_id="00000000-0000-0000-0000-000000000001",
             curation_group_id="00000000-0000-0000-0000-000000000002",
             patterns=(),
+            predicted_task_ids=("task-1",),
+            at_risk_task_ids=(),
             statement="statement",
             rationale="rationale",
             target=HarnessChangeTarget(ComponentKind.SKILL, (Path("PROGRAM.md"),)),

@@ -50,7 +50,6 @@ from ofw.evaluation import (
 )
 from ofw.evolution import (
     AdvanceEvolutionInput,
-    CandidateBlocker,
     CandidateBlockerCode,
     CandidateErrorCode,
     CandidateExecutionInput,
