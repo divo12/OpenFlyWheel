@@ -212,11 +212,21 @@ def _partition_reasons(
 
 
 def _partition_is_valid(receipt: EvaluatedRunReceipt) -> bool:
-    task_ids = tuple(str(task_id) for task_id in receipt.task_ids)
-    result_ids = tuple(item.task_id for item in receipt.outcome_receipts) + tuple(
-        item.task_id for item in receipt.blockers
+    task_ids, outcome_ids, blocker_ids = _partition_values(receipt)
+    result_ids = outcome_ids + blocker_ids
+    if not _has_exact_partition(result_ids, task_ids):
+        return False
+    return _is_ordered(outcome_ids, task_ids) and _is_ordered(blocker_ids, task_ids)
+
+
+def _partition_values(
+    receipt: EvaluatedRunReceipt,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    return (
+        tuple(str(task_id) for task_id in receipt.task_ids),
+        tuple(item.task_id for item in receipt.outcome_receipts),
+        tuple(item.task_id for item in receipt.blockers),
     )
-    return _has_exact_partition(result_ids, task_ids) and _is_ordered(result_ids, task_ids)
 
 
 def _has_exact_partition(result_ids: tuple[str, ...], task_ids: tuple[str, ...]) -> bool:
@@ -340,10 +350,10 @@ def _cost_reason(
     accepted: EvaluatedRunReceipt,
     candidate: EvaluatedRunReceipt,
 ) -> PromotionReason | None:
-    if _has_missing_cost(accepted) or _has_missing_cost(candidate):
-        return PromotionReason.MISSING_COST
     if _exceeds_cost(candidate, limit):
         return PromotionReason.COST_LIMIT_EXCEEDED
+    if _has_missing_cost(accepted) or _has_missing_cost(candidate):
+        return PromotionReason.MISSING_COST
     return None
 
 
@@ -352,10 +362,10 @@ def _latency_reason(
     accepted: EvaluatedRunReceipt,
     candidate: EvaluatedRunReceipt,
 ) -> PromotionReason | None:
-    if _has_missing_latency(accepted) or _has_missing_latency(candidate):
-        return PromotionReason.MISSING_LATENCY
     if _exceeds_latency(candidate, limit):
         return PromotionReason.LATENCY_LIMIT_EXCEEDED
+    if _has_missing_latency(accepted) or _has_missing_latency(candidate):
+        return PromotionReason.MISSING_LATENCY
     return None
 
 
@@ -458,11 +468,15 @@ def _quality(receipt: EvaluatedRunReceipt) -> float:
 
 
 def _total_cost(receipt: EvaluatedRunReceipt) -> float | None:
+    if receipt.blockers:
+        return None
     values = tuple(item.cost_usd for item in receipt.outcome_receipts)
     return _total_metric(values)
 
 
 def _total_latency(receipt: EvaluatedRunReceipt) -> float | None:
+    if receipt.blockers:
+        return None
     values = tuple(item.latency_seconds for item in receipt.outcome_receipts)
     return _total_metric(values)
 
