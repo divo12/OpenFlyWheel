@@ -196,6 +196,7 @@ class BaselineRun:
     log_path: Path
     worktree_path: Path
     initialization_commit: str
+    controls: ExperimentControls
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,6 +7,7 @@ import pytest
 from ofw.preparation import (
     BaselineRun,
     BaselineSummary,
+    ExperimentControls,
     PreparationErrorCode,
     PreparationFailure,
 )
@@ -23,6 +24,15 @@ def _run(tmp_path: Path, job_path: Path) -> BaselineRun:
         log_path=tmp_path / "baseline.log",
         worktree_path=tmp_path / "worktree",
         initialization_commit="0" * 40,
+        controls=ExperimentControls(
+            model="openai/gpt-5.4-mini",
+            task_ids=(),
+            benchmark_config_digest="sha256:" + "0" * 64,
+            verifier="itsm-bench",
+            environment="itsm-bench",
+            concurrency=1,
+            max_retries=0,
+        ),
     )
 
 

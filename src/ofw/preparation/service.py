@@ -18,6 +18,7 @@ from ofw.preparation.contracts import (
     BaselineRun,
     BaselineRunner,
     BaselineSummary,
+    ExperimentControls,
     PreparationErrorCode,
     PreparationFailure,
     PreparationPhase,
@@ -359,6 +360,15 @@ def _run_from_state(
         log_path=state.log_path,
         worktree_path=state.worktree_path,
         initialization_commit=state.initialization_commit,
+        controls=ExperimentControls(
+            model=state.model,
+            task_ids=state.task_ids,
+            benchmark_config_digest=state.benchmark_config_digest,
+            verifier=state.verifier,
+            environment=state.environment,
+            concurrency=1,
+            max_retries=0,
+        ),
     )
 
 

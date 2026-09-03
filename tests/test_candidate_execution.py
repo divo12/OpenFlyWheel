@@ -165,6 +165,7 @@ class _FakeRunner:
         self.failure: PreparationFailure | None = None
         self.start_failure: PreparationFailure | None = None
         self.start_count = 0
+        self.cancelled: list[tuple[ExperimentRun, int | None]] = []
 
     def validate(
         self,
@@ -185,6 +186,9 @@ class _FakeRunner:
 
     def summarize(self, run: ExperimentRun) -> ExperimentSummary | None:
         return self.summary
+
+    def cancel(self, run: ExperimentRun, process_id: int | None) -> None:
+        self.cancelled.append((run, process_id))
 
 
 class _FakeTraceLocator:
@@ -811,6 +815,8 @@ def test_candidate_service_persists_timeout_and_ignores_late_results(
     assert timed_out == repeated
     assert timed_out.phase is CandidatePhase.FAILED
     assert timed_out.error_code is CandidateErrorCode.CANDIDATE_TIMEOUT
+    assert len(runner.cancelled) == 1
+    assert runner.cancelled[0][1] == 123
     assert outcomes.outcomes == []
 
 

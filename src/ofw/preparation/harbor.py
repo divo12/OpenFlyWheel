@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import signal
 import subprocess  # nosec B404
 from dataclasses import dataclass
 from datetime import datetime
@@ -192,6 +193,17 @@ class HarborExperimentRunner:
             )
         return ExperimentSummary(trials)
 
+    def cancel(self, run: ExperimentRun, process_id: int | None) -> None:
+        del run
+        if process_id is None:
+            return
+        try:
+            os.killpg(process_id, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "cancel") from error
+
 
 def _trial_ids(trials: tuple[ExperimentTrial, ...]) -> tuple[str, ...]:
     return tuple(trial.task_id for trial in trials)
@@ -225,12 +237,7 @@ class HarborBaselineRunner:
         )
 
     def start(self, run: BaselineRun) -> int:
-        controls = self._runner.validate(
-            run.benchmark_root,
-            run.harbor_executable,
-            _relative_run_config(run.benchmark_root, run.harbor_config),
-        )
-        return self._runner.start(_baseline_experiment_run(run, controls))
+        return self._runner.start(_baseline_experiment_run(run, run.controls))
 
     def summarize(self, run: BaselineRun) -> BaselineSummary | None:
         root = _finished_job_result(run.job_path)

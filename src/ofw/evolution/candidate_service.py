@@ -238,6 +238,7 @@ class CandidateExecutionService:
         summary = self._runner.summarize(run)
         if summary is None:
             if _deadline_expired(state):
+                self._runner.cancel(run, state.process_id)
                 failed = _failed_state(state, CandidateErrorCode.CANDIDATE_TIMEOUT)
                 _write_state(control, failed)
                 return _persisted_failure_observation(request, failed)
