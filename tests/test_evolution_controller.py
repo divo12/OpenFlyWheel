@@ -188,6 +188,20 @@ def test_accepted_candidate_is_stuck_until_publication_package(tmp_path: Path) -
     candidate_receipt = _receipt(
         "run-1", RunSide.CANDIDATE, "c" * 40, VerifierVerdict.PASS
     )
+    wrong_candidate = _receipt(
+        "run-wrong", RunSide.CANDIDATE, "a" * 40, VerifierVerdict.PASS
+    )
+    with pytest.raises(EvolutionControllerFailure) as raised:
+        controller.advance(
+            _request(
+                root,
+                "r5-wrong-candidate",
+                run_id=wrong_candidate.run_id,
+                evaluated_run_receipt=wrong_candidate,
+                candidate_receipt_id=wrong_candidate.receipt_id,
+            )
+        )
+    assert raised.value.code is EvolutionControllerErrorCode.STALE_RECEIPT
     running = controller.advance(
         _request(
             root,
@@ -198,6 +212,20 @@ def test_accepted_candidate_is_stuck_until_publication_package(tmp_path: Path) -
     )
     assert running.phase is EvolutionPhase.GATE_READY
     decision = decide_promotion(policy(), accepted_receipt, candidate_receipt)
+    wrong_accepted = _receipt(
+        "baseline", RunSide.ACCEPTED, "c" * 40, VerifierVerdict.FAIL
+    )
+    with pytest.raises(EvolutionControllerFailure) as raised:
+        controller.advance(
+            _request(
+                root,
+                "r6-wrong-accepted",
+                promotion_decision=decision,
+                evaluated_run_receipt=candidate_receipt,
+                accepted_run_receipt=wrong_accepted,
+            )
+        )
+    assert raised.value.code is EvolutionControllerErrorCode.STALE_RECEIPT
     with pytest.raises(EvolutionControllerFailure) as raised:
         controller.advance(
             _request(root, "r6-missing-receipts", promotion_decision=decision)

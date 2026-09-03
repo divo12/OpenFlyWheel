@@ -728,6 +728,10 @@ class EvolutionController:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.MISSING_INPUT, "gate_receipts"
             )
+        if accepted.evaluated_commit != state.accepted_commit:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.STALE_RECEIPT, accepted.receipt_id
+            )
         if candidate.receipt_id != state.candidate_receipt_id:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, candidate.receipt_id
@@ -913,8 +917,8 @@ def _run_values(
             or receipt.policy_digest != candidate_policy_digest(policy)
             or receipt.controls_digest != policy.controls_digest
             or (
-                state.candidate_commit is not None
-                and receipt.evaluated_commit != state.candidate_commit
+                state.candidate_commit is None
+                or receipt.evaluated_commit != state.candidate_commit
             )
         ):
             raise EvolutionControllerFailure(
