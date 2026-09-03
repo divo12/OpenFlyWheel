@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import signal
 import subprocess  # nosec B404
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ _MAX_RESULT_BYTES = 8 * 1024 * 1024
 _MAX_ADAPTER_BYTES = 512 * 1024
 _AGENT_NAME = "agents.ofw_hermes:OfwHermes"
 _SOURCE_ENVIRONMENT_NAME = "OFW_HERMES_SOURCE"
+_ELAPSED_PATTERN = re.compile(r"(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)")
 
 
 class _WireModel(BaseModel):
@@ -224,18 +226,10 @@ def _process_identity_matches(process_id: int, started_at: datetime | None) -> b
 
 
 def _parse_elapsed_seconds(value: str) -> int:
-    date_parts = value.split("-")
-    if len(date_parts) > 2:
+    match = _ELAPSED_PATTERN.fullmatch(value)
+    if match is None:
         raise ValueError("invalid process age")
-    days = int(date_parts[0]) if len(date_parts) == 2 else 0
-    clock_parts = tuple(int(part) for part in date_parts[-1].split(":"))
-    if len(clock_parts) == 2:
-        hours = 0
-        minutes, seconds = clock_parts
-    elif len(clock_parts) == 3:
-        hours, minutes, seconds = clock_parts
-    else:
-        raise ValueError("invalid process age")
+    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
 
 
