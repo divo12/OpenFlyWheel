@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -145,7 +146,7 @@ def test_accepted_candidate_is_stuck_until_publication_package(tmp_path: Path) -
     )
     assert running.phase is EvolutionPhase.GATE_READY
     decision = PromotionDecision(
-        decision_id="sha256:" + "d" * 64,
+        decision_id="sha256:" + hashlib.sha256(b"{}").hexdigest(),
         policy_digest=candidate_policy_digest(policy()),
         accepted_run_id="baseline",
         candidate_run_id="run-1",
@@ -176,6 +177,16 @@ def test_accepted_candidate_is_stuck_until_publication_package(tmp_path: Path) -
     with pytest.raises(EvolutionControllerFailure) as raised:
         controller.advance(_request(root, "r7", release_id="release-1"))
     assert raised.value.code is EvolutionControllerErrorCode.PUBLICATION_REQUIRED
+    with pytest.raises(EvolutionControllerFailure) as raised:
+        controller.advance(
+            _request(
+                root,
+                "r8",
+                action=EvolutionAdvanceAction.BLOCK,
+                blocker_reason="publication",
+            )
+        )
+    assert raised.value.code is EvolutionControllerErrorCode.PUBLICATION_REQUIRED
     assert (
         controller.status("experiment-one").phase is EvolutionPhase.AWAITING_PUBLICATION
     )
@@ -198,6 +209,8 @@ def test_explicit_stop_is_typed_and_terminal(tmp_path: Path) -> None:
 
 
 def test_input_and_workspace_boundaries_are_strict(tmp_path: Path) -> None:
+    with pytest.raises(EvolutionControllerFailure):
+        EvolutionController(workspace_root=Path("relative"))
     with pytest.raises(ValidationError):
         AdvanceEvolutionInput(
             workspace_root=Path("relative"),
@@ -323,7 +336,7 @@ def test_max_iterations_and_no_improvement_stops(tmp_path: Path) -> None:
         _request(root, "r5", run_id="run-1", candidate_receipt_id="sha256:" + "c" * 64)
     )
     decision = PromotionDecision(
-        decision_id="sha256:" + "d" * 64,
+        decision_id="sha256:" + hashlib.sha256(b"{}").hexdigest(),
         policy_digest=candidate_policy_digest(
             policy(max_iterations=1, no_improvement_limit=1)
         ),

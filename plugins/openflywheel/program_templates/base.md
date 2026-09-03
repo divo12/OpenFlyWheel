@@ -41,18 +41,12 @@ and ledger truth; never append events or perform generic transitions yourself.
    typed evidence; do not copy Langfuse trace payloads.
 2. Use `$hypothesis-former` and `record_hypothesis`, then pass the stable hypothesis receipt to
    `advance_evolution`.
-3. When the controller returns a candidate worktree, edit only its declared targets and use the
-   returned candidate worktree with `execute_candidate`; retain the candidate and evaluated run receipts.
+3. Call `execute_candidate` to create the candidate worktree, edit only its declared targets,
+   then call it again with the identical request; retain candidate and evaluated run receipts.
 4. Pass the existing `PromotionDecision` to `advance_evolution`. Accepted candidates remain
    `AwaitingPublication` until PR5; do not publish, merge, push, or install.
 
-The controller returns the required next action. Use bounded trace queries and the failure
-skills to retain only typed evidence; do not copy Langfuse trace payloads. Form one hypothesis
-with `$hypothesis-former` and `record_hypothesis`, then pass its receipt to `advance_evolution`.
-Call `execute_candidate` when requested, edit only its declared targets, and repeat the identical
-request. Pass the existing `PromotionDecision` to `advance_evolution`.
-
 ## Package boundary
 
-Report the hypothesis, candidate, commit, blocker, and outcome receipts. Stop before admission:
-do not gate, accept, merge, publish, push, or install the candidate.
+Report the hypothesis, candidate, commit, blocker, gate, and outcome receipts. Stop before
+publication: do not publish, merge, push, or install the candidate.

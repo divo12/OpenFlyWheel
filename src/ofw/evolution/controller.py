@@ -312,6 +312,14 @@ class EvolutionController:
         request: AdvanceEvolutionInput,
         state: _EvolutionState,
     ) -> EvolutionObservation | None:
+        if (
+            state.phase is EvolutionPhase.AWAITING_PUBLICATION
+            and request.action is EvolutionAdvanceAction.BLOCK
+        ):
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.PUBLICATION_REQUIRED,
+                request.experiment_id,
+            )
         if request.action is EvolutionAdvanceAction.STOP:
             return self._stop(request, state)
         if request.baseline_deadline_exceeded:
@@ -337,7 +345,7 @@ class EvolutionController:
         if state.phase is EvolutionPhase.AWAITING_CANDIDATE:
             return self._candidate(request, policy, state)
         if state.phase is EvolutionPhase.CANDIDATE_RUNNING:
-            return self._complete_run(request, state)
+            return self._complete_run(request, policy, state)
         return self._advance_gate_or_wait(request, policy, state)
 
     def _advance_gate_or_wait(
@@ -392,7 +400,7 @@ class EvolutionController:
         if state.phase is EvolutionPhase.CANDIDATE_RUNNING and (
             request.run_id is not None or request.evaluated_run_receipt is not None
         ):
-            return self._complete_run(request, state)
+            return self._complete_run(request, policy, state)
         return None
 
     def _policy(self, experiment_id: str) -> ExperimentPolicySnapshot:
@@ -502,7 +510,23 @@ class EvolutionController:
         state: _EvolutionState,
     ) -> EvolutionObservation:
         if request.candidate_workspace_id is not None:
+            if request.action not in (
+                EvolutionAdvanceAction.AUTO,
+                EvolutionAdvanceAction.PREPARE_CANDIDATE,
+            ):
+                raise EvolutionControllerFailure(
+                    EvolutionControllerErrorCode.INVALID_TRANSITION,
+                    state.phase.value,
+                )
             return self._prepare_candidate(request, policy, state)
+        if request.action not in (
+            EvolutionAdvanceAction.AUTO,
+            EvolutionAdvanceAction.SUBMIT_CANDIDATE,
+        ):
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.INVALID_TRANSITION,
+                state.phase.value,
+            )
         return self._submit_candidate(request, state)
 
     def _prepare_candidate(
@@ -527,7 +551,9 @@ class EvolutionController:
                 request, state, EvolutionStopReason.MAX_ITERATIONS
             )
         source_commit = state.accepted_commit or policy.initialization_commit
-        source_content_id = state.accepted_content_id or _content_identity(source_commit)
+        source_content_id = state.accepted_content_id or _content_identity(
+            source_commit
+        )
         key = _operation_key(
             request.experiment_id, "candidate-prepare", state.iteration
         )
@@ -548,7 +574,7 @@ class EvolutionController:
     def _ensure_candidate_intent(
         self, request: AdvanceEvolutionInput, key: str, target: str
     ) -> None:
-        events = self._ledger.events(self._workspace_root, request.experiment_id)
+        events = self._events(request.experiment_id)
         intent = _find_intent(events, key, ExternalOperation.CANDIDATE)
         if intent is not None and intent.target != target:
             raise EvolutionControllerFailure(
@@ -593,18 +619,20 @@ class EvolutionController:
     def _complete_run(
         self,
         request: AdvanceEvolutionInput,
+        policy: ExperimentPolicySnapshot,
         state: _EvolutionState,
     ) -> EvolutionObservation:
-        run_id, receipt_id = self._run_details(request, state)
+        run_id, receipt_id = self._run_details(request, policy, state)
         return self._record_run(request, state, run_id, receipt_id)
 
     def _run_details(
         self,
         request: AdvanceEvolutionInput,
+        policy: ExperimentPolicySnapshot,
         state: _EvolutionState,
     ) -> tuple[str, str]:
         self._validate_run_action(request, state)
-        run_id, receipt_id = _run_values(request)
+        run_id, receipt_id = _run_values(request, policy, state)
         if state.run_id is not None and state.run_id != run_id:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, run_id
@@ -638,7 +666,7 @@ class EvolutionController:
         receipt_id: str,
     ) -> EvolutionObservation:
         key = _operation_key(request.experiment_id, "harbor", state.iteration)
-        events = self._ledger.events(self._workspace_root, request.experiment_id)
+        events = self._events(request.experiment_id)
         intent = _find_intent(events, key, ExternalOperation.HARBOR)
         if intent is not None and intent.target != run_id:
             raise EvolutionControllerFailure(
@@ -709,6 +737,10 @@ class EvolutionController:
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, decision.decision_id
             )
+        if decision.decision_id != decision.recomputed_id():
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.STALE_RECEIPT, decision.decision_id
+            )
 
     def _finish_decision(
         self,
@@ -753,9 +785,7 @@ class EvolutionController:
         )
         rejects = sum(
             1
-            for event in self._ledger.events(
-                self._workspace_root, request.experiment_id
-            )
+            for event in self._events(request.experiment_id)
             if event.event_type is EvolutionEventType.CANDIDATE_REJECTED
         )
         return self._finish_rejection(request, policy, state, reasons, rejects)
@@ -837,24 +867,41 @@ class EvolutionController:
         event_type: EvolutionEventType,
         payload: EvolutionEventPayload,
     ) -> EvolutionEvent:
-        return self._ledger.append(
-            self._workspace_root,
-            EvolutionEventDraft(
-                event_type=event_type,
-                experiment_id=request.experiment_id,
-                payload=payload,
-                occurred_at=request.requested_at,
-                causation_id=request.request_id,
-                correlation_id=request.request_id,
-                request_digest=request.digest(),
-            ),
-        )
+        try:
+            return self._ledger.append(
+                self._workspace_root,
+                EvolutionEventDraft(
+                    event_type=event_type,
+                    experiment_id=request.experiment_id,
+                    payload=payload,
+                    occurred_at=request.requested_at,
+                    causation_id=request.request_id,
+                    correlation_id=request.request_id,
+                    request_digest=request.digest(),
+                ),
+            )
+        except EvolutionLedgerFailure as error:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.LEDGER_INVALID, request.experiment_id
+            ) from error
 
 
-def _run_values(request: AdvanceEvolutionInput) -> tuple[str, str]:
+def _run_values(
+    request: AdvanceEvolutionInput,
+    policy: ExperimentPolicySnapshot,
+    state: _EvolutionState,
+) -> tuple[str, str]:
     receipt = request.evaluated_run_receipt
     if receipt is not None:
-        if receipt.side is not RunSide.CANDIDATE:
+        if (
+            receipt.side is not RunSide.CANDIDATE
+            or receipt.policy_digest != candidate_policy_digest(policy)
+            or receipt.controls_digest != policy.controls_digest
+            or (
+                state.candidate_commit is not None
+                and receipt.evaluated_commit != state.candidate_commit
+            )
+        ):
             raise EvolutionControllerFailure(
                 EvolutionControllerErrorCode.STALE_RECEIPT, receipt.receipt_id
             )
@@ -1039,7 +1086,7 @@ def _request_event(
     events: tuple[EvolutionEvent, ...], request_id: str
 ) -> EvolutionEvent | None:
     matches = tuple(event for event in events if event.causation_id == request_id)
-    return matches[0] if matches else None
+    return matches[-1] if matches else None
 
 
 def _find_intent(

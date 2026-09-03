@@ -241,6 +241,7 @@ def _control_directory(workspace_root: Path, experiment_id: str) -> Path:
 
 def experiment_control_directory(workspace_root: Path, experiment_id: str) -> Path:
     """Return the experiment directory in Git's common control area."""
+    _require_experiment_id(experiment_id)
     result = subprocess.run(
         ("git", "-C", str(workspace_root), "rev-parse", "--git-common-dir"),
         check=False,

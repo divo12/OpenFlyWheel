@@ -87,6 +87,7 @@ def test_empty_log_and_invalid_draft_inputs_are_handled(tmp_path: Path) -> None:
             event_id="sha256:" + "a" * 64,
             event_type=EvolutionEventType.EVOLUTION_STARTED,
             occurred_at=datetime(2026, 9, 3),
+            payload_digest="sha256:" + "a" * 64,
             payload=EvolutionStarted(policy_digest="sha256:" + "a" * 64),
         )
 
@@ -160,6 +161,7 @@ def test_invalid_workspace_and_payload_fail_closed(tmp_path: Path) -> None:
             event_id="sha256:" + "a" * 64,
             event_type=EvolutionEventType.EVOLUTION_STARTED,
             occurred_at=datetime(2026, 9, 3, tzinfo=UTC),
+            payload_digest="sha256:" + "a" * 64,
             payload=HypothesisLinked(
                 hypothesis_id="sha256:" + "a" * 64,
                 source_commit="a" * 40,
@@ -170,8 +172,8 @@ def test_invalid_workspace_and_payload_fail_closed(tmp_path: Path) -> None:
 def test_writer_owner_lock_is_exclusive(tmp_path: Path) -> None:
     root = _repo(tmp_path)
     ledger = FileEvolutionLedger()
-    ledger.append(root, _draft())
     lock = root / ".git" / "ofw" / "preparations" / "experiment-one" / ".evolution.lock"
+    lock.parent.mkdir(parents=True)
     lock.mkdir()
     with pytest.raises(EvolutionLedgerFailure) as raised:
         ledger.append(root, _draft("experiment-one"))

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
 import hashlib
 import os
 import re
 import stat
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -25,10 +26,8 @@ from ofw.preparation.policy import ExperimentPolicyFailure, experiment_control_d
 from ofw.safe_file import (
     SafeFileErrorCode,
     SafeFileFailure,
-    open_child_directory,
     open_directory_chain,
     read_bounded,
-    write_new_file,
 )
 
 _DIGEST = r"sha256:[0-9a-f]{64}"
@@ -217,6 +216,7 @@ class EvolutionEvent(StrictModel):
     causation_id: Identifier | None = None
     correlation_id: Identifier | None = None
     request_digest: Digest | None = None
+    payload_digest: Digest
     payload: EvolutionEventPayload
 
     @field_validator("occurred_at")
@@ -250,6 +250,12 @@ class EvolutionEvent(StrictModel):
                     raise ValueError("event payload does not match event_type")
                 return self
         raise ValueError("unknown event type")
+
+    @model_validator(mode="after")
+    def validate_payload_digest(self) -> EvolutionEvent:
+        if self.payload_digest != _digest(self.payload.model_dump_json()):
+            raise ValueError("payload_digest does not match payload")
+        return self
 
     def fingerprint(self) -> str:
         content = self.model_dump_json(exclude={"sequence", "event_id"})
@@ -287,10 +293,17 @@ class EvolutionEventDraft:
             causation_id=self.causation_id,
             correlation_id=self.correlation_id,
             request_digest=self.request_digest,
+            payload_digest=_digest(self.payload.model_dump_json()),
             payload=self.payload,
         )
         identity = _draft_identity(self, content)
-        event_id = self.event_id or _digest(identity)
+        computed_event_id = _digest(identity)
+        if self.event_id is not None and self.event_id != computed_event_id:
+            raise EvolutionLedgerFailure(
+                EvolutionLedgerErrorCode.EVENT_CONFLICT,
+                self.event_id,
+            )
+        event_id = computed_event_id
         return EvolutionEvent(
             experiment_id=content.experiment_id,
             sequence=content.sequence,
@@ -300,6 +313,7 @@ class EvolutionEventDraft:
             causation_id=content.causation_id,
             correlation_id=content.correlation_id,
             request_digest=content.request_digest,
+            payload_digest=content.payload_digest,
             payload=content.payload,
         )
 
@@ -426,42 +440,36 @@ def _writer(control: Path) -> Iterator[int]:
         ("ofw", "preparations", control.name),
         create=True,
     ) as directory:
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
         try:
-            os.mkdir(".evolution.lock", 0o700, dir_fd=directory)
-        except FileExistsError:
+            lock = os.open(".evolution.lock", flags, 0o600, dir_fd=directory)
+        except OSError:
             raise EvolutionLedgerFailure(
                 EvolutionLedgerErrorCode.BUSY, control.name
             ) from None
         token = uuid4().hex.encode("ascii")
         try:
-            with open_child_directory(
-                directory, ".evolution.lock", create=False
-            ) as lock:
-                write_new_file(lock, "owner", token)
-                if (
-                    read_bounded(lock, "owner", maximum_bytes=64, subject=control.name)
-                    != token
-                ):
-                    raise EvolutionLedgerFailure(
-                        EvolutionLedgerErrorCode.BUSY, control.name
-                    )
-                try:
-                    yield directory
-                    if (
-                        read_bounded(
-                            lock, "owner", maximum_bytes=64, subject=control.name
-                        )
-                        != token
-                    ):
-                        raise EvolutionLedgerFailure(
-                            EvolutionLedgerErrorCode.BUSY, control.name
-                        )
-                finally:
-                    with suppress(FileNotFoundError):
-                        os.unlink("owner", dir_fd=lock)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise EvolutionLedgerFailure(
+                    EvolutionLedgerErrorCode.BUSY, control.name
+                ) from None
+            os.ftruncate(lock, 0)
+            os.write(lock, token)
+            os.fsync(lock)
+            if os.pread(lock, 64, 0) != token:
+                raise EvolutionLedgerFailure(
+                    EvolutionLedgerErrorCode.BUSY, control.name
+                )
+            yield directory
+            if os.pread(lock, 64, 0) != token:
+                raise EvolutionLedgerFailure(
+                    EvolutionLedgerErrorCode.BUSY, control.name
+                )
         finally:
-            with suppress(FileNotFoundError):
-                os.rmdir(".evolution.lock", dir_fd=directory)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            os.close(lock)
             os.fsync(directory)
 
 
@@ -607,6 +615,12 @@ def _append_event(directory: int, event: EvolutionEvent) -> None:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise EvolutionLedgerFailure(
                 EvolutionLedgerErrorCode.INVALID_WORKSPACE,
+                event.experiment_id,
+                event.sequence - 1,
+            )
+        if os.fstat(descriptor).st_size + len(content) > _LEDGER_LIMIT_BYTES:
+            raise EvolutionLedgerFailure(
+                EvolutionLedgerErrorCode.LEDGER_TOO_LARGE,
                 event.experiment_id,
                 event.sequence - 1,
             )
