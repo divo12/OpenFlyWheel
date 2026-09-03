@@ -236,6 +236,12 @@ def _snapshot_from_content(content: _ExperimentPolicyContent) -> ExperimentPolic
 
 
 def _control_directory(workspace_root: Path, experiment_id: str) -> Path:
+    return experiment_control_directory(workspace_root, experiment_id)
+
+
+def experiment_control_directory(workspace_root: Path, experiment_id: str) -> Path:
+    """Return the experiment directory in Git's common control area."""
+    _require_experiment_id(experiment_id)
     result = subprocess.run(
         ("git", "-C", str(workspace_root), "rev-parse", "--git-common-dir"),
         check=False,

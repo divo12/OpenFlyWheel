@@ -67,6 +67,12 @@ class PromotionDecision:
     candidate_latency_seconds: float | None
     canonical_json: str
 
+    def recomputed_id(self) -> str:
+        """Return the identity of this immutable canonical gate decision."""
+        return (
+            f"sha256:{hashlib.sha256(self.canonical_json.encode('utf-8')).hexdigest()}"
+        )
+
 
 def decide_promotion(
     policy: ExperimentPolicySnapshot,
@@ -78,7 +84,9 @@ def decide_promotion(
     receipt_reasons = _receipt_reasons(policy, accepted_run, candidate_run)
     reasons = _ordered_reasons(identity_reasons + partition_reasons + receipt_reasons)
     if reasons:
-        return _decision(policy, accepted_run, candidate_run, PromotionStatus.INCONCLUSIVE, reasons)
+        return _decision(
+            policy, accepted_run, candidate_run, PromotionStatus.INCONCLUSIVE, reasons
+        )
 
     outcome_reasons = _outcome_reasons(accepted_run, candidate_run)
     metric_reasons = _metric_reasons(policy, accepted_run, candidate_run)
@@ -133,7 +141,9 @@ def _identity_reasons(
     candidate: EvaluatedRunReceipt,
 ) -> tuple[PromotionReason, ...]:
     expected_policy = candidate_policy_digest(policy)
-    mismatch = _authority_identity_mismatch(expected_policy, policy, accepted, candidate)
+    mismatch = _authority_identity_mismatch(
+        expected_policy, policy, accepted, candidate
+    )
     if not mismatch:
         mismatch = _run_identity_mismatch(accepted, candidate)
     return (PromotionReason.IDENTITY_MISMATCH,) if mismatch else ()
@@ -164,7 +174,10 @@ def _policy_identity_mismatch(
     accepted: EvaluatedRunReceipt,
     candidate: EvaluatedRunReceipt,
 ) -> bool:
-    return accepted.policy_digest != expected_policy or candidate.policy_digest != expected_policy
+    return (
+        accepted.policy_digest != expected_policy
+        or candidate.policy_digest != expected_policy
+    )
 
 
 def _controls_identity_mismatch(
@@ -182,7 +195,9 @@ def _side_identity_mismatch(
     accepted: EvaluatedRunReceipt,
     candidate: EvaluatedRunReceipt,
 ) -> bool:
-    return accepted.side is not RunSide.ACCEPTED or candidate.side is not RunSide.CANDIDATE
+    return (
+        accepted.side is not RunSide.ACCEPTED or candidate.side is not RunSide.CANDIDATE
+    )
 
 
 def _same_run(accepted: EvaluatedRunReceipt, candidate: EvaluatedRunReceipt) -> bool:
@@ -229,7 +244,9 @@ def _partition_values(
     )
 
 
-def _has_exact_partition(result_ids: tuple[str, ...], task_ids: tuple[str, ...]) -> bool:
+def _has_exact_partition(
+    result_ids: tuple[str, ...], task_ids: tuple[str, ...]
+) -> bool:
     return (
         len(result_ids) == len(task_ids)
         and len(set(result_ids)) == len(result_ids)
@@ -246,16 +263,23 @@ def _receipt_reasons(
     accepted: EvaluatedRunReceipt,
     candidate: EvaluatedRunReceipt,
 ) -> tuple[PromotionReason, ...]:
-    return _one_receipt_reasons(policy, accepted) + _one_receipt_reasons(policy, candidate)
+    return _one_receipt_reasons(policy, accepted) + _one_receipt_reasons(
+        policy, candidate
+    )
 
 
 def _one_receipt_reasons(
     policy: ExperimentPolicySnapshot,
     receipt: EvaluatedRunReceipt,
 ) -> tuple[PromotionReason, ...]:
-    if receipt.receipt_id != receipt.recomputed_id() or not _task_receipt_ids_unique(receipt):
+    if receipt.receipt_id != receipt.recomputed_id() or not _task_receipt_ids_unique(
+        receipt
+    ):
         return (PromotionReason.RECEIPT_MISMATCH,)
-    if any(not _task_receipt_is_valid(task, policy.verifier) for task in receipt.outcome_receipts):
+    if any(
+        not _task_receipt_is_valid(task, policy.verifier)
+        for task in receipt.outcome_receipts
+    ):
         return (PromotionReason.RECEIPT_MISMATCH,)
     return ()
 
@@ -263,7 +287,9 @@ def _one_receipt_reasons(
 def _task_receipt_ids_unique(receipt: EvaluatedRunReceipt) -> bool:
     score_ids = tuple(item.score_id for item in receipt.outcome_receipts)
     trace_ids = tuple(item.trace_id for item in receipt.outcome_receipts)
-    return len(score_ids) == len(set(score_ids)) and len(trace_ids) == len(set(trace_ids))
+    return len(score_ids) == len(set(score_ids)) and len(trace_ids) == len(
+        set(trace_ids)
+    )
 
 
 def _task_receipt_is_valid(task: EvaluatedTaskReceipt, verifier: str) -> bool:
@@ -386,7 +412,8 @@ def _has_missing_latency(receipt: EvaluatedRunReceipt) -> bool:
 
 def _exceeds_cost(receipt: EvaluatedRunReceipt, limit: float) -> bool:
     return any(
-        item.cost_usd is not None and item.cost_usd > limit for item in receipt.outcome_receipts
+        item.cost_usd is not None and item.cost_usd > limit
+        for item in receipt.outcome_receipts
     )
 
 
@@ -457,7 +484,9 @@ def _decision(
 
 def _passes(receipt: EvaluatedRunReceipt) -> tuple[str, ...]:
     return tuple(
-        item.task_id for item in receipt.outcome_receipts if item.verdict is VerifierVerdict.PASS
+        item.task_id
+        for item in receipt.outcome_receipts
+        if item.verdict is VerifierVerdict.PASS
     )
 
 
@@ -487,5 +516,7 @@ def _total_metric(values: tuple[float | None, ...]) -> float | None:
     return sum(value for value in values if value is not None)
 
 
-def _ordered_reasons(reasons: tuple[PromotionReason, ...]) -> tuple[PromotionReason, ...]:
+def _ordered_reasons(
+    reasons: tuple[PromotionReason, ...],
+) -> tuple[PromotionReason, ...]:
     return tuple(reason for reason in PromotionReason if reason in reasons)

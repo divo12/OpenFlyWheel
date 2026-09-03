@@ -23,6 +23,7 @@ from ofw.preparation.policy import (
     ExperimentPolicyFailure,
     ExperimentPolicySnapshot,
     FileExperimentPolicyRepository,
+    experiment_control_directory,
 )
 from ofw.preparation.service import WorkspacePreparationService
 
@@ -39,6 +40,7 @@ __all__ = [
     "ExperimentPolicyFailure",
     "ExperimentPolicySnapshot",
     "FileExperimentPolicyRepository",
+    "experiment_control_directory",
     "PreparationErrorCode",
     "PreparationFailure",
     "PreparationPhase",

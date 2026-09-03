@@ -419,6 +419,8 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "record_failure_curation",
         "record_hypothesis",
         "execute_candidate",
+        "evolution_status",
+        "advance_evolution",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -431,6 +433,8 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (True, False, True),
         (False, False, True),
         (False, False, True),
+        (False, False, True),
+        (True, False, True),
         (False, False, True),
     )
 

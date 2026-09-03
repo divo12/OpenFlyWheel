@@ -9,11 +9,12 @@ from contextlib import contextmanager
 from datetime import datetime
 from enum import StrEnum
 from importlib.resources import files
+from pathlib import Path
 from typing import Annotated, TypeVar
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from ofw.evaluation.failure_curation import (
     FailureCurationObservation,
@@ -46,10 +47,13 @@ from ofw.evaluation.outcome import (
     VerifierVerdict,
 )
 from ofw.evolution import (
+    AdvanceEvolutionInput,
     CandidateExecutionInput,
     CandidateExecutionObservation,
     CandidateExecutionService,
     CandidateGitGateway,
+    EvolutionController,
+    EvolutionObservation,
     FileHypothesisRepository,
     HypothesisObservation,
     HypothesisService,
@@ -88,10 +92,15 @@ SpanIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 CursorIdentifier = Annotated[str, Field(min_length=1, max_length=4096)]
 TracePageLimit = Annotated[int, Field(strict=True, ge=1, le=50)]
 TaskIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
+EvolutionExperimentIdentifier = Annotated[
+    str, Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+]
 VerifierIdentifier = Annotated[str, Field(min_length=1, max_length=256)]
 OutcomeScore = Annotated[float, Field(strict=True, ge=0.0, le=1.0)]
 EvidenceIdentifier = Annotated[str, Field(min_length=1, max_length=1024)]
-OutcomeEvidence = Annotated[tuple[EvidenceIdentifier, ...], Field(min_length=1, max_length=10)]
+OutcomeEvidence = Annotated[
+    tuple[EvidenceIdentifier, ...], Field(min_length=1, max_length=10)
+]
 
 server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped upstream.
     name="openflywheel",
@@ -137,6 +146,21 @@ def _project() -> LangfuseProject:
         environment=os.environ.get("LANGFUSE_ENVIRONMENT", "ofw-local"),
         allow_private_network=os.environ.get("LANGFUSE_ALLOW_PRIVATE_NETWORK") == "1",
     )
+
+
+def _bounded_absolute_path(value: object) -> Path:
+    if not isinstance(value, (str, Path)):
+        raise ValueError("workspace_root must be a path")
+    text = str(value)
+    if "\x00" in text or len(text.encode("utf-8")) > 1024:
+        raise ValueError("workspace_root must be bounded")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("workspace_root must be absolute")
+    return path
+
+
+EvolutionWorkspaceRoot = Annotated[Path, BeforeValidator(_bounded_absolute_path)]
 
 
 def _client() -> LangfuseHttpClient:
@@ -193,6 +217,10 @@ def _candidate_service() -> Iterator[CandidateExecutionService]:
             store.close()
     finally:
         client.close()
+
+
+def _evolution_controller(workspace_root: Path) -> EvolutionController:
+    return EvolutionController(workspace_root=workspace_root)
 
 
 def _program_template(name: str) -> str:
@@ -349,6 +377,21 @@ def execute_candidate(
     """Create, seal, launch, or poll one exact hypothesis candidate."""
     with _candidate_service() as service:
         return service.execute(request)
+
+
+@server.tool(annotations=read_only, structured_output=True)
+def evolution_status(
+    workspace_root: EvolutionWorkspaceRoot,
+    experiment_id: EvolutionExperimentIdentifier,
+) -> EvolutionObservation:
+    """Read the replayed evolution state without appending or mutating it."""
+    return _evolution_controller(workspace_root).status(experiment_id)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def advance_evolution(request: AdvanceEvolutionInput) -> EvolutionObservation:
+    """Advance one deterministic evolution action; identical requests are idempotent."""
+    return _evolution_controller(request.workspace_root).advance(request)
 
 
 def main() -> None:
