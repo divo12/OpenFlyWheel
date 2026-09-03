@@ -57,6 +57,24 @@ class _FailingRunner:
         return None
 
 
+class _AdoptingRunner:
+    def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
+        return BaselineConfiguration(
+            model="openai/gpt-5.4-mini",
+            task_ids=("task-pass", "task-fail"),
+            benchmark_config_digest="sha256:" + "1" * 64,
+            verifier="itsm-bench",
+            environment="itsm-bench",
+        )
+
+    def start(self, run: BaselineRun) -> int:
+        raise AssertionError(f"adopted baseline must not launch Harbor: {run.job_path}")
+
+    def summarize(self, run: BaselineRun) -> BaselineSummary | None:
+        assert run.job_path.name == "itsm-hermes-demo"
+        return BaselineSummary(2, 1, 1, 0, 0)
+
+
 def _git(root: Path, *arguments: str) -> str:
     return subprocess.run(
         ("git", "-C", str(root), *arguments),
@@ -175,6 +193,7 @@ def _request(
     *,
     goal: str = "Reach full ITSM verifier pass rate.",
     expected_task_count: int = 2,
+    reuse_existing_baseline: bool = False,
 ) -> PrepareWorkspaceInput:
     return PrepareWorkspaceInput(
         experiment_id="itsm-hermes-demo",
@@ -193,6 +212,7 @@ def _request(
         max_cost_per_task_usd=1.0,
         max_latency_seconds=600.0,
         max_baseline_seconds=60,
+        reuse_existing_baseline=reuse_existing_baseline,
     )
 
 
@@ -310,6 +330,46 @@ def test_prepare_workspace_creates_isolated_branch_commit_and_baseline(
 
     assert repeated == ready
     assert (benchmark_root / "invocations.txt").read_text(encoding="utf-8") == "run\n"
+
+
+def test_prepare_workspace_adopts_existing_terminal_baseline_without_launching(
+    tmp_path: Path,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(
+        harness_root,
+        worktree_parent,
+        benchmark_root,
+        harbor,
+        config,
+        reuse_existing_baseline=True,
+    )
+    job = benchmark_root / "jobs/itsm-hermes-demo"
+    job.mkdir(parents=True)
+    (job / "result.json").write_text('{"finished_at":"2026-08-27T20:01:02Z"}', encoding="utf-8")
+
+    service = WorkspacePreparationService(
+        runner=_AdoptingRunner(),
+        workspace=GitWorktreeGateway(),
+        base_program="# Base program\n",
+        itsm_program="## ITSM\n",
+    )
+
+    result = service.prepare(request)
+
+    assert result.status is PreparationStatus.SUCCESS
+    assert result.phase is PreparationPhase.READY
+    assert result.terminal_trials == 2
+    assert result.verifier_passes == 1
+    assert result.verifier_failures == 1
+    assert not (benchmark_root / "invocations.txt").exists()
+    policy = FileExperimentPolicyRepository().load(harness_root, request.experiment_id)
+    assert policy.task_ids == ("task-pass", "task-fail")
+    assert policy.baseline_reused is True
 
 
 def test_prepare_workspace_rejects_reused_id_with_different_configuration(

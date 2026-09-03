@@ -343,6 +343,8 @@ def _hypothesis_request(root: Path) -> RecordHypothesisInput:
         source_commit=_COMMIT,
         curation_id=_CURATION_ID,
         curation_group_id=_CURATION_GROUP_ID,
+        predicted_task_ids=("task-1",),
+        at_risk_task_ids=("task-2",),
         patterns=(
             FailurePatternReferenceInput(
                 pattern_id=_PATTERN_ID,
@@ -372,6 +374,8 @@ def _hypothesis_observation() -> HypothesisObservation:
         source_commit=_COMMIT,
         curation_id=_CURATION_ID,
         curation_group_id=_CURATION_GROUP_ID,
+        predicted_task_ids=("task-1",),
+        at_risk_task_ids=("task-2",),
         relative_path=relative_path,
         pattern_count=1,
         diagnosis_count=1,

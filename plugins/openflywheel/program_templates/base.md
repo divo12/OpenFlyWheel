@@ -8,7 +8,8 @@ Record one evidence-backed hypothesis for the connected agent harness under the 
 experiment policy, then stop before candidate editing.
 
 The baseline has already been recorded. Begin at step 2; do not rerun the unchanged
-baseline.
+baseline. Its provenance is recorded in the policy (`baseline_reused` is explicit when an
+existing terminal Harbor job was adopted).
 
 ## Authority
 
@@ -49,7 +50,8 @@ expected improvement, and possible regressions. Stop if the evidence cannot dist
 between materially different changes.
 
 Use `$hypothesis-former` with one curation receipt and group ID plus every exact supported
-pattern and diagnosis receipt ID in that group, then call `record_hypothesis`. Retain the stable hypothesis receipt and stop before candidate editing.
+pattern and diagnosis receipt ID in that group, explicit predicted task IDs, and at-risk task IDs, then call
+`record_hypothesis`. Retain the stable hypothesis receipt and stop before candidate editing.
 Candidate editing requires a later package and must not begin in this prepared program.
 
 ## Package boundary

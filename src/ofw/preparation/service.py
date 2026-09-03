@@ -55,6 +55,7 @@ class _PreparationStateWire(StrictModel):
     benchmark_config_digest: str = Field(pattern=_DIGEST_PATTERN)
     verifier: str = Field(min_length=1, max_length=128)
     environment: str = Field(min_length=1, max_length=128)
+    baseline_reused: bool = False
     policy_published: bool = False
     process_id: int | None = Field(default=None, strict=True, ge=1)
     started_at: datetime
@@ -133,7 +134,31 @@ class WorkspacePreparationService:
         )
         state = _initial_state(request, state_directory, digest, prepared, configuration)
         _write_state(state_directory, state)
+        if request.reuse_existing_baseline:
+            return self._adopt_existing(request, state_directory, state)
         return self._resume_start(request, state_directory, state)
+
+    def _adopt_existing(
+        self,
+        request: PrepareWorkspaceInput,
+        state_directory: Path,
+        state: _PreparationStateWire,
+    ) -> WorkspacePreparationObservation:
+        summary = self._runner.summarize(_run_from_state(request, state))
+        if summary is None:
+            raise PreparationFailure(
+                PreparationErrorCode.INVALID_BASELINE_RESULT,
+                "existing baseline",
+            )
+        _publish_policy(
+            state_directory,
+            request,
+            _prepared_from_state(state),
+            _configuration_from_state(state),
+        )
+        ready = _ready_state(_state_with_policy(state), summary, request.expected_task_count)
+        _write_state(state_directory, ready)
+        return _ready_observation(request, ready)
 
     def _resume_start(
         self,
@@ -176,9 +201,19 @@ class WorkspacePreparationService:
                 PreparationErrorCode.REQUEST_CONFLICT,
                 request.experiment_id,
             )
+        if state.baseline_reused:
+            return self._adopt_existing(request, state_directory, state)
         continuation = self._continue_existing(request, state_directory, state)
         if continuation is not None:
             return continuation
+        return self._poll_running_baseline(request, state_directory, state)
+
+    def _poll_running_baseline(
+        self,
+        request: PrepareWorkspaceInput,
+        state_directory: Path,
+        state: _PreparationStateWire,
+    ) -> WorkspacePreparationObservation:
         run = _run_from_state(request, state)
         summary = self._runner.summarize(run)
         if summary is not None:
@@ -267,6 +302,7 @@ def _initial_state(
         benchmark_config_digest=configuration.benchmark_config_digest,
         verifier=configuration.verifier,
         environment=configuration.environment,
+        baseline_reused=request.reuse_existing_baseline,
         started_at=started_at,
         deadline_at=started_at + timedelta(seconds=request.max_baseline_seconds),
     )
@@ -423,6 +459,7 @@ def _terminal_state(
         benchmark_config_digest=state.benchmark_config_digest,
         verifier=state.verifier,
         environment=state.environment,
+        baseline_reused=state.baseline_reused,
         policy_published=state.policy_published,
         process_id=state.process_id,
         started_at=state.started_at,
@@ -467,6 +504,7 @@ def _state_with_process(
         benchmark_config_digest=state.benchmark_config_digest,
         verifier=state.verifier,
         environment=state.environment,
+        baseline_reused=state.baseline_reused,
         policy_published=state.policy_published,
         process_id=process_id,
         started_at=state.started_at,
@@ -490,6 +528,7 @@ def _state_with_policy(state: _PreparationStateWire) -> _PreparationStateWire:
         benchmark_config_digest=state.benchmark_config_digest,
         verifier=state.verifier,
         environment=state.environment,
+        baseline_reused=state.baseline_reused,
         policy_published=True,
         process_id=state.process_id,
         started_at=state.started_at,

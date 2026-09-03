@@ -25,7 +25,10 @@ when the evidence supports one. Collect, in order:
    directories.
 2. Optimization goal, primary metric, target, and stopping condition. Keep quality, cost,
    and latency constraints separate rather than hiding them in one average.
-3. ITSM-bench root, Harbor executable, Harbor configuration, and expected task count.
+3. ITSM-bench root, Harbor executable, Harbor configuration, and expected task count. If an
+   exact terminal Harbor job already exists at `benchmark_root/jobs/<experiment-id>`, ask whether
+   to adopt it; set `reuse_existing_baseline=true` only after explicit confirmation so policy is
+   published without launching a duplicate baseline.
 4. Experiment ID and maximum baseline duration.
 
 Read and report the frozen model from the Harbor configuration. `prepare_workspace` fixes

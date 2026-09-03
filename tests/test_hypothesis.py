@@ -202,6 +202,8 @@ def _request(
         source_commit=commit,
         curation_id=curation_id,
         curation_group_id=curation_group_id,
+        predicted_task_ids=("task-1", "task-2"),
+        at_risk_task_ids=("task-3",),
         patterns=(
             FailurePatternReferenceInput(
                 pattern_id=failure_pattern_id(
@@ -232,6 +234,8 @@ def _with_patterns(
         source_commit=request.source_commit,
         curation_id=request.curation_id,
         curation_group_id=request.curation_group_id,
+        predicted_task_ids=request.predicted_task_ids,
+        at_risk_task_ids=request.at_risk_task_ids,
         patterns=patterns,
         statement=request.statement,
         rationale=request.rationale,
@@ -251,6 +255,8 @@ def _with_target(
         source_commit=request.source_commit,
         curation_id=request.curation_id,
         curation_group_id=request.curation_group_id,
+        predicted_task_ids=request.predicted_task_ids,
+        at_risk_task_ids=request.at_risk_task_ids,
         patterns=request.patterns,
         statement=request.statement,
         rationale=request.rationale,
@@ -270,6 +276,8 @@ def _with_curation_group(
         source_commit=request.source_commit,
         curation_id=request.curation_id,
         curation_group_id=curation_group_id,
+        predicted_task_ids=request.predicted_task_ids,
+        at_risk_task_ids=request.at_risk_task_ids,
         patterns=request.patterns,
         statement=request.statement,
         rationale=request.rationale,
@@ -488,6 +496,8 @@ def test_hypothesis_input_rejects_duplicates_escapes_empty_and_extra_fields(tmp_
             source_commit=request.source_commit,
             curation_id=request.curation_id,
             curation_group_id=request.curation_group_id,
+            predicted_task_ids=request.predicted_task_ids,
+            at_risk_task_ids=request.at_risk_task_ids,
             patterns=request.patterns,
             statement=request.statement,
             rationale=request.rationale,
@@ -558,6 +568,8 @@ def test_hypothesis_input_accepts_its_exact_global_maximum() -> None:
         source_commit="1" * 40,
         curation_id="00000000-0000-0000-0000-000000000001",
         curation_group_id="00000000-0000-0000-0000-000000000002",
+        predicted_task_ids=("task-1",),
+        at_risk_task_ids=("task-2",),
         patterns=(
             FailurePatternReferenceInput(
                 pattern_id="sha256:" + "1" * 64,
@@ -577,6 +589,33 @@ def test_hypothesis_input_accepts_its_exact_global_maximum() -> None:
     assert len(request.patterns[0].diagnosis_artifact_ids) == 50
     assert len(request.target.relative_paths) == 50
     assert len(request.regression_risks) == 10
+
+
+def test_hypothesis_predictions_must_be_disjoint() -> None:
+    with pytest.raises(ValidationError):
+        RecordHypothesisInput(
+            workspace_root=Path("/prepared"),
+            experiment_id="experiment-one",
+            source_commit="1" * 40,
+            curation_id="00000000-0000-0000-0000-000000000001",
+            curation_group_id="00000000-0000-0000-0000-000000000002",
+            predicted_task_ids=("task-1",),
+            at_risk_task_ids=("task-1",),
+            patterns=(
+                FailurePatternReferenceInput(
+                    pattern_id="sha256:" + "1" * 64,
+                    diagnosis_artifact_ids=("00000000-0000-0000-0000-000000000001",),
+                ),
+            ),
+            statement="s",
+            rationale="r",
+            target=HarnessChangeTargetInput(
+                component_kind=ComponentKind.PROMPT,
+                relative_paths=(Path("prompt.md"),),
+            ),
+            expected_effect="e",
+            regression_risks=(),
+        )
 
 
 def test_hypothesis_rejects_an_incomplete_curation_group(tmp_path: Path) -> None:

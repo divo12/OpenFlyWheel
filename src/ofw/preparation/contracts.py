@@ -82,6 +82,7 @@ class PrepareWorkspaceInput(StrictModel):
     quality_target: NormalizedScore
     max_iterations: IterationCount
     no_improvement_limit: IterationCount
+    reuse_existing_baseline: bool = False
     max_cost_per_task_usd: PositiveMetric | None = None
     max_latency_seconds: PositiveMetric | None = None
     max_baseline_seconds: DurationSeconds

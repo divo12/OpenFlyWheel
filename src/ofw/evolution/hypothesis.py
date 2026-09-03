@@ -31,6 +31,7 @@ _PATTERN_ID_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _HYPOTHESIS_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _COMMIT_PATTERN = r"^[0-9a-f]{40}$"
 _EXPERIMENT_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+_TASK_ID_PATTERN = r"^[^\x00]+$"
 HypothesisTextValue = Annotated[str, Field(min_length=1, max_length=4000)]
 ArtifactIdsValue = Annotated[
     tuple[Annotated[str, Field(pattern=_ARTIFACT_ID_PATTERN)], ...],
@@ -39,6 +40,14 @@ ArtifactIdsValue = Annotated[
 RelativePathsValue = Annotated[
     tuple[Annotated[Path, Field(strict=False)], ...],
     Field(strict=False, min_length=1, max_length=50),
+]
+TaskIdsValue = Annotated[
+    tuple[Annotated[str, Field(min_length=1, max_length=256, pattern=_TASK_ID_PATTERN)], ...],
+    Field(strict=False, min_length=1, max_length=50),
+]
+RiskTaskIdsValue = Annotated[
+    tuple[Annotated[str, Field(min_length=1, max_length=256, pattern=_TASK_ID_PATTERN)], ...],
+    Field(strict=False, max_length=50),
 ]
 
 
@@ -77,6 +86,8 @@ class RecordHypothesisInput(StrictModel):
     source_commit: str = Field(pattern=_COMMIT_PATTERN)
     curation_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
     curation_group_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    predicted_task_ids: TaskIdsValue
+    at_risk_task_ids: RiskTaskIdsValue = ()
     patterns: tuple[FailurePatternReferenceInput, ...] = Field(
         strict=False,
         min_length=1,
@@ -121,6 +132,7 @@ class RecordHypothesisInput(StrictModel):
         )
         _require_unique_patterns(pattern_ids)
         _require_bounded_unique_artifacts(artifact_ids)
+        _require_disjoint_task_predictions(self.predicted_task_ids, self.at_risk_task_ids)
         return self
 
 
@@ -155,6 +167,8 @@ class HarnessHypothesis:
     source_commit: str
     curation_id: str
     curation_group_id: str
+    predicted_task_ids: tuple[str, ...]
+    at_risk_task_ids: tuple[str, ...]
     patterns: tuple[FailurePatternReference, ...]
     statement: str
     rationale: str
@@ -169,6 +183,8 @@ class _HypothesisContent(StrictModel):
     source_commit: str = Field(pattern=_COMMIT_PATTERN)
     curation_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
     curation_group_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    predicted_task_ids: TaskIdsValue
+    at_risk_task_ids: RiskTaskIdsValue = ()
     patterns: tuple[FailurePatternReferenceInput, ...] = Field(min_length=1, max_length=50)
     statement: HypothesisTextValue
     rationale: HypothesisTextValue
@@ -188,6 +204,8 @@ class HypothesisArtifact(_HypothesisContent):
             source_commit=hypothesis.source_commit,
             curation_id=hypothesis.curation_id,
             curation_group_id=hypothesis.curation_group_id,
+            predicted_task_ids=hypothesis.predicted_task_ids,
+            at_risk_task_ids=hypothesis.at_risk_task_ids,
             patterns=tuple(
                 FailurePatternReferenceInput(
                     pattern_id=pattern.pattern_id,
@@ -220,6 +238,8 @@ class HypothesisObservation(StrictModel):
     source_commit: str = Field(pattern=_COMMIT_PATTERN)
     curation_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
     curation_group_id: str = Field(pattern=_ARTIFACT_ID_PATTERN)
+    predicted_task_ids: TaskIdsValue
+    at_risk_task_ids: RiskTaskIdsValue = ()
     relative_path: Path
     pattern_count: int = Field(strict=True, ge=1, le=50)
     diagnosis_count: int = Field(strict=True, ge=1, le=50)
@@ -389,6 +409,14 @@ def _curated_artifact_ids(group: FailureGroupArtifact) -> tuple[str, ...]:
     return tuple(sorted(member.artifact_id for member in group.members))
 
 
+def _require_disjoint_task_predictions(
+    predicted: tuple[str, ...],
+    at_risk: tuple[str, ...],
+) -> None:
+    if set(predicted) & set(at_risk):
+        raise ValueError("predicted_task_ids and at_risk_task_ids must be disjoint")
+
+
 def _pattern_reference_id(pattern: FailurePatternReferenceInput) -> str:
     return pattern.pattern_id
 
@@ -459,6 +487,8 @@ def _hypothesis(
         request.source_commit,
         request.curation_id,
         request.curation_group_id,
+        request.predicted_task_ids,
+        request.at_risk_task_ids,
         patterns,
         request.statement,
         request.rationale,
@@ -479,6 +509,8 @@ def _content(
         source_commit=request.source_commit,
         curation_id=request.curation_id,
         curation_group_id=request.curation_group_id,
+        predicted_task_ids=request.predicted_task_ids,
+        at_risk_task_ids=request.at_risk_task_ids,
         patterns=tuple(
             FailurePatternReferenceInput(
                 pattern_id=pattern.pattern_id,
@@ -509,6 +541,8 @@ def _observation(hypothesis: HarnessHypothesis, relative_path: Path) -> Hypothes
         source_commit=hypothesis.source_commit,
         curation_id=hypothesis.curation_id,
         curation_group_id=hypothesis.curation_group_id,
+        predicted_task_ids=hypothesis.predicted_task_ids,
+        at_risk_task_ids=hypothesis.at_risk_task_ids,
         relative_path=relative_path,
         pattern_count=len(hypothesis.patterns),
         diagnosis_count=diagnosis_count,

@@ -117,6 +117,7 @@ def test_policy_is_derived_from_validated_preparation_inputs(tmp_path: Path) -> 
     assert policy.environment == "itsm-bench"
     assert policy.concurrency == 1
     assert policy.max_retries == 0
+    assert policy.baseline_reused is False
     assert policy.controls_digest.startswith("sha256:")
     assert policy.controls_digest == policy.recomputed_controls_digest()
 

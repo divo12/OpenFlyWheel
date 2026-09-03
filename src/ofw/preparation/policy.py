@@ -54,6 +54,7 @@ class _ExperimentPolicyContent(StrictModel):
     quality_target: NormalizedScore
     max_iterations: IterationCount
     no_improvement_limit: IterationCount
+    baseline_reused: bool = False
     max_cost_per_task_usd: PositiveMetric | None = None
     max_latency_seconds: PositiveMetric | None = None
     max_baseline_seconds: int = Field(strict=True, ge=60, le=172800)
@@ -174,6 +175,7 @@ def build_experiment_policy(
         quality_target=request.quality_target,
         max_iterations=request.max_iterations,
         no_improvement_limit=request.no_improvement_limit,
+        baseline_reused=request.reuse_existing_baseline,
         max_cost_per_task_usd=request.max_cost_per_task_usd,
         max_latency_seconds=request.max_latency_seconds,
         max_baseline_seconds=request.max_baseline_seconds,
@@ -197,6 +199,7 @@ def _content_from_snapshot(policy: ExperimentPolicySnapshot) -> _ExperimentPolic
         quality_target=policy.quality_target,
         max_iterations=policy.max_iterations,
         no_improvement_limit=policy.no_improvement_limit,
+        baseline_reused=policy.baseline_reused,
         max_cost_per_task_usd=policy.max_cost_per_task_usd,
         max_latency_seconds=policy.max_latency_seconds,
         max_baseline_seconds=policy.max_baseline_seconds,
@@ -219,6 +222,7 @@ def _snapshot_from_content(content: _ExperimentPolicyContent) -> ExperimentPolic
         quality_target=content.quality_target,
         max_iterations=content.max_iterations,
         no_improvement_limit=content.no_improvement_limit,
+        baseline_reused=content.baseline_reused,
         max_cost_per_task_usd=content.max_cost_per_task_usd,
         max_latency_seconds=content.max_latency_seconds,
         max_baseline_seconds=content.max_baseline_seconds,

@@ -9,11 +9,12 @@ Select one group from the retained failure-curation receipt. Use every diagnosis
 that group, partitioned under its exact mined pattern IDs; do not add or omit IDs. Keep the global
 diagnosis set at fifty IDs or fewer. Read the compact diagnoses, then propose one bounded
 statement, rationale, expected effect, regression-risk list, component taxonomy, and one or more
-exact target paths within the group's target component.
+exact target paths within the group's target component, explicit predicted task IDs, and at-risk
+task IDs. Keep those prediction sets disjoint so the next iteration can falsify the decision.
 
 Call `record_hypothesis` once with the prepared worktree, experiment ID, current initialization
-commit, curation ID, selected curation group ID, exact pattern-to-diagnosis assignments, and
-proposed target. The tool reloads the curation, requires the complete selected group, recomputes
+commit, curation ID, selected curation group ID, exact pattern-to-diagnosis assignments, explicit
+predicted and at-risk task IDs, and proposed target. The tool reloads the curation, requires the complete selected group, recomputes
 the patterns, and rejects missing, extra, misassigned, or inconclusive evidence. It also proves
 each target is exactly present in the authoritative editable allowlist; `component_kind` must
 match the curated component and never grants path access.
