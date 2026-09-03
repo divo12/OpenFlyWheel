@@ -15,6 +15,12 @@ from ofw.evolution.candidate import (
 from ofw.evolution.candidate_git import CandidateGitGateway
 from ofw.evolution.candidate_langfuse import LangfuseCandidateTraceLocator
 from ofw.evolution.candidate_service import CandidateExecutionService
+from ofw.evolution.gate import (
+    PromotionDecision,
+    PromotionReason,
+    PromotionStatus,
+    decide_promotion,
+)
 from ofw.evolution.hypothesis import (
     FailurePatternReference,
     FailurePatternReferenceInput,
@@ -44,6 +50,9 @@ __all__ = [
     "CandidateOutcomeReceipt",
     "CandidatePhase",
     "CandidateStatus",
+    "PromotionDecision",
+    "PromotionReason",
+    "PromotionStatus",
     "FailurePatternReference",
     "FailurePatternReferenceInput",
     "FileHypothesisRepository",
@@ -58,4 +67,5 @@ __all__ = [
     "HypothesisStatus",
     "LangfuseCandidateTraceLocator",
     "RecordHypothesisInput",
+    "decide_promotion",
 ]
