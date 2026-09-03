@@ -188,7 +188,7 @@ class HarborExperimentRunner:
                 PreparationErrorCode.INVALID_BASELINE_RESULT,
                 "terminal trial count",
             )
-        if _trial_ids(trials) != run.controls.task_ids:
+        if tuple(trial.task_id for trial in trials) != run.controls.task_ids:
             raise PreparationFailure(
                 PreparationErrorCode.INVALID_BASELINE_RESULT,
                 "task ids",
@@ -232,10 +232,6 @@ def _parse_elapsed_seconds(value: str) -> int:
         raise ValueError("invalid process age")
     days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
-
-def _trial_ids(trials: tuple[ExperimentTrial, ...]) -> tuple[str, ...]:
-    return tuple(trial.task_id for trial in trials)
-
 
 class HarborBaselineRunner:
     """Compatibility adapter preserving baseline preparation behavior."""

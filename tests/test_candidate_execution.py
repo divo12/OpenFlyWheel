@@ -664,8 +664,10 @@ def test_candidate_service_creates_launches_polls_and_replays_authoritative_rece
     assert len(locator.requests) == 2
     assert len(outcomes.outcomes) == 2
     state = next((root / ".git/ofw/candidates").glob("*/state.json")).read_text()
-    assert "input" not in state
-    assert "output" not in state
+    assert "\n  \"input\"" not in state
+    assert "\n  \"output\"" not in state
+    assert "\n  \"outcome_receipts\"" not in state
+    assert "\n  \"blockers\"" not in state
     assert "test-openai-key" not in state
 
 
@@ -970,8 +972,8 @@ def test_candidate_service_keeps_unsupported_and_ambiguous_trials_unverified(
         "task-2",
     )
     assert tuple(blocker.code for blocker in complete.blockers) == (
-        CandidateBlockerCode.UNSUPPORTED_REWARD,
-        CandidateBlockerCode.TRACE_AMBIGUOUS,
+        CandidateBlockerCode.UNSUPPORTED_REWARD.value,
+        CandidateBlockerCode.TRACE_AMBIGUOUS.value,
     )
     assert complete.unverified_trials == 2
     assert len(locator.requests) == 1

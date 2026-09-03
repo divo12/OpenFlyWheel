@@ -49,14 +49,12 @@ from ofw.evaluation import (
     VerifierVerdict,
 )
 from ofw.evolution import (
-    CandidateBlocker,
     CandidateBlockerCode,
     CandidateErrorCode,
     CandidateExecutionInput,
     CandidateExecutionObservation,
     CandidateFailure,
     CandidateId,
-    CandidateOutcomeReceipt,
     CandidatePhase,
     CandidateStatus,
     FailurePatternReference,
@@ -90,14 +88,12 @@ from ofw.preparation import (
 )
 
 __all__ = [
-    "CandidateBlocker",
     "CandidateBlockerCode",
     "CandidateErrorCode",
     "CandidateExecutionInput",
     "CandidateExecutionObservation",
     "CandidateFailure",
     "CandidateId",
-    "CandidateOutcomeReceipt",
     "CandidatePhase",
     "CandidateStatus",
     "CollectionError",

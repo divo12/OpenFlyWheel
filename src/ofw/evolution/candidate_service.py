@@ -15,7 +15,9 @@ from typing import Literal
 from pydantic import Field
 
 from ofw.evaluation.outcome import (
+    EvaluatedRunBlocker,
     EvaluatedRunReceipt,
+    EvaluatedTaskReceipt,
     EvidenceReference,
     OutcomeEvaluation,
     RunSide,
@@ -24,26 +26,24 @@ from ofw.evaluation.outcome import (
     VerifierVerdict,
 )
 from ofw.evolution.candidate import (
-    CandidateBlocker,
     CandidateBlockerCode,
     CandidateErrorCode,
     CandidateExecutionInput,
     CandidateExecutionObservation,
     CandidateExperimentRunner,
     CandidateFailure,
-    CandidateHypothesisRepository,
     CandidateId,
-    CandidateOutcomeReceipt,
     CandidateOutcomeStore,
     CandidatePhase,
     CandidateStatus,
     CandidateTraceLocator,
     CandidateWorkspace,
-    CandidateWorkspaceGateway,
     TraceMatchRequest,
     candidate_policy_digest,
 )
+from ofw.evolution.candidate_git import CandidateGitGateway
 from ofw.evolution.hypothesis import HarnessHypothesis, HypothesisFailure, StrictModel
+from ofw.evolution.hypothesis_repository import FileHypothesisRepository
 from ofw.observability.langfuse.domain import TraceId
 from ofw.preparation.contracts import (
     ExperimentControls,
@@ -72,24 +72,22 @@ class _CandidateState(StrictModel):
     process_id: int | None = Field(default=None, ge=1)
     started_at: datetime | None = None
     deadline_at: datetime | None = None
-    outcome_receipts: tuple[CandidateOutcomeReceipt, ...] = Field(max_length=500)
-    blockers: tuple[CandidateBlocker, ...] = Field(max_length=500)
     evaluated_run_receipt: EvaluatedRunReceipt | None = None
     error_code: CandidateErrorCode | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _OutcomeReduction:
-    receipts: tuple[CandidateOutcomeReceipt, ...]
-    blockers: tuple[CandidateBlocker, ...]
+    receipts: tuple[EvaluatedTaskReceipt, ...]
+    blockers: tuple[EvaluatedRunBlocker, ...]
 
 
 class CandidateExecutionService:
     def __init__(
         self,
         *,
-        workspace: CandidateWorkspaceGateway,
-        hypotheses: CandidateHypothesisRepository,
+        workspace: CandidateGitGateway,
+        hypotheses: FileHypothesisRepository,
         runner: CandidateExperimentRunner,
         trace_locator: CandidateTraceLocator,
         outcome_store: CandidateOutcomeStore,
@@ -126,7 +124,7 @@ class CandidateExecutionService:
             if state.phase is CandidatePhase.COMPLETE:
                 return _complete_observation(request, state)
             if state.phase is CandidatePhase.RUNNING:
-                return self._poll(request, policy, hypothesis, control, state)
+                return self._poll(request, policy, control, state)
             return self._launch(request, policy, hypothesis, control, state)
 
     def _authority(
@@ -138,10 +136,6 @@ class CandidateExecutionService:
             hypothesis = self._hypotheses.load(request.workspace_root, request.hypothesis_id)
         except (ExperimentPolicyFailure, HypothesisFailure):
             raise CandidateFailure(CandidateErrorCode.STALE_POLICY, request.experiment_id) from None
-        if hypothesis.experiment_id != policy.experiment_id:
-            raise CandidateFailure(CandidateErrorCode.STALE_POLICY, request.hypothesis_id)
-        if hypothesis.source_commit != policy.initialization_commit:
-            raise CandidateFailure(CandidateErrorCode.STALE_COMMIT, request.hypothesis_id)
         return policy, hypothesis
 
     def _prepare(
@@ -164,8 +158,6 @@ class CandidateExecutionService:
             policy_digest=candidate_policy_digest(policy),
             controls_digest=policy.controls_digest,
             worktree_path=prepared.worktree_path,
-            outcome_receipts=(),
-            blockers=(),
         )
         _write_state(control, state)
         return _editing_observation(request, state)
@@ -231,11 +223,9 @@ class CandidateExecutionService:
         self,
         request: CandidateExecutionInput,
         policy: ExperimentPolicySnapshot,
-        hypothesis: HarnessHypothesis,
         control: Path,
         state: _CandidateState,
     ) -> CandidateExecutionObservation:
-        del hypothesis
         controls = self._validated_controls(request, policy)
         run = _run_from_state(request, state, controls)
         summary = self._runner.summarize(run)
@@ -254,7 +244,7 @@ class CandidateExecutionService:
             self._outcome_store,
         )
         evaluated = _evaluated_receipt(state, run, controls, reduction)
-        complete = _complete_state(state, reduction, evaluated)
+        complete = _complete_state(state, evaluated)
         _write_state(control, complete)
         return _complete_observation(request, complete)
 
@@ -280,11 +270,11 @@ def _record_outcomes(
     trace_locator: CandidateTraceLocator,
     outcome_store: CandidateOutcomeStore,
 ) -> _OutcomeReduction:
-    receipts: list[CandidateOutcomeReceipt] = []
-    blockers: list[CandidateBlocker] = []
+    receipts: list[EvaluatedTaskReceipt] = []
+    blockers: list[EvaluatedRunBlocker] = []
     for trial in summary.trials:
         result = _authoritative_result(trial)
-        if isinstance(result, CandidateBlocker):
+        if isinstance(result, EvaluatedRunBlocker):
             blockers.append(result)
             continue
         match = trace_locator.locate(_trace_request(trial, run, controls))
@@ -300,7 +290,7 @@ def _record_outcomes(
                 trial.task_id,
             ) from None
         receipts.append(
-            CandidateOutcomeReceipt(
+            EvaluatedTaskReceipt(
                 task_id=trial.task_id,
                 trace_id=match.trace_id,
                 score_id=submission.score_id.value,
@@ -331,13 +321,13 @@ def _evaluated_receipt(
         evaluated_tree=state.candidate_tree,
         task_ids=controls.task_ids,
         outcome_receipts=reduction.receipts,
-        blockers=tuple(item.to_evaluated() for item in reduction.blockers),
+        blockers=reduction.blockers,
     )
 
 
 def _authoritative_result(
     trial: ExperimentTrial,
-) -> tuple[VerifierVerdict, float | None] | CandidateBlocker:
+) -> tuple[VerifierVerdict, float | None] | EvaluatedRunBlocker:
     if trial.exception:
         return _blocker(trial, CandidateBlockerCode.UNVERIFIED, "agent_exception")
     reward = _reward_result(trial)
@@ -348,7 +338,7 @@ def _authoritative_result(
 
 def _reward_result(
     trial: ExperimentTrial,
-) -> tuple[VerifierVerdict, float] | CandidateBlocker | None:
+) -> tuple[VerifierVerdict, float] | EvaluatedRunBlocker | None:
     if trial.reward == 1.0:
         return VerifierVerdict.PASS, 1.0
     if trial.reward == 0.0:
@@ -360,7 +350,7 @@ def _reward_result(
 
 def _verdict_result(
     trial: ExperimentTrial,
-) -> tuple[VerifierVerdict, None] | CandidateBlocker:
+) -> tuple[VerifierVerdict, None] | EvaluatedRunBlocker:
     if trial.verdict in (VerifierVerdict.ABSTAIN.value, VerifierVerdict.ERROR.value):
         return VerifierVerdict(trial.verdict), None
     return _blocker(trial, CandidateBlockerCode.UNVERIFIED, "missing_verifier_result")
@@ -384,7 +374,7 @@ def _trace_request(
 def _trace_blocker(
     trial: ExperimentTrial,
     code: CandidateBlockerCode | None,
-) -> CandidateBlocker:
+) -> EvaluatedRunBlocker:
     if code is None:
         raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, trial.task_id)
     return _blocker(trial, code, "trace_mapping")
@@ -394,8 +384,8 @@ def _blocker(
     trial: ExperimentTrial,
     code: CandidateBlockerCode,
     subject: str,
-) -> CandidateBlocker:
-    return CandidateBlocker(task_id=trial.task_id, code=code, subject=subject)
+) -> EvaluatedRunBlocker:
+    return EvaluatedRunBlocker(task_id=trial.task_id, code=code.value, subject=subject)
 
 
 def _outcome(
@@ -512,15 +502,12 @@ def _running_state(
         process_id=process_id,
         started_at=started_at,
         deadline_at=started_at + timedelta(seconds=timeout_seconds),
-        outcome_receipts=(),
-        blockers=(),
         evaluated_run_receipt=None,
     )
 
 
 def _complete_state(
     state: _CandidateState,
-    reduction: _OutcomeReduction,
     evaluated: EvaluatedRunReceipt,
 ) -> _CandidateState:
     return _CandidateState(
@@ -538,8 +525,6 @@ def _complete_state(
         process_id=state.process_id,
         started_at=state.started_at,
         deadline_at=state.deadline_at,
-        outcome_receipts=reduction.receipts,
-        blockers=reduction.blockers,
         evaluated_run_receipt=evaluated,
     )
 
@@ -560,8 +545,6 @@ def _failed_state(state: _CandidateState, code: CandidateErrorCode) -> _Candidat
         process_id=state.process_id,
         started_at=state.started_at,
         deadline_at=state.deadline_at,
-        outcome_receipts=state.outcome_receipts,
-        blockers=state.blockers,
         evaluated_run_receipt=state.evaluated_run_receipt,
         error_code=code,
     )
@@ -634,11 +617,14 @@ def _complete_observation(
     request: CandidateExecutionInput,
     state: _CandidateState,
 ) -> CandidateExecutionObservation:
-    passes = sum(item.verdict is VerifierVerdict.PASS for item in state.outcome_receipts)
-    failures = sum(item.verdict is VerifierVerdict.FAIL for item in state.outcome_receipts)
-    terminal = len(state.outcome_receipts) + len(state.blockers)
+    receipt = state.evaluated_run_receipt
+    if receipt is None:
+        raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, request.hypothesis_id)
+    passes = sum(item.verdict is VerifierVerdict.PASS for item in receipt.outcome_receipts)
+    failures = sum(item.verdict is VerifierVerdict.FAIL for item in receipt.outcome_receipts)
+    terminal = len(receipt.outcome_receipts) + len(receipt.blockers)
     return CandidateExecutionObservation(
-        status=CandidateStatus.WARNING if state.blockers else CandidateStatus.SUCCESS,
+        status=CandidateStatus.WARNING if receipt.blockers else CandidateStatus.SUCCESS,
         summary="The candidate run is complete with authoritative outcome receipts.",
         next_actions=("Retain the candidate and outcome receipts for the admission gate.",),
         artifacts=_artifacts(state),
@@ -655,10 +641,10 @@ def _complete_observation(
         terminal_trials=terminal,
         verifier_passes=passes,
         verifier_failures=failures,
-        unverified_trials=len(state.blockers),
-        outcome_receipts=state.outcome_receipts,
-        blockers=state.blockers,
-        evaluated_run_receipt=state.evaluated_run_receipt,
+        unverified_trials=len(receipt.blockers),
+        outcome_receipts=receipt.outcome_receipts,
+        blockers=receipt.blockers,
+        evaluated_run_receipt=receipt,
     )
 
 
@@ -700,8 +686,8 @@ def _persisted_failure_observation(
         worktree_path=state.worktree_path,
         job_path=state.job_path,
         session_id=state.candidate_id,
-        outcome_receipts=state.outcome_receipts,
-        blockers=state.blockers,
+        outcome_receipts=(),
+        blockers=(),
         evaluated_run_receipt=state.evaluated_run_receipt,
         error_code=code,
     )

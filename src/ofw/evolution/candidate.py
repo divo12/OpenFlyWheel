@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, Protocol, TypeAlias
+from typing import Literal, Protocol
 
 from pydantic import Field, field_validator
 
@@ -20,7 +20,7 @@ from ofw.evaluation.outcome import (
     EvaluatedTaskReceipt,
     OutcomeEvaluation,
 )
-from ofw.evolution.hypothesis import HarnessHypothesis, StrictModel
+from ofw.evolution.hypothesis import StrictModel
 from ofw.preparation.contracts import (
     ExperimentControls,
     ExperimentRun,
@@ -174,22 +174,6 @@ class CandidateExecutionInput(StrictModel):
         return contained_relative_path(value, "harbor_config")
 
 
-CandidateOutcomeReceipt: TypeAlias = EvaluatedTaskReceipt
-
-
-class CandidateBlocker(StrictModel):
-    task_id: str = Field(min_length=1, max_length=256)
-    code: CandidateBlockerCode
-    subject: str = Field(min_length=1, max_length=256)
-
-    def to_evaluated(self) -> EvaluatedRunBlocker:
-        return EvaluatedRunBlocker(
-            task_id=self.task_id,
-            code=self.code.value,
-            subject=self.subject,
-        )
-
-
 class CandidateExecutionObservation(StrictModel):
     status: CandidateStatus
     summary: str = Field(min_length=1, max_length=256)
@@ -209,8 +193,8 @@ class CandidateExecutionObservation(StrictModel):
     verifier_passes: int | None = Field(default=None, ge=0, le=500)
     verifier_failures: int | None = Field(default=None, ge=0, le=500)
     unverified_trials: int | None = Field(default=None, ge=0, le=500)
-    outcome_receipts: tuple[CandidateOutcomeReceipt, ...] = Field(max_length=500)
-    blockers: tuple[CandidateBlocker, ...] = Field(max_length=500)
+    outcome_receipts: tuple[EvaluatedTaskReceipt, ...] = Field(max_length=500)
+    blockers: tuple[EvaluatedRunBlocker, ...] = Field(max_length=500)
     evaluated_run_receipt: EvaluatedRunReceipt | None = None
     next_poll_after_seconds: int | None = Field(default=None, ge=1, le=300)
     error_code: CandidateErrorCode | None = None
@@ -247,46 +231,6 @@ def _validate_cost(cost_usd: float | None) -> None:
         not math.isfinite(cost_usd) or not 0.0 <= cost_usd <= 1_000_000.0
     ):
         raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, "cost_usd")
-
-
-class CandidateWorkspaceGateway(Protocol):
-    def control_directory(self, root: Path, hypothesis_id: str) -> Path: ...
-
-    def prepare(
-        self,
-        accepted_root: Path,
-        worktree_parent: Path,
-        policy: ExperimentPolicySnapshot,
-        hypothesis: HarnessHypothesis,
-    ) -> CandidateWorkspace: ...
-
-    def inspect(
-        self,
-        workspace: CandidateWorkspace,
-        policy: ExperimentPolicySnapshot,
-        hypothesis: HarnessHypothesis,
-    ) -> CandidateTree: ...
-
-    def commit(
-        self,
-        workspace: CandidateWorkspace,
-        tree: CandidateTree,
-        candidate_id: CandidateId,
-        experiment_id: str,
-    ) -> CandidateCommit: ...
-
-    def validate_accepted(
-        self,
-        root: Path,
-        policy: ExperimentPolicySnapshot,
-        hypothesis: HarnessHypothesis,
-    ) -> None: ...
-
-
-class CandidateHypothesisRepository(Protocol):
-    def load_policy(self, root: Path, experiment_id: str) -> ExperimentPolicySnapshot: ...
-
-    def load(self, root: Path, hypothesis_id: str) -> HarnessHypothesis: ...
 
 
 class CandidateExperimentRunner(Protocol):
