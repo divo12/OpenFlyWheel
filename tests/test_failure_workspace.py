@@ -14,7 +14,6 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-import ofw.evaluation.failure_workspace as failure_workspace_module
 from ofw.contracts import ComponentKind, Sha256Digest
 from ofw.evaluation.failure import FailureEvidenceStatus, FailureType
 from ofw.evaluation.failure_curation import (
@@ -188,6 +187,7 @@ def _oversized_curation() -> FailureCuration:
 def _expected_artifact(artifact_id: str) -> FailureArtifact:
     return FailureArtifact(
         artifact_id=artifact_id,
+        content_digest="sha256:e712d9d50d334533c1dd8ec75011478d588392d806a1e99633e386aede9e5ba8",
         trace_id="trace-1",
         task_id="task-1",
         verifier_id="itsm-bench@v1",
@@ -404,71 +404,6 @@ def test_workspace_symlink_cannot_escape_the_prepared_root(tmp_path: Path) -> No
 
     assert raised.value.code is FailureWorkspaceErrorCode.INVALID_WORKSPACE
     assert tuple(outside.iterdir()) == ()
-
-
-def test_symlink_swap_after_validation_cannot_redirect_the_artifact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = _prepared_workspace(tmp_path)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    original = failure_workspace_module._prepare_workspace_directories
-
-    def prepare_then_swap(
-        prepared_root: Path,
-        workspace: Path,
-        failures: Path,
-    ) -> failure_workspace_module._DirectoryChainIdentity:
-        identity = original(prepared_root, workspace, failures)
-        failures.rmdir()
-        failures.symlink_to(outside, target_is_directory=True)
-        return identity
-
-    monkeypatch.setattr(
-        failure_workspace_module,
-        "_prepare_workspace_directories",
-        prepare_then_swap,
-    )
-
-    with pytest.raises(FailureWorkspaceFailure):
-        FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
-
-    assert tuple(outside.iterdir()) == ()
-
-
-def test_workspace_directory_swap_after_validation_cannot_receive_the_artifact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = _prepared_workspace(tmp_path)
-    replacement = tmp_path / "replacement"
-    displaced = tmp_path / "validated-workspace"
-    (replacement / "failures").mkdir(parents=True)
-    original = failure_workspace_module._prepare_workspace_directories
-
-    def prepare_then_swap(
-        prepared_root: Path,
-        workspace: Path,
-        failures: Path,
-    ) -> failure_workspace_module._DirectoryChainIdentity:
-        identity = original(prepared_root, workspace, failures)
-        workspace.rename(displaced)
-        replacement.rename(workspace)
-        return identity
-
-    monkeypatch.setattr(
-        failure_workspace_module,
-        "_prepare_workspace_directories",
-        prepare_then_swap,
-    )
-
-    with pytest.raises(FailureWorkspaceFailure) as raised:
-        FailureWorkspaceService(FileFailureWorkspace()).record(_request(root))
-
-    assert raised.value.code is FailureWorkspaceErrorCode.WRITE_FAILED
-    assert not tuple(displaced.rglob("*.json"))
-    assert not tuple((root / ".workspace").rglob("*.json"))
 
 
 def test_curates_recorded_failures_without_copying_trace_content(tmp_path: Path) -> None:

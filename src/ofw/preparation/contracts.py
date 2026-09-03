@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Protocol
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
-_EXPERIMENT_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
-_REF_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._/@-]*"
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
+_EXPERIMENT_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+_REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._/@-]*$"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
 
 
 def _normalized_score(value: object) -> float:
@@ -28,13 +29,21 @@ def _numeric_float(value: object, field: str) -> float:
     return float(value)
 
 
+def _bounded_path_input(value: object) -> object:
+    if isinstance(value, (str, Path)) and (
+        "\x00" in str(value) or len(str(value).encode("utf-8")) > 1024
+    ):
+        raise ValueError("path input must be bounded text")
+    return value
+
+
 ExperimentIdentifier = Annotated[
     str,
     Field(min_length=1, max_length=80, pattern=_EXPERIMENT_PATTERN),
 ]
 GitReference = Annotated[str, Field(min_length=1, max_length=256, pattern=_REF_PATTERN)]
 GoalText = Annotated[str, Field(min_length=1, max_length=2000)]
-PathValue = Annotated[Path, Field(strict=False)]
+PathValue = Annotated[Path, BeforeValidator(_bounded_path_input), Field(strict=False)]
 TaskCount = Annotated[int, Field(strict=True, ge=1, le=500)]
 IterationCount = Annotated[int, Field(strict=True, ge=1, le=100)]
 DurationSeconds = Annotated[int, Field(strict=True, ge=60, le=172800)]
@@ -74,6 +83,7 @@ class PrepareWorkspaceInput(StrictModel):
     quality_target: NormalizedScore
     max_iterations: IterationCount
     no_improvement_limit: IterationCount
+    reuse_existing_baseline: bool = False
     max_cost_per_task_usd: PositiveMetric | None = None
     max_latency_seconds: PositiveMetric | None = None
     max_baseline_seconds: DurationSeconds
@@ -93,12 +103,12 @@ class PrepareWorkspaceInput(StrictModel):
     @field_validator("harbor_config")
     @classmethod
     def validate_harbor_config(cls, value: Path) -> Path:
-        return _relative_path(value, "harbor_config")
+        return contained_relative_path(value, "harbor_config")
 
     @field_validator("editable_paths")
     @classmethod
     def validate_editable_paths(cls, values: tuple[Path, ...]) -> tuple[Path, ...]:
-        normalized = tuple(_relative_path(value, "editable_paths") for value in values)
+        normalized = tuple(contained_relative_path(value, "editable_paths") for value in values)
         if len(set(normalized)) != len(normalized):
             raise ValueError("editable_paths must be unique")
         return normalized
@@ -133,6 +143,9 @@ class PreparationErrorCode(StrEnum):
     INVALID_BASELINE_RESULT = "invalid_baseline_result"
     PREPARATION_BUSY = "preparation_busy"
     GIT_FAILED = "git_failed"
+    POLICY_CONFLICT = "policy_conflict"
+    POLICY_SNAPSHOT_REQUIRED = "policy_snapshot_required"
+    POLICY_WRITE_FAILED = "policy_write_failed"
 
 
 class WorkspacePreparationObservation(StrictModel):
@@ -164,7 +177,14 @@ class WorkspacePreparationObservation(StrictModel):
 @dataclass(frozen=True, slots=True)
 class BaselineConfiguration:
     model: str
-    task_count: int
+    task_ids: tuple[str, ...]
+    benchmark_config_digest: str
+    verifier: str
+    environment: str
+
+    @property
+    def task_count(self) -> int:
+        return len(self.task_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +197,7 @@ class BaselineRun:
     log_path: Path
     worktree_path: Path
     initialization_commit: str
+    controls: ExperimentControls
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +207,60 @@ class BaselineSummary:
     verifier_failures: int
     unverified_trials: int
     unsupported_reward_trials: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentControls:
+    model: str
+    task_ids: tuple[str, ...]
+    benchmark_config_digest: str
+    verifier: str
+    environment: str
+    concurrency: int
+    max_retries: int
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentRun:
+    run_id: str
+    benchmark_root: Path
+    harbor_executable: Path
+    harbor_config: Path
+    job_path: Path
+    log_path: Path
+    source_root: Path
+    release: str
+    session_id: str
+    controls: ExperimentControls
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentTrial:
+    task_id: str
+    task_checksum: str
+    exception: bool
+    verdict: str | None
+    reward: float | None
+    started_at: datetime
+    finished_at: datetime
+    evaluated_at: datetime
+    evidence: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        timestamps = (self.started_at, self.finished_at, self.evaluated_at)
+        if any(value.utcoffset() != timedelta(0) for value in timestamps):
+            raise ValueError("trial timestamps must be UTC")
+        if self.started_at >= self.finished_at or self.finished_at > self.evaluated_at:
+            raise ValueError("trial timestamps must be ordered")
+
+    @property
+    def latency_seconds(self) -> float:
+        return (self.finished_at - self.started_at).total_seconds()
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentSummary:
+    trials: tuple[ExperimentTrial, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +300,18 @@ class PreparationFailure(Exception):
         super().__init__(f"{code.value}: {subject}")
 
 
-def _relative_path(value: Path, field: str) -> Path:
+def contained_relative_path(value: Path, field: str) -> Path:
+    _require_relative_shape(value, field)
+    _require_bounded_path_text(value, field)
+    return value
+
+
+def _require_relative_shape(value: Path, field: str) -> None:
     if value.is_absolute() or ".." in value.parts or value == Path("."):
         raise ValueError(f"{field} must be a contained relative path")
-    return value
+
+
+def _require_bounded_path_text(value: Path, field: str) -> None:
+    text = value.as_posix()
+    if "\x00" in text or len(text.encode("utf-8")) > 1024:
+        raise ValueError(f"{field} must be a bounded text path")

@@ -22,6 +22,12 @@ from ofw.preparation import (
     WorkspacePreparationService,
 )
 from ofw.preparation.harbor import HarborBaselineRunner
+from ofw.preparation.policy import (
+    ExperimentPolicyErrorCode,
+    ExperimentPolicyFailure,
+    ExperimentPolicySnapshot,
+    FileExperimentPolicyRepository,
+)
 from ofw.preparation.worktree import GitWorktreeGateway
 
 
@@ -36,13 +42,37 @@ class _EnvironmentCapture(BaseModel):
 
 class _FailingRunner:
     def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
-        return BaselineConfiguration(model="openai/gpt-5.4-mini", task_count=1)
+        return BaselineConfiguration(
+            model="openai/gpt-5.4-mini",
+            task_ids=("task-1",),
+            benchmark_config_digest="sha256:" + "1" * 64,
+            verifier="itsm-bench",
+            environment="itsm-bench",
+        )
 
     def start(self, run: BaselineRun) -> int:
         raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "harbor")
 
     def summarize(self, run: BaselineRun) -> BaselineSummary | None:
         return None
+
+
+class _AdoptingRunner:
+    def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
+        return BaselineConfiguration(
+            model="openai/gpt-5.4-mini",
+            task_ids=("task-pass", "task-fail"),
+            benchmark_config_digest="sha256:" + "1" * 64,
+            verifier="itsm-bench",
+            environment="itsm-bench",
+        )
+
+    def start(self, run: BaselineRun) -> int:
+        raise AssertionError(f"adopted baseline must not launch Harbor: {run.job_path}")
+
+    def summarize(self, run: BaselineRun) -> BaselineSummary | None:
+        assert run.job_path.name == "itsm-hermes-demo"
+        return BaselineSummary(2, 1, 1, 0, 0)
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -163,6 +193,7 @@ def _request(
     *,
     goal: str = "Reach full ITSM verifier pass rate.",
     expected_task_count: int = 2,
+    reuse_existing_baseline: bool = False,
 ) -> PrepareWorkspaceInput:
     return PrepareWorkspaceInput(
         experiment_id="itsm-hermes-demo",
@@ -181,6 +212,7 @@ def _request(
         max_cost_per_task_usd=1.0,
         max_latency_seconds=600.0,
         max_baseline_seconds=60,
+        reuse_existing_baseline=reuse_existing_baseline,
     )
 
 
@@ -260,6 +292,15 @@ def test_prepare_workspace_creates_isolated_branch_commit_and_baseline(
         release=initialization_commit,
         session="itsm-hermes-demo",
     )
+    policy = FileExperimentPolicyRepository().load(worktree, "itsm-hermes-demo")
+    assert policy.base_commit == ready.base_commit
+    assert policy.initialization_commit == ready.initialization_commit
+    assert policy.editable_paths == (Path("prompt.md"),)
+    assert policy.task_ids == ("tasks/task-pass", "tasks/task-fail")
+    assert policy.model == "openai/gpt-5.4-mini"
+    assert policy.concurrency == 1
+    assert policy.max_retries == 0
+    assert policy.controls_digest == policy.recomputed_controls_digest()
     assert (benchmark_root / "invocations.txt").read_text(encoding="utf-8") == "run\n"
     persisted_text = "\n".join(
         (
@@ -273,6 +314,10 @@ def test_prepare_workspace_creates_isolated_branch_commit_and_baseline(
                 harness_root
                 / ".git/ofw/preparations/itsm-hermes-demo/baseline.log"
             ).read_text(encoding="utf-8"),
+            (
+                harness_root
+                / ".git/ofw/preparations/itsm-hermes-demo/policy.json"
+            ).read_text(encoding="utf-8"),
         )
     )
     assert "test-openai-key" not in persisted_text
@@ -285,6 +330,46 @@ def test_prepare_workspace_creates_isolated_branch_commit_and_baseline(
 
     assert repeated == ready
     assert (benchmark_root / "invocations.txt").read_text(encoding="utf-8") == "run\n"
+
+
+def test_prepare_workspace_adopts_existing_terminal_baseline_without_launching(
+    tmp_path: Path,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(
+        harness_root,
+        worktree_parent,
+        benchmark_root,
+        harbor,
+        config,
+        reuse_existing_baseline=True,
+    )
+    job = benchmark_root / "jobs/itsm-hermes-demo"
+    job.mkdir(parents=True)
+    (job / "result.json").write_text('{"finished_at":"2026-08-27T20:01:02Z"}', encoding="utf-8")
+
+    service = WorkspacePreparationService(
+        runner=_AdoptingRunner(),
+        workspace=GitWorktreeGateway(),
+        base_program="# Base program\n",
+        itsm_program="## ITSM\n",
+    )
+
+    result = service.prepare(request)
+
+    assert result.status is PreparationStatus.SUCCESS
+    assert result.phase is PreparationPhase.READY
+    assert result.terminal_trials == 2
+    assert result.verifier_passes == 1
+    assert result.verifier_failures == 1
+    assert not (benchmark_root / "invocations.txt").exists()
+    policy = FileExperimentPolicyRepository().load(harness_root, request.experiment_id)
+    assert policy.task_ids == ("task-pass", "task-fail")
+    assert policy.baseline_reused is True
 
 
 def test_prepare_workspace_rejects_reused_id_with_different_configuration(
@@ -338,6 +423,125 @@ def test_prepare_workspace_rejects_task_count_before_creating_branch(tmp_path: P
     assert result.error_code is PreparationErrorCode.TASK_COUNT_MISMATCH
     assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
 
+
+@pytest.mark.parametrize(
+    "content",
+    (b"x" * (2 * 1024 * 1024 + 1), b"\xff"),
+    ids=("oversized", "invalid-utf8"),
+)
+def test_prepare_workspace_sanitizes_invalid_harbor_config_reads(
+    tmp_path: Path,
+    content: bytes,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    config.write_bytes(content)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.INVALID_HARBOR_CONFIG
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
+def test_prepare_workspace_rejects_oversized_model_before_creating_branch(tmp_path: Path) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "openai/gpt-5.4-mini",
+            "m" * 257,
+        ),
+        encoding="utf-8",
+    )
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.INVALID_HARBOR_CONFIG
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
+def test_policy_publication_failure_resumes_without_recreating_git_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    _credentials(monkeypatch)
+    original = FileExperimentPolicyRepository.publish
+    attempts = 0
+
+    def fail_once(
+        repository: FileExperimentPolicyRepository,
+        control_directory: Path,
+        policy: ExperimentPolicySnapshot,
+    ) -> Path:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ExperimentPolicyFailure(
+                ExperimentPolicyErrorCode.POLICY_WRITE_FAILED,
+                request.experiment_id,
+            )
+        return original(repository, control_directory, policy)
+
+    monkeypatch.setattr(FileExperimentPolicyRepository, "publish", fail_once)
+    service = _service()
+
+    first = service.prepare(request)
+    ready = _wait_until_ready(service, request)
+
+    assert first.error_code is PreparationErrorCode.POLICY_WRITE_FAILED
+    assert ready.phase is PreparationPhase.READY
+    assert attempts == 2
+    assert (benchmark_root / "invocations.txt").read_text(encoding="utf-8") == "run\n"
+
+
+def test_policy_conflict_remains_typed_and_non_retryable_after_git_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    _credentials(monkeypatch)
+
+    def conflict(
+        repository: FileExperimentPolicyRepository,
+        control_directory: Path,
+        policy: ExperimentPolicySnapshot,
+    ) -> Path:
+        del repository, control_directory, policy
+        raise ExperimentPolicyFailure(
+            ExperimentPolicyErrorCode.POLICY_CONFLICT,
+            request.experiment_id,
+        )
+
+    monkeypatch.setattr(FileExperimentPolicyRepository, "publish", conflict)
+    service = _service()
+
+    first = service.prepare(request)
+    repeated = service.prepare(request)
+
+    assert first.error_code is repeated.error_code is PreparationErrorCode.POLICY_CONFLICT
+    assert first.retry is not None and "do not retry" in first.retry.lower()
+    assert first.stop_when is not None and "new experiment" in first.stop_when.lower()
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo")
+
 def test_prepare_workspace_input_rejects_relative_roots(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         PrepareWorkspaceInput(
@@ -356,6 +560,107 @@ def test_prepare_workspace_input_rejects_relative_roots(tmp_path: Path) -> None:
             no_improvement_limit=1,
             max_baseline_seconds=60,
         )
+
+
+def test_prepare_workspace_input_rejects_nul_and_oversized_editable_paths(tmp_path: Path) -> None:
+    for editable in (Path("bad\x00path"), Path("p" * 1025)):
+        with pytest.raises(ValidationError):
+            PrepareWorkspaceInput(
+                experiment_id="demo",
+                harness_root=tmp_path,
+                base_ref="HEAD",
+                worktree_parent=tmp_path,
+                benchmark_root=tmp_path,
+                harbor_executable=tmp_path / "harbor",
+                harbor_config=Path("config.json"),
+                expected_task_count=1,
+                editable_paths=(editable,),
+                goal="Improve.",
+                quality_target=1.0,
+                max_iterations=1,
+                no_improvement_limit=1,
+                max_baseline_seconds=60,
+            )
+
+
+def test_prepare_workspace_input_rejects_oversized_raw_path_before_normalization(
+    tmp_path: Path,
+) -> None:
+    redundant = "./" * 600 + "prompt.md"
+    payload = f"""{{
+  "experiment_id": "demo",
+  "harness_root": "{tmp_path}",
+  "base_ref": "HEAD",
+  "worktree_parent": "{tmp_path}",
+  "benchmark_root": "{tmp_path}",
+  "harbor_executable": "{tmp_path / 'harbor'}",
+  "harbor_config": "config.json",
+  "expected_task_count": 1,
+  "editable_paths": ["{redundant}"],
+  "goal": "Improve.",
+  "quality_target": 1.0,
+  "max_iterations": 1,
+  "no_improvement_limit": 1,
+  "max_baseline_seconds": 60
+}}"""
+
+    with pytest.raises(ValidationError):
+        PrepareWorkspaceInput.model_validate_json(payload)
+
+
+def test_prepare_workspace_input_rejects_oversized_direct_path(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError):
+        PrepareWorkspaceInput(
+            experiment_id="demo",
+            harness_root=Path("/") / ("p" * 1025),
+            base_ref="HEAD",
+            worktree_parent=tmp_path,
+            benchmark_root=tmp_path,
+            harbor_executable=tmp_path / "harbor",
+            harbor_config=Path("config.json"),
+            expected_task_count=1,
+            editable_paths=(Path("prompt.md"),),
+            goal="Improve.",
+            quality_target=1.0,
+            max_iterations=1,
+            no_improvement_limit=1,
+            max_baseline_seconds=60,
+        )
+
+
+def test_legacy_preparation_state_requires_a_fresh_preparation_id(tmp_path: Path) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    control = GitWorktreeGateway().control_directory(harness_root, request.experiment_id)
+    control.mkdir(parents=True)
+    (control / "state.json").write_text('{"schema_version":1}\n', encoding="utf-8")
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED
+    assert result.retry is not None and "new experiment id" in result.retry.lower()
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
+
+
+def test_invalid_utf8_preparation_state_returns_typed_failure(tmp_path: Path) -> None:
+    harness_root = _harness_repository(tmp_path)
+    harbor = _fake_harbor(tmp_path)
+    benchmark_root, config = _benchmark_repository(tmp_path, harbor)
+    worktree_parent = tmp_path / "worktrees"
+    worktree_parent.mkdir()
+    request = _request(harness_root, worktree_parent, benchmark_root, harbor, config)
+    control = GitWorktreeGateway().control_directory(harness_root, request.experiment_id)
+    control.mkdir(parents=True)
+    (control / "state.json").write_bytes(b"\xff")
+
+    result = _service().prepare(request)
+
+    assert result.error_code is PreparationErrorCode.INVALID_BASELINE_RESULT
+    assert _git(harness_root, "branch", "--list", "ofw/itsm-hermes-demo") == ""
 
 
 def test_prepare_workspace_input_accepts_json_path_strings(tmp_path: Path) -> None:

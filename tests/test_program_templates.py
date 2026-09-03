@@ -60,6 +60,20 @@ def test_failure_pattern_miner_skill_is_packaged() -> None:
     assert "mine_failure_patterns" in skill.read_text(encoding="utf-8")
 
 
+def test_program_routes_hypothesis_receipt_into_candidate_execution() -> None:
+    root = Path(__file__).parents[1]
+    skill = root / "plugins/openflywheel/skills/hypothesis-former/SKILL.md"
+    program = files("ofw.preparation.templates").joinpath("base.md").read_text(encoding="utf-8")
+
+    assert skill.is_file()
+    assert "record_hypothesis" in skill.read_text(encoding="utf-8")
+    assert "$hypothesis-former" in program
+    assert "stable hypothesis receipt" in program
+    assert "execute_candidate" in program
+    assert "returned candidate worktree" in program
+    assert "stop before admission" in program
+
+
 def test_base_program_stops_after_repeated_managed_mcp_timeout() -> None:
     content = files("ofw.preparation.templates").joinpath("base.md").read_text(encoding="utf-8")
     content = " ".join(content.split())

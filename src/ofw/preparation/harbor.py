@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import signal
 import subprocess  # nosec B404
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
@@ -13,6 +16,10 @@ from ofw.preparation.contracts import (
     BaselineConfiguration,
     BaselineRun,
     BaselineSummary,
+    ExperimentControls,
+    ExperimentRun,
+    ExperimentSummary,
+    ExperimentTrial,
     PreparationErrorCode,
     PreparationFailure,
     PrepareWorkspaceInput,
@@ -30,12 +37,16 @@ class _WireModel(BaseModel):
 
 
 class _HarborAgentWire(_WireModel):
-    name: str
-    model_name: str
+    name: str = Field(min_length=1, max_length=256)
+    model_name: str = Field(min_length=1, max_length=256)
 
 
 class _HarborTaskWire(_WireModel):
-    path: str
+    path: str = Field(min_length=1, max_length=256)
+
+
+class _HarborTaskIdWire(_WireModel):
+    path: str = Field(min_length=1, max_length=256)
 
 
 class _HarborConfigWire(_WireModel):
@@ -57,8 +68,21 @@ class _HarborVerifierResultWire(_WireModel):
     verdict: str | None = None
 
 
+class _HarborExecutionWire(_WireModel):
+    started_at: datetime
+    finished_at: datetime
+
+
+class _HarborVerifierWire(_WireModel):
+    finished_at: datetime
+
+
 class _HarborTrialResultWire(_WireModel):
+    task_id: str | _HarborTaskIdWire | None = None
+    task_checksum: str | None = None
     exception_info: JsonValue | None = None
+    agent_execution: _HarborExecutionWire | None = None
+    verifier: _HarborVerifierWire | None = None
     verifier_result: _HarborVerifierResultWire | None = None
 
 
@@ -71,44 +95,64 @@ class _Credentials:
     langfuse_base_url: str
 
 
-class HarborBaselineRunner:
-    """Launch one sequential ITSM Harbor job and parse its bounded results."""
+class HarborExperimentRunner:
+    """Validate, launch, and normalize one deterministic Harbor experiment."""
 
-    def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
-        _executable(request.harbor_executable)
-        config_path = _contained(request.benchmark_root, request.harbor_config)
-        config = _parse_config(config_path)
-        if len(config.tasks) != request.expected_task_count:
-            raise PreparationFailure(
-                PreparationErrorCode.TASK_COUNT_MISMATCH,
-                str(len(config.tasks)),
-            )
+    def validate(
+        self,
+        benchmark_root: Path,
+        harbor_executable: Path,
+        harbor_config: Path,
+        *,
+        require_credentials: bool = True,
+    ) -> ExperimentControls:
+        _executable(harbor_executable)
+        config_path = _contained(benchmark_root, harbor_config)
+        config, config_content = _parse_config(config_path)
         agent = config.agents[0]
         if agent.name != _AGENT_NAME:
             raise PreparationFailure(
                 PreparationErrorCode.INVALID_HARBOR_CONFIG,
                 "agent",
             )
-        _validate_source_adapter(request.benchmark_root)
-        _credentials()
-        return BaselineConfiguration(model=agent.model_name, task_count=len(config.tasks))
+        task_ids = tuple(task.path for task in config.tasks)
+        if len(set(task_ids)) != len(task_ids):
+            raise PreparationFailure(
+                PreparationErrorCode.INVALID_HARBOR_CONFIG,
+                "tasks",
+            )
+        _validate_source_adapter(benchmark_root)
+        if require_credentials:
+            _credentials()
+        return ExperimentControls(
+            model=agent.model_name,
+            task_ids=task_ids,
+            benchmark_config_digest=(
+                f"sha256:{hashlib.sha256(config_content.encode('utf-8')).hexdigest()}"
+            ),
+            verifier="itsm-bench",
+            environment="itsm-bench",
+            concurrency=1,
+            max_retries=0,
+        )
 
-    def start(self, run: BaselineRun) -> int:
+    def start(self, run: ExperimentRun) -> int:
         if run.job_path.exists():
             raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "job_path")
+        _require_run_controls(self, run)
         command = (
             str(_executable(run.harbor_executable)),
             "run",
             "--config",
             str(run.harbor_config),
             "--job-name",
-            run.experiment_id,
+            run.run_id,
             "--jobs-dir",
             str(run.job_path.parent),
             "--n-concurrent",
-            "1",
+            str(run.controls.concurrency),
             "--max-retries",
-            "0",
+            str(run.controls.max_retries),
             "--yes",
         )
         run.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +173,78 @@ class HarborBaselineRunner:
                 "harbor",
             ) from error
         return process.pid
+
+    def summarize(self, run: ExperimentRun) -> ExperimentSummary | None:
+        root = _finished_job_result(run.job_path)
+        if root is None:
+            return None
+        trials = _experiment_trials(run)
+        _validate_experiment_trials(root.n_total_trials, trials, run.controls.task_ids)
+        return ExperimentSummary(trials)
+
+    def cancel(self, run: ExperimentRun, process_id: int | None) -> None:
+        del run
+        if process_id is None:
+            return
+        try:
+            os.killpg(process_id, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError as error:
+            raise PreparationFailure(PreparationErrorCode.LAUNCH_FAILED, "cancel") from error
+
+
+def _validate_experiment_trials(
+    expected_count: int,
+    trials: tuple[ExperimentTrial, ...],
+    expected_task_ids: tuple[str, ...],
+) -> None:
+    if len(trials) > expected_count:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "trial count",
+        )
+    if len(trials) != expected_count:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "terminal trial count",
+        )
+    if tuple(trial.task_id for trial in trials) != expected_task_ids:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "task ids",
+        )
+
+
+class HarborBaselineRunner:
+    """Compatibility adapter preserving baseline preparation behavior."""
+
+    def __init__(self) -> None:
+        self._runner = HarborExperimentRunner()
+
+    def validate(self, request: PrepareWorkspaceInput) -> BaselineConfiguration:
+        controls = self._runner.validate(
+            request.benchmark_root,
+            request.harbor_executable,
+            request.harbor_config,
+            require_credentials=False,
+        )
+        if len(controls.task_ids) != request.expected_task_count:
+            raise PreparationFailure(
+                PreparationErrorCode.TASK_COUNT_MISMATCH,
+                str(len(controls.task_ids)),
+            )
+        _credentials()
+        return BaselineConfiguration(
+            model=controls.model,
+            task_ids=controls.task_ids,
+            benchmark_config_digest=controls.benchmark_config_digest,
+            verifier=controls.verifier,
+            environment=controls.environment,
+        )
+
+    def start(self, run: BaselineRun) -> int:
+        return self._runner.start(_baseline_experiment_run(run, run.controls))
 
     def summarize(self, run: BaselineRun) -> BaselineSummary | None:
         root = _finished_job_result(run.job_path)
@@ -191,10 +307,11 @@ def _contained(root: Path, relative: Path) -> Path:
     return resolved
 
 
-def _parse_config(path: Path) -> _HarborConfigWire:
+def _parse_config(path: Path) -> tuple[_HarborConfigWire, str]:
     try:
-        return _HarborConfigWire.model_validate_json(_bounded_text(path, _MAX_CONFIG_BYTES))
-    except (OSError, ValidationError, ValueError) as error:
+        content = _bounded_text(path, _MAX_CONFIG_BYTES)
+        return _HarborConfigWire.model_validate_json(content), content
+    except (OSError, UnicodeError, ValidationError, ValueError) as error:
         raise PreparationFailure(
             PreparationErrorCode.INVALID_HARBOR_CONFIG,
             path.name,
@@ -254,6 +371,103 @@ def _trial_results(job_path: Path) -> tuple[_HarborTrialResultWire, ...]:
     return tuple(_parse_trial_result(path) for path in paths if path.exists())
 
 
+def _experiment_trials(run: ExperimentRun) -> tuple[ExperimentTrial, ...]:
+    trials: list[ExperimentTrial] = []
+    for directory in sorted(
+        (child for child in run.job_path.iterdir() if child.is_dir()),
+        key=_path_name,
+    ):
+        result_path = directory / "result.json"
+        if result_path.exists():
+            trials.append(_experiment_trial(run, directory.name, _parse_trial_result(result_path)))
+    return _ordered_trials(tuple(trials), run.controls.task_ids)
+
+
+def _path_name(path: Path) -> str:
+    return path.name
+
+
+def _ordered_trials(
+    trials: tuple[ExperimentTrial, ...],
+    task_ids: tuple[str, ...],
+) -> tuple[ExperimentTrial, ...]:
+    ordered: list[ExperimentTrial] = []
+    for task_id in task_ids:
+        matching = _matching_trials(trials, task_id)
+        if len(matching) != 1:
+            raise PreparationFailure(PreparationErrorCode.INVALID_BASELINE_RESULT, "task ids")
+        ordered.append(matching[0])
+    if len(ordered) != len(trials):
+        raise PreparationFailure(PreparationErrorCode.INVALID_BASELINE_RESULT, "task ids")
+    return tuple(ordered)
+
+
+def _matching_trials(
+    trials: tuple[ExperimentTrial, ...],
+    task_id: str,
+) -> tuple[ExperimentTrial, ...]:
+    return tuple(trial for trial in trials if trial.task_id == task_id)
+
+
+def _experiment_trial(
+    run: ExperimentRun,
+    directory_name: str,
+    wire: _HarborTrialResultWire,
+) -> ExperimentTrial:
+    task_name, task_checksum, execution, verifier_wire = _required_trial_fields(
+        wire,
+        directory_name,
+    )
+    verifier = wire.verifier_result
+    reward = None if verifier is None or verifier.rewards is None else verifier.rewards.reward
+    verdict = None if verifier is None else verifier.verdict
+    try:
+        return ExperimentTrial(
+            task_id=task_name,
+            task_checksum=task_checksum,
+            exception=wire.exception_info is not None,
+            verdict=verdict,
+            reward=reward,
+            started_at=execution.started_at,
+            finished_at=execution.finished_at,
+            evaluated_at=verifier_wire.finished_at,
+            evidence=(
+                f"harbor://{run.run_id}/{directory_name}/result.json",
+                f"harbor://{run.run_id}/{directory_name}/verifier",
+            ),
+        )
+    except ValueError:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "trial timestamps",
+        ) from None
+
+
+def _required_trial_fields(
+    wire: _HarborTrialResultWire,
+    directory_name: str,
+) -> tuple[str, str, _HarborExecutionWire, _HarborVerifierWire]:
+    task_id = wire.task_id
+    if task_id is None:
+        raise _invalid_trial(directory_name)
+    if isinstance(task_id, _HarborTaskIdWire):
+        task_id = task_id.path
+    if wire.task_checksum is None:
+        raise _invalid_trial(directory_name)
+    if wire.agent_execution is None:
+        raise _invalid_trial(directory_name)
+    if wire.verifier is None:
+        raise _invalid_trial(directory_name)
+    return task_id, wire.task_checksum, wire.agent_execution, wire.verifier
+
+
+def _invalid_trial(directory_name: str) -> PreparationFailure:
+    return PreparationFailure(
+        PreparationErrorCode.INVALID_BASELINE_RESULT,
+        directory_name,
+    )
+
+
 def _result_sort_key(path: Path) -> str:
     return path.parent.name
 
@@ -307,7 +521,7 @@ def _required_any(primary: str, fallback: str) -> str:
     return value.strip()
 
 
-def _process_environment(run: BaselineRun) -> dict[str, str]:
+def _process_environment(run: ExperimentRun) -> dict[str, str]:
     credentials = _credentials()
     environment = dict(os.environ)
     environment.update(
@@ -317,14 +531,50 @@ def _process_environment(run: BaselineRun) -> dict[str, str]:
             "HERMES_LANGFUSE_PUBLIC_KEY": credentials.langfuse_public_key,
             "HERMES_LANGFUSE_SECRET_KEY": credentials.langfuse_secret_key,
             "HERMES_LANGFUSE_BASE_URL": credentials.langfuse_base_url,
-            "HERMES_LANGFUSE_ENV": "itsm-bench",
-            "HERMES_LANGFUSE_RELEASE": run.initialization_commit,
-            "HERMES_LANGFUSE_SESSION_ID": run.experiment_id,
-            _SOURCE_ENVIRONMENT_NAME: str(run.worktree_path),
+            "HERMES_LANGFUSE_ENV": run.controls.environment,
+            "HERMES_LANGFUSE_RELEASE": run.release,
+            "HERMES_LANGFUSE_SESSION_ID": run.session_id,
+            _SOURCE_ENVIRONMENT_NAME: str(run.source_root),
             "PYTHONPATH": _python_path(run.benchmark_root, environment.get("PYTHONPATH")),
         }
     )
     return environment
+
+
+def _require_run_controls(runner: HarborExperimentRunner, run: ExperimentRun) -> None:
+    relative_config = _relative_run_config(run.benchmark_root, run.harbor_config)
+    actual = runner.validate(
+        run.benchmark_root,
+        run.harbor_executable,
+        relative_config,
+    )
+    if actual != run.controls:
+        raise PreparationFailure(PreparationErrorCode.INVALID_HARBOR_CONFIG, "controls")
+
+
+def _relative_run_config(benchmark_root: Path, harbor_config: Path) -> Path:
+    try:
+        return harbor_config.resolve(strict=True).relative_to(benchmark_root.resolve(strict=True))
+    except (OSError, ValueError):
+        raise PreparationFailure(PreparationErrorCode.INVALID_HARBOR_CONFIG, "controls") from None
+
+
+def _baseline_experiment_run(
+    run: BaselineRun,
+    controls: ExperimentControls,
+) -> ExperimentRun:
+    return ExperimentRun(
+        run_id=run.experiment_id,
+        benchmark_root=run.benchmark_root,
+        harbor_executable=run.harbor_executable,
+        harbor_config=run.harbor_config,
+        job_path=run.job_path,
+        log_path=run.log_path,
+        source_root=run.worktree_path,
+        release=run.initialization_commit,
+        session_id=run.experiment_id,
+        controls=controls,
+    )
 
 
 def _python_path(root: Path, existing: str | None) -> str:

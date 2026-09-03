@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
@@ -51,6 +52,19 @@ from ofw.evaluation.outcome import (
     VerifierId,
     VerifierVerdict,
 )
+from ofw.evolution import (
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateExecutionService,
+    CandidatePhase,
+    CandidateStatus,
+    FailurePatternReferenceInput,
+    HarnessChangeTargetInput,
+    HypothesisObservation,
+    HypothesisService,
+    HypothesisStatus,
+    RecordHypothesisInput,
+)
 from ofw.observability.langfuse.domain import ScoreId, TraceId
 from ofw.observability.langfuse.trace_query import (
     GetSpanContextInput,
@@ -71,6 +85,10 @@ from ofw.preparation import (
 _FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000001"
 _SECOND_FAILURE_ARTIFACT_ID = "00000000-0000-0000-0000-000000000002"
 _CURATION_ID = "00000000-0000-0000-0000-000000000003"
+_CURATION_GROUP_ID = "00000000-0000-0000-0000-000000000004"
+_PATTERN_ID = "sha256:" + "1" * 64
+_HYPOTHESIS_ID = "sha256:" + "2" * 64
+_COMMIT = "1" * 40
 _JSON_OBJECT_ADAPTER: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
 
 
@@ -83,6 +101,10 @@ class OpenFlywheelMcpModule(Protocol):
     def _failure_service(self) -> FailureWorkspaceService: ...
 
     def _curation_service(self) -> FailureCurationService: ...
+
+    def _hypothesis_service(self) -> HypothesisService: ...
+
+    def _candidate_service(self) -> AbstractContextManager[CandidateExecutionService]: ...
 
     def _program_template(self, name: str) -> str: ...
 
@@ -140,6 +162,13 @@ class OpenFlywheelMcpModule(Protocol):
         request: RecordFailureCurationInput,
     ) -> FailureCurationObservation: ...
 
+    def record_hypothesis(self, request: RecordHypothesisInput) -> HypothesisObservation: ...
+
+    def execute_candidate(
+        self,
+        request: CandidateExecutionInput,
+    ) -> CandidateExecutionObservation: ...
+
 
 class _FakeOutcomeStore:
     def __init__(self) -> None:
@@ -190,6 +219,24 @@ class _FakeCurationService:
     def record(self, request: RecordFailureCurationInput) -> FailureCurationObservation:
         self.requests.append(request)
         return self.observation
+
+
+class _FakeHypothesisService:
+    def __init__(self, observation: HypothesisObservation) -> None:
+        self.observation = observation
+        self.requests: list[RecordHypothesisInput] = []
+
+    def record(self, request: RecordHypothesisInput) -> HypothesisObservation:
+        self.requests.append(request)
+        return self.observation
+
+
+class _FakeTraceClient:
+    def __init__(self) -> None:
+        self.close_count = 0
+
+    def close(self) -> None:
+        self.close_count += 1
 
 
 def _module() -> OpenFlywheelMcpModule:
@@ -310,6 +357,53 @@ def _curation_observation() -> FailureCurationObservation:
     )
 
 
+def _hypothesis_request(root: Path) -> RecordHypothesisInput:
+    return RecordHypothesisInput(
+        workspace_root=root,
+        experiment_id="experiment-one",
+        source_commit=_COMMIT,
+        curation_id=_CURATION_ID,
+        curation_group_id=_CURATION_GROUP_ID,
+        predicted_task_ids=("task-1",),
+        at_risk_task_ids=("task-2",),
+        patterns=(
+            FailurePatternReferenceInput(
+                pattern_id=_PATTERN_ID,
+                diagnosis_artifact_ids=(_FAILURE_ARTIFACT_ID,),
+            ),
+        ),
+        statement="Require a final state check.",
+        rationale="The supported pattern shows premature finalization.",
+        target=HarnessChangeTargetInput(
+            component_kind=ComponentKind.PROMPT,
+            relative_paths=(Path("prompt.md"),),
+        ),
+        expected_effect="The agent verifies success before finalizing.",
+        regression_risks=("The extra check may add latency.",),
+    )
+
+
+def _hypothesis_observation() -> HypothesisObservation:
+    relative_path = Path(f".workspace/hypotheses/{_HYPOTHESIS_ID}.json")
+    return HypothesisObservation(
+        status=HypothesisStatus.SUCCESS,
+        summary="Recorded one evidence-backed hypothesis for the prepared experiment.",
+        next_actions=("Stop before candidate editing and retain this hypothesis receipt.",),
+        artifacts=(str(relative_path), _HYPOTHESIS_ID),
+        hypothesis_id=_HYPOTHESIS_ID,
+        experiment_id="experiment-one",
+        source_commit=_COMMIT,
+        curation_id=_CURATION_ID,
+        curation_group_id=_CURATION_GROUP_ID,
+        predicted_task_ids=("task-1",),
+        at_risk_task_ids=("task-2",),
+        relative_path=relative_path,
+        pattern_count=1,
+        diagnosis_count=1,
+        target_paths=(Path("prompt.md"),),
+    )
+
+
 def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
     tools = asyncio.run(_server().list_tools())
 
@@ -323,6 +417,8 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         "record_failure",
         "mine_failure_patterns",
         "record_failure_curation",
+        "record_hypothesis",
+        "execute_candidate",
     ]
     assert tuple(map(_annotation_flags, tools)) == (
         (False, False, True),
@@ -333,6 +429,8 @@ def test_mcp_exposes_scoped_read_and_recording_tools() -> None:
         (False, False, True),
         (False, False, True),
         (True, False, True),
+        (False, False, True),
+        (False, False, True),
         (False, False, True),
     )
 
@@ -633,3 +731,73 @@ def test_record_failure_curation_accepts_mcp_json_mapping(tmp_path: Path) -> Non
     request = _curation_request(tmp_path)
 
     assert RecordFailureCurationInput.model_validate(_json_request(request)) == request
+
+
+def test_record_hypothesis_passes_one_strict_object_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    expected = _hypothesis_observation()
+    service = _FakeHypothesisService(expected)
+    request = _hypothesis_request(tmp_path)
+    monkeypatch.setattr(module, "_hypothesis_service", lambda: service)
+
+    assert module.record_hypothesis(request) == expected
+    assert service.requests == [request]
+
+
+def test_record_hypothesis_accepts_mcp_json_mapping(tmp_path: Path) -> None:
+    request = _hypothesis_request(tmp_path)
+
+    assert RecordHypothesisInput.model_validate(_json_request(request)) == request
+
+
+def test_execute_candidate_passes_one_strict_object_to_the_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    request = CandidateExecutionInput(
+        workspace_root=tmp_path / "accepted",
+        worktree_parent=tmp_path / "candidates",
+        benchmark_root=tmp_path / "benchmark",
+        harbor_executable=tmp_path / "harbor",
+        harbor_config=Path("config.json"),
+        experiment_id="experiment-one",
+        hypothesis_id=_HYPOTHESIS_ID,
+    )
+    expected = CandidateExecutionObservation(
+        status=CandidateStatus.WARNING,
+        summary="The isolated candidate worktree is ready for the hypothesis edit.",
+        next_actions=("Edit the candidate, then poll.",),
+        artifacts=(str(tmp_path / "candidate"),),
+        phase=CandidatePhase.EDITING,
+        experiment_id="experiment-one",
+        hypothesis_id=_HYPOTHESIS_ID,
+        source_commit=_COMMIT,
+        worktree_path=tmp_path / "candidate",
+        outcome_receipts=(),
+        blockers=(),
+    )
+    client = _FakeTraceClient()
+    store = _FakeOutcomeStore()
+    requests: list[CandidateExecutionInput] = []
+
+    def execute(
+        service: CandidateExecutionService,
+        candidate_request: CandidateExecutionInput,
+    ) -> CandidateExecutionObservation:
+        del service
+        requests.append(candidate_request)
+        return expected
+
+    monkeypatch.setattr(module, "_client", lambda: client)
+    monkeypatch.setattr(module, "_outcome_store", lambda: store)
+    monkeypatch.setattr(CandidateExecutionService, "execute", execute)
+
+    assert module.execute_candidate(request) == expected
+    assert requests == [request]
+    assert client.close_count == 1
+    assert store.close_count == 1
+    assert CandidateExecutionInput.model_validate(_json_request(request)) == request

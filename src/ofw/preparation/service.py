@@ -11,12 +11,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ofw.preparation.contracts import (
+    BaselineConfiguration,
     BaselineRun,
     BaselineRunner,
     BaselineSummary,
+    ExperimentControls,
     PreparationErrorCode,
     PreparationFailure,
     PreparationPhase,
@@ -27,13 +29,20 @@ from ofw.preparation.contracts import (
     WorkspaceGateway,
     WorkspacePreparationObservation,
 )
+from ofw.preparation.policy import (
+    ExperimentPolicyErrorCode,
+    ExperimentPolicyFailure,
+    FileExperimentPolicyRepository,
+    build_experiment_policy,
+)
 
-_COMMIT_PATTERN = r"[0-9a-f]{40}"
+_COMMIT_PATTERN = r"^[0-9a-f]{40}$"
+_DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
 
 
 class _PreparationStateWire(StrictModel):
-    schema_version: int = Field(default=1, ge=1, le=1)
-    request_digest: str = Field(pattern=r"sha256:[0-9a-f]{64}")
+    schema_version: int = Field(default=2, ge=2, le=2)
+    request_digest: str = Field(pattern=_DIGEST_PATTERN)
     phase: PreparationPhase
     branch_name: str
     worktree_path: Path
@@ -42,7 +51,13 @@ class _PreparationStateWire(StrictModel):
     program_path: Path
     job_path: Path
     log_path: Path
-    model: str
+    model: str = Field(min_length=1, max_length=256)
+    task_ids: tuple[str, ...] = Field(min_length=1, max_length=500)
+    benchmark_config_digest: str = Field(pattern=_DIGEST_PATTERN)
+    verifier: str = Field(min_length=1, max_length=128)
+    environment: str = Field(min_length=1, max_length=128)
+    baseline_reused: bool = False
+    policy_published: bool = False
     process_id: int | None = Field(default=None, strict=True, ge=1)
     started_at: datetime
     deadline_at: datetime
@@ -52,6 +67,12 @@ class _PreparationStateWire(StrictModel):
     unverified_trials: int | None = Field(default=None, ge=0, le=500)
     unsupported_reward_trials: int | None = Field(default=None, ge=0, le=500)
     error_code: PreparationErrorCode | None = None
+
+
+class _StateVersionWire(BaseModel):
+    model_config = ConfigDict(extra="ignore", frozen=True, strict=True)
+
+    schema_version: int = Field(strict=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,26 +133,50 @@ class WorkspacePreparationService:
             self._program,
             configuration,
         )
-        job_path = request.benchmark_root / "jobs" / request.experiment_id
-        log_path = state_directory / "baseline.log"
-        run = _baseline_run(request, prepared, job_path, log_path)
-        started_at = datetime.now(UTC)
-        state = _PreparationStateWire(
-            request_digest=digest,
-            phase=PreparationPhase.RUNNING,
-            branch_name=prepared.branch_name,
-            worktree_path=prepared.worktree_path,
-            base_commit=prepared.base_commit,
-            initialization_commit=prepared.initialization_commit,
-            program_path=prepared.program_path,
-            job_path=job_path,
-            log_path=log_path,
-            model=configuration.model,
-            process_id=None,
-            started_at=started_at,
-            deadline_at=started_at + timedelta(seconds=request.max_baseline_seconds),
-        )
+        state = _initial_state(request, state_directory, digest, prepared, configuration)
         _write_state(state_directory, state)
+        if request.reuse_existing_baseline:
+            return self._adopt_existing(request, state_directory, state)
+        return self._resume_start(request, state_directory, state)
+
+    def _adopt_existing(
+        self,
+        request: PrepareWorkspaceInput,
+        state_directory: Path,
+        state: _PreparationStateWire,
+    ) -> WorkspacePreparationObservation:
+        summary = self._runner.summarize(_run_from_state(request, state))
+        if summary is None:
+            raise PreparationFailure(
+                PreparationErrorCode.INVALID_BASELINE_RESULT,
+                "existing baseline",
+            )
+        _publish_policy(
+            state_directory,
+            request,
+            _prepared_from_state(state),
+            _configuration_from_state(state),
+        )
+        ready = _ready_state(_state_with_policy(state), summary, request.expected_task_count)
+        _write_state(state_directory, ready)
+        return _ready_observation(request, ready)
+
+    def _resume_start(
+        self,
+        request: PrepareWorkspaceInput,
+        state_directory: Path,
+        state: _PreparationStateWire,
+    ) -> WorkspacePreparationObservation:
+        if not state.policy_published:
+            _publish_policy(
+                state_directory,
+                request,
+                _prepared_from_state(state),
+                _configuration_from_state(state),
+            )
+            state = _state_with_policy(state)
+            _write_state(state_directory, state)
+        run = _run_from_state(request, state)
         try:
             process_id = self._runner.start(run)
         except PreparationFailure as error:
@@ -157,9 +202,19 @@ class WorkspacePreparationService:
                 PreparationErrorCode.REQUEST_CONFLICT,
                 request.experiment_id,
             )
-        terminal = _terminal_observation(request, state)
-        if terminal is not None:
-            return terminal
+        if state.baseline_reused:
+            return self._adopt_existing(request, state_directory, state)
+        continuation = self._continue_existing(request, state_directory, state)
+        if continuation is not None:
+            return continuation
+        return self._poll_running_baseline(request, state_directory, state)
+
+    def _poll_running_baseline(
+        self,
+        request: PrepareWorkspaceInput,
+        state_directory: Path,
+        state: _PreparationStateWire,
+    ) -> WorkspacePreparationObservation:
         run = _run_from_state(request, state)
         summary = self._runner.summarize(run)
         if summary is not None:
@@ -176,6 +231,19 @@ class WorkspacePreparationService:
         _write_state(state_directory, failed)
         return _persisted_failure_observation(request, failed)
 
+    def _continue_existing(
+        self,
+        request: PrepareWorkspaceInput,
+        state_directory: Path,
+        state: _PreparationStateWire,
+    ) -> WorkspacePreparationObservation | None:
+        terminal = _terminal_observation(request, state)
+        if terminal is not None:
+            return terminal
+        if state.process_id is None:
+            return self._resume_start(request, state_directory, state)
+        return None
+
 
 def _directory(path: Path, field: str) -> Path:
     try:
@@ -185,6 +253,60 @@ def _directory(path: Path, field: str) -> Path:
     if not resolved.is_dir():
         raise PreparationFailure(PreparationErrorCode.INVALID_PATH, field)
     return resolved
+
+
+def _publish_policy(
+    state_directory: Path,
+    request: PrepareWorkspaceInput,
+    prepared: PreparedGitWorkspace,
+    configuration: BaselineConfiguration,
+) -> None:
+    try:
+        FileExperimentPolicyRepository().publish(
+            state_directory,
+            build_experiment_policy(request, prepared, configuration),
+        )
+    except ExperimentPolicyFailure as error:
+        code = (
+            PreparationErrorCode.POLICY_CONFLICT
+            if error.code is ExperimentPolicyErrorCode.POLICY_CONFLICT
+            else PreparationErrorCode.POLICY_WRITE_FAILED
+        )
+        raise PreparationFailure(code, request.experiment_id) from None
+    except (ValidationError, ValueError):
+        raise PreparationFailure(
+            PreparationErrorCode.POLICY_WRITE_FAILED,
+            request.experiment_id,
+        ) from None
+
+
+def _initial_state(
+    request: PrepareWorkspaceInput,
+    state_directory: Path,
+    digest: str,
+    prepared: PreparedGitWorkspace,
+    configuration: BaselineConfiguration,
+) -> _PreparationStateWire:
+    started_at = datetime.now(UTC)
+    return _PreparationStateWire(
+        request_digest=digest,
+        phase=PreparationPhase.RUNNING,
+        branch_name=prepared.branch_name,
+        worktree_path=prepared.worktree_path,
+        base_commit=prepared.base_commit,
+        initialization_commit=prepared.initialization_commit,
+        program_path=prepared.program_path,
+        job_path=request.benchmark_root / "jobs" / request.experiment_id,
+        log_path=state_directory / "baseline.log",
+        model=configuration.model,
+        task_ids=configuration.task_ids,
+        benchmark_config_digest=configuration.benchmark_config_digest,
+        verifier=configuration.verifier,
+        environment=configuration.environment,
+        baseline_reused=request.reuse_existing_baseline,
+        started_at=started_at,
+        deadline_at=started_at + timedelta(seconds=request.max_baseline_seconds),
+    )
 
 
 def _compose_program(base: str, itsm: str) -> str:
@@ -218,8 +340,31 @@ def _read_state(state_directory: Path) -> _PreparationStateWire | None:
     if not path.exists():
         return None
     try:
-        return _PreparationStateWire.model_validate_json(path.read_text(encoding="utf-8"))
+        content = path.read_text(encoding="utf-8")
     except (OSError, ValueError) as error:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "state.json",
+        ) from error
+    return _parse_state(content)
+
+
+def _parse_state(content: str) -> _PreparationStateWire:
+    try:
+        version = _StateVersionWire.model_validate_json(content)
+    except (ValidationError, ValueError) as error:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "state.json",
+        ) from error
+    if version.schema_version != 2:
+        raise PreparationFailure(
+            PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED,
+            "state.json",
+        )
+    try:
+        return _PreparationStateWire.model_validate_json(content)
+    except (ValidationError, ValueError) as error:
         raise PreparationFailure(
             PreparationErrorCode.INVALID_BASELINE_RESULT,
             "state.json",
@@ -239,24 +384,6 @@ def _write_state(state_directory: Path, state: _PreparationStateWire) -> None:
     os.replace(temporary_path, path)
 
 
-def _baseline_run(
-    request: PrepareWorkspaceInput,
-    prepared: PreparedGitWorkspace,
-    job_path: Path,
-    log_path: Path,
-) -> BaselineRun:
-    return BaselineRun(
-        experiment_id=request.experiment_id,
-        benchmark_root=request.benchmark_root,
-        harbor_executable=request.harbor_executable,
-        harbor_config=request.benchmark_root / request.harbor_config,
-        job_path=job_path,
-        log_path=log_path,
-        worktree_path=prepared.worktree_path,
-        initialization_commit=prepared.initialization_commit,
-    )
-
-
 def _run_from_state(
     request: PrepareWorkspaceInput,
     state: _PreparationStateWire,
@@ -270,6 +397,35 @@ def _run_from_state(
         log_path=state.log_path,
         worktree_path=state.worktree_path,
         initialization_commit=state.initialization_commit,
+        controls=ExperimentControls(
+            model=state.model,
+            task_ids=state.task_ids,
+            benchmark_config_digest=state.benchmark_config_digest,
+            verifier=state.verifier,
+            environment=state.environment,
+            concurrency=1,
+            max_retries=0,
+        ),
+    )
+
+
+def _prepared_from_state(state: _PreparationStateWire) -> PreparedGitWorkspace:
+    return PreparedGitWorkspace(
+        branch_name=state.branch_name,
+        worktree_path=state.worktree_path,
+        base_commit=state.base_commit,
+        initialization_commit=state.initialization_commit,
+        program_path=state.program_path,
+    )
+
+
+def _configuration_from_state(state: _PreparationStateWire) -> BaselineConfiguration:
+    return BaselineConfiguration(
+        model=state.model,
+        task_ids=state.task_ids,
+        benchmark_config_digest=state.benchmark_config_digest,
+        verifier=state.verifier,
+        environment=state.environment,
     )
 
 
@@ -309,6 +465,12 @@ def _terminal_state(
         job_path=state.job_path,
         log_path=state.log_path,
         model=state.model,
+        task_ids=state.task_ids,
+        benchmark_config_digest=state.benchmark_config_digest,
+        verifier=state.verifier,
+        environment=state.environment,
+        baseline_reused=state.baseline_reused,
+        policy_published=state.policy_published,
         process_id=state.process_id,
         started_at=state.started_at,
         deadline_at=state.deadline_at,
@@ -348,7 +510,37 @@ def _state_with_process(
         job_path=state.job_path,
         log_path=state.log_path,
         model=state.model,
+        task_ids=state.task_ids,
+        benchmark_config_digest=state.benchmark_config_digest,
+        verifier=state.verifier,
+        environment=state.environment,
+        baseline_reused=state.baseline_reused,
+        policy_published=state.policy_published,
         process_id=process_id,
+        started_at=state.started_at,
+        deadline_at=state.deadline_at,
+    )
+
+
+def _state_with_policy(state: _PreparationStateWire) -> _PreparationStateWire:
+    return _PreparationStateWire(
+        request_digest=state.request_digest,
+        phase=state.phase,
+        branch_name=state.branch_name,
+        worktree_path=state.worktree_path,
+        base_commit=state.base_commit,
+        initialization_commit=state.initialization_commit,
+        program_path=state.program_path,
+        job_path=state.job_path,
+        log_path=state.log_path,
+        model=state.model,
+        task_ids=state.task_ids,
+        benchmark_config_digest=state.benchmark_config_digest,
+        verifier=state.verifier,
+        environment=state.environment,
+        baseline_reused=state.baseline_reused,
+        policy_published=True,
+        process_id=state.process_id,
         started_at=state.started_at,
         deadline_at=state.deadline_at,
     )
@@ -458,6 +650,17 @@ def _failure_observation(
 
 
 def _root_cause(code: PreparationErrorCode) -> str:
+    if code is PreparationErrorCode.POLICY_CONFLICT:
+        return "The experiment already has different immutable policy bytes."
+    if code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED:
+        return "The existing preparation predates the canonical policy snapshot."
+    specific = _specific_root_cause(code)
+    if specific is not None:
+        return specific
+    return "A validated workspace, Git, Harbor, or result boundary rejected the request."
+
+
+def _specific_root_cause(code: PreparationErrorCode) -> str | None:
     if code is PreparationErrorCode.REQUEST_CONFLICT:
         return "The preparation ID is already bound to different canonical inputs."
     if code is PreparationErrorCode.TASK_COUNT_MISMATCH:
@@ -466,7 +669,7 @@ def _root_cause(code: PreparationErrorCode) -> str:
         return "One or more required credential environment variables are absent."
     if code is PreparationErrorCode.BASELINE_TIMEOUT:
         return "The Harbor job did not publish a terminal result before its deadline."
-    return "A validated workspace, Git, Harbor, or result boundary rejected the request."
+    return None
 
 
 def _retry(code: PreparationErrorCode) -> str:
@@ -474,6 +677,10 @@ def _retry(code: PreparationErrorCode) -> str:
         return "Poll the identical request after 30 seconds."
     if code is PreparationErrorCode.BASELINE_TIMEOUT:
         return "Inspect the bounded baseline log, then use a new experiment ID if rerunning."
+    if code is PreparationErrorCode.POLICY_CONFLICT:
+        return "Do not retry this experiment ID with different policy content."
+    if code is PreparationErrorCode.POLICY_SNAPSHOT_REQUIRED:
+        return "Use a new experiment ID and prepare again; do not infer policy from YAML."
     return "Correct the reported configuration boundary, then retry without forcing Git state."
 
 
@@ -482,6 +689,7 @@ def _stop_when(code: PreparationErrorCode) -> str:
         PreparationErrorCode.BRANCH_EXISTS,
         PreparationErrorCode.WORKTREE_EXISTS,
         PreparationErrorCode.REQUEST_CONFLICT,
+        PreparationErrorCode.POLICY_CONFLICT,
     ):
-        return "Stop until the existing experiment ownership is resolved explicitly."
+        return "Stop and use a new experiment ID unless the existing ownership is accepted."
     return "Stop if correction requires deleting, resetting, or overwriting user-owned data."

@@ -4,7 +4,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from enum import StrEnum
 from importlib.resources import files
@@ -44,6 +45,17 @@ from ofw.evaluation.outcome import (
     VerifierResult,
     VerifierVerdict,
 )
+from ofw.evolution import (
+    CandidateExecutionInput,
+    CandidateExecutionObservation,
+    CandidateExecutionService,
+    CandidateGitGateway,
+    FileHypothesisRepository,
+    HypothesisObservation,
+    HypothesisService,
+    LangfuseCandidateTraceLocator,
+    RecordHypothesisInput,
+)
 from ofw.observability.langfuse.contracts import LangfuseProject
 from ofw.observability.langfuse.domain import TraceId
 from ofw.observability.langfuse.trace_query import (
@@ -64,7 +76,7 @@ from ofw.preparation import (
     WorkspacePreparationObservation,
     WorkspacePreparationService,
 )
-from ofw.preparation.harbor import HarborBaselineRunner
+from ofw.preparation.harbor import HarborBaselineRunner, HarborExperimentRunner
 from ofw.preparation.worktree import GitWorktreeGateway
 
 QueryInput = TypeVar("QueryInput")
@@ -86,8 +98,8 @@ server = FastMCP[None](  # type: ignore[misc]  # MCP auth generics are untyped u
     instructions=(
         "Prepare isolated ITSM harness workspaces, read bounded Langfuse trace evidence, and "
         "record authoritative outcomes, compact failure diagnoses, exact patterns, and "
-        "evidence-bound curations. Never infer outcomes, mutate traces, or copy trace payloads "
-        "into local storage."
+        "evidence-backed hypotheses and isolated candidates. Never infer outcomes, mutate "
+        "traces, copy trace payloads into local storage, or broaden candidate edit authority."
     ),
     log_level="DEBUG",
 )
@@ -154,6 +166,33 @@ def _failure_pattern_service() -> FailurePatternMiningService:
 
 def _curation_service() -> FailureCurationService:
     return FailureCurationService(FileFailureCurationWorkspace())
+
+
+def _hypothesis_service() -> HypothesisService:
+    workspace = FileFailureWorkspace()
+    return HypothesisService(
+        pattern_miner=FailurePatternMiningService(workspace),
+        repository=FileHypothesisRepository(),
+    )
+
+
+@contextmanager
+def _candidate_service() -> Iterator[CandidateExecutionService]:
+    client = _client()
+    try:
+        store = _outcome_store()
+        try:
+            yield CandidateExecutionService(
+                workspace=CandidateGitGateway(),
+                hypotheses=FileHypothesisRepository(),
+                runner=HarborExperimentRunner(),
+                trace_locator=LangfuseCandidateTraceLocator(client),
+                outcome_store=store,
+            )
+        finally:
+            store.close()
+    finally:
+        client.close()
 
 
 def _program_template(name: str) -> str:
@@ -295,6 +334,21 @@ def record_failure_curation(
 ) -> FailureCurationObservation:
     """Store one bounded cross-failure curation under a prepared local workspace."""
     return _curation_service().record(request)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def record_hypothesis(request: RecordHypothesisInput) -> HypothesisObservation:
+    """Record one exact evidence-backed hypothesis, then stop before candidate editing."""
+    return _hypothesis_service().record(request)
+
+
+@server.tool(annotations=record_write, structured_output=True)
+def execute_candidate(
+    request: CandidateExecutionInput,
+) -> CandidateExecutionObservation:
+    """Create, seal, launch, or poll one exact hypothesis candidate."""
+    with _candidate_service() as service:
+        return service.execute(request)
 
 
 def main() -> None:

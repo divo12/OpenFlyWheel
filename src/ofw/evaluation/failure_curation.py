@@ -16,11 +16,11 @@ from ofw.evaluation.outcome import TaskId
 from ofw.observability.langfuse.domain import ObservationId, ScoreId, TraceId
 
 _ARTIFACT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-_PATTERN_KEY_PATTERN = r"[a-z0-9]+(?:-[a-z0-9]+)*"
-_TEXT_PATTERN = r"[^\x00]+"
+_PATTERN_KEY_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+_TEXT_PATTERN = r"^[^\x00]+$"
 
 ArtifactIdentifier = Annotated[str, Field(pattern=_ARTIFACT_ID_PATTERN)]
-DigestValue = Annotated[str, Field(pattern=r"sha256:[0-9a-f]{64}")]
+DigestValue = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 PatternKey = Annotated[
     str,
     Field(min_length=1, max_length=80, pattern=_PATTERN_KEY_PATTERN),
@@ -292,6 +292,17 @@ class FailureCurationArtifact(StrictModel):
     groups: tuple[FailureGroupArtifact, ...] = Field(max_length=25)
     deferred: tuple[DeferredFailureArtifact, ...] = Field(max_length=50)
 
+    def require_valid_identity(self) -> None:
+        _require_group_artifact_identities(self.groups)
+        _require_complete_partition(self.source_artifact_ids, _artifact_assignment_ids(self))
+        expected = _failure_curation_id(
+            self.source_artifact_ids,
+            tuple(group.group_id for group in self.groups),
+            _artifact_deferred_evidence(self.deferred),
+        )
+        if self.curation_id != expected:
+            raise ValueError("curation_id does not match canonical curation content")
+
     @classmethod
     def from_curation(cls, curation: FailureCuration) -> FailureCurationArtifact:
         return cls(
@@ -491,19 +502,18 @@ def _group_id(
     issue_type: FailureType,
     members: tuple[FailureGroupMember, ...],
 ) -> str:
-    identity = "\0".join(
-        (
-            "ofw.failure-group",
-            item.pattern_key,
-            item.title,
-            item.mechanism,
-            item.prevention,
-            item.target_component.value,
-            issue_type.value,
-            *(f"{member.artifact_id}:{member.artifact_digest.value}" for member in members),
-        )
+    evidence = tuple(
+        (member.artifact_id, member.artifact_digest.value) for member in members
     )
-    return str(uuid5(NAMESPACE_URL, identity))
+    return _failure_group_id(
+        item.pattern_key,
+        item.title,
+        item.mechanism,
+        item.prevention,
+        item.target_component,
+        issue_type,
+        evidence,
+    )
 
 
 def _curation_id(
@@ -511,15 +521,88 @@ def _curation_id(
     groups: tuple[FailureGroup, ...],
     deferred: tuple[DeferredFailure, ...],
 ) -> str:
+    deferred_evidence = tuple(
+        (item.source.artifact_id, item.source.artifact_digest.value, item.reason)
+        for item in deferred
+    )
+    return _failure_curation_id(
+        source_ids,
+        tuple(group.id for group in groups),
+        deferred_evidence,
+    )
+
+
+def _failure_group_id(
+    pattern_key: str,
+    title: str,
+    mechanism: str,
+    prevention: str,
+    target_component: ComponentKind,
+    issue_type: FailureType,
+    members: tuple[tuple[str, str], ...],
+) -> str:
+    identity = "\0".join(
+        (
+            "ofw.failure-group",
+            pattern_key,
+            title,
+            mechanism,
+            prevention,
+            target_component.value,
+            issue_type.value,
+            *(f"{artifact_id}:{digest}" for artifact_id, digest in members),
+        )
+    )
+    return str(uuid5(NAMESPACE_URL, identity))
+
+
+def _require_group_artifact_identity(group: FailureGroupArtifact) -> None:
+    members = tuple((item.artifact_id, item.artifact_digest) for item in group.members)
+    expected = _failure_group_id(
+        group.pattern_key,
+        group.title,
+        group.mechanism,
+        group.prevention,
+        group.target_component,
+        group.issue_type,
+        members,
+    )
+    if group.group_id != expected:
+        raise ValueError("group_id does not match canonical group content")
+
+
+def _require_group_artifact_identities(groups: tuple[FailureGroupArtifact, ...]) -> None:
+    for group in groups:
+        _require_group_artifact_identity(group)
+
+
+def _artifact_assignment_ids(artifact: FailureCurationArtifact) -> tuple[str, ...]:
+    grouped = tuple(
+        item.artifact_id for group in artifact.groups for item in group.members
+    )
+    return grouped + tuple(item.source.artifact_id for item in artifact.deferred)
+
+
+def _artifact_deferred_evidence(
+    deferred: tuple[DeferredFailureArtifact, ...],
+) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        (item.source.artifact_id, item.source.artifact_digest, item.reason)
+        for item in deferred
+    )
+
+
+def _failure_curation_id(
+    source_ids: tuple[str, ...],
+    group_ids: tuple[str, ...],
+    deferred: tuple[tuple[str, str, str], ...],
+) -> str:
     identity = "\0".join(
         (
             "ofw.failure-curation",
             *source_ids,
-            *(group.id for group in groups),
-            *(
-                f"{item.source.artifact_id}:{item.source.artifact_digest.value}:{item.reason}"
-                for item in deferred
-            ),
+            *group_ids,
+            *(f"{artifact_id}:{digest}:{reason}" for artifact_id, digest, reason in deferred),
         )
     )
     return str(uuid5(NAMESPACE_URL, identity))

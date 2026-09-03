@@ -35,7 +35,11 @@ def test_package_excludes_removed_harness_plane() -> None:
 
 
 def test_namespace_exports_authoritative_outcome_contract() -> None:
+    assert "EvaluatedRunBlocker" in package.__all__
+    assert "EvaluatedRunReceipt" in package.__all__
+    assert "EvaluatedTaskReceipt" in package.__all__
     assert "OutcomeEvaluation" in package.__all__
+    assert "RunSide" in package.__all__
     assert "LangfuseOutcomeStore" in package.__all__
     assert "EvidenceReference" in package.__all__
     assert "TaskId" in package.__all__
@@ -83,3 +87,33 @@ def test_namespace_exports_workspace_preparation_contract() -> None:
     assert "PreparationStatus" in package.__all__
     assert "PrepareWorkspaceInput" in package.__all__
     assert "WorkspacePreparationObservation" in package.__all__
+
+
+def test_namespace_exports_policy_and_hypothesis_contracts_without_legacy_ownership() -> None:
+    expected = {
+        "ExperimentPolicySnapshot",
+        "FailurePatternReference",
+        "HarnessChangeTarget",
+        "HarnessHypothesis",
+        "HypothesisErrorCode",
+        "HypothesisId",
+        "HypothesisObservation",
+        "RecordHypothesisInput",
+    }
+
+    assert expected <= set(package.__all__)
+    assert {"AssetAccess", "HarnessRevision", "HarnessRevisionId"}.isdisjoint(package.__all__)
+
+
+def test_namespace_exports_candidate_contracts_without_restoring_runtime_plane() -> None:
+    expected = {
+        "CandidateExecutionInput",
+        "CandidateExecutionObservation",
+        "CandidateId",
+        "CandidatePhase",
+        "CandidateStatus",
+    }
+
+    assert expected <= set(package.__all__)
+    assert {"E2BSandbox", "CanaryCase", "CommandLoop"}.isdisjoint(package.__all__)
+    assert {"CandidateBlocker", "CandidateOutcomeReceipt"}.isdisjoint(package.__all__)

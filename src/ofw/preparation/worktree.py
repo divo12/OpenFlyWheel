@@ -191,6 +191,7 @@ def _render_experiment_config(
         f"  harbor_config: {_yaml(request.harbor_config.as_posix())}\n"
         f"  job_name: {_yaml(request.experiment_id)}\n"
         f"  expected_task_count: {baseline.task_count}\n"
+        f"  reuse_existing_baseline: {str(request.reuse_existing_baseline).lower()}\n"
         "harness:\n"
         f"  branch: {_yaml(branch_name)}\n"
         f"  base_commit: {_yaml(base_commit)}\n"
