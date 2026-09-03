@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeAlias
 
 from pydantic import Field, field_validator
 
 from ofw.evaluation.langfuse import OutcomeScoreSubmission
-from ofw.evaluation.outcome import OutcomeEvaluation, VerifierVerdict
+from ofw.evaluation.outcome import (
+    EvaluatedRunBlocker,
+    EvaluatedRunReceipt,
+    EvaluatedTaskReceipt,
+    OutcomeEvaluation,
+)
 from ofw.evolution.hypothesis import HarnessHypothesis, StrictModel
 from ofw.preparation.contracts import (
     ExperimentControls,
@@ -168,17 +174,20 @@ class CandidateExecutionInput(StrictModel):
         return contained_relative_path(value, "harbor_config")
 
 
-class CandidateOutcomeReceipt(StrictModel):
-    task_id: str = Field(min_length=1, max_length=256)
-    trace_id: str = Field(min_length=1, max_length=256)
-    score_id: str = Field(min_length=1, max_length=256)
-    verdict: VerifierVerdict
+CandidateOutcomeReceipt: TypeAlias = EvaluatedTaskReceipt
 
 
 class CandidateBlocker(StrictModel):
     task_id: str = Field(min_length=1, max_length=256)
     code: CandidateBlockerCode
     subject: str = Field(min_length=1, max_length=256)
+
+    def to_evaluated(self) -> EvaluatedRunBlocker:
+        return EvaluatedRunBlocker(
+            task_id=self.task_id,
+            code=self.code.value,
+            subject=self.subject,
+        )
 
 
 class CandidateExecutionObservation(StrictModel):
@@ -202,6 +211,7 @@ class CandidateExecutionObservation(StrictModel):
     unverified_trials: int | None = Field(default=None, ge=0, le=500)
     outcome_receipts: tuple[CandidateOutcomeReceipt, ...] = Field(max_length=500)
     blockers: tuple[CandidateBlocker, ...] = Field(max_length=500)
+    evaluated_run_receipt: EvaluatedRunReceipt | None = None
     next_poll_after_seconds: int | None = Field(default=None, ge=1, le=300)
     error_code: CandidateErrorCode | None = None
 
@@ -220,6 +230,7 @@ class TraceMatchRequest:
 class TraceMatch:
     trace_id: str | None
     blocker: CandidateBlockerCode | None
+    cost_usd: float | None = None
 
     def __post_init__(self) -> None:
         if (self.trace_id is None) == (self.blocker is None):
@@ -228,6 +239,14 @@ class TraceMatch:
             len(self.trace_id) > 256 or _IDENTIFIER_PATTERN.fullmatch(self.trace_id) is None
         ):
             raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, "trace_id")
+        _validate_cost(self.cost_usd)
+
+
+def _validate_cost(cost_usd: float | None) -> None:
+    if cost_usd is not None and (
+        not math.isfinite(cost_usd) or not 0.0 <= cost_usd <= 1_000_000.0
+    ):
+        raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, "cost_usd")
 
 
 class CandidateWorkspaceGateway(Protocol):

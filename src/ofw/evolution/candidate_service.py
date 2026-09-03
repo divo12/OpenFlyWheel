@@ -15,8 +15,10 @@ from typing import Literal
 from pydantic import Field
 
 from ofw.evaluation.outcome import (
+    EvaluatedRunReceipt,
     EvidenceReference,
     OutcomeEvaluation,
+    RunSide,
     TaskId,
     VerifierId,
     VerifierVerdict,
@@ -72,6 +74,7 @@ class _CandidateState(StrictModel):
     deadline_at: datetime | None = None
     outcome_receipts: tuple[CandidateOutcomeReceipt, ...] = Field(max_length=500)
     blockers: tuple[CandidateBlocker, ...] = Field(max_length=500)
+    evaluated_run_receipt: EvaluatedRunReceipt | None = None
     error_code: CandidateErrorCode | None = None
 
 
@@ -250,7 +253,8 @@ class CandidateExecutionService:
             self._trace_locator,
             self._outcome_store,
         )
-        complete = _complete_state(state, reduction)
+        evaluated = _evaluated_receipt(state, run, controls, reduction)
+        complete = _complete_state(state, reduction, evaluated)
         _write_state(control, complete)
         return _complete_observation(request, complete)
 
@@ -301,9 +305,34 @@ def _record_outcomes(
                 trace_id=match.trace_id,
                 score_id=submission.score_id.value,
                 verdict=result[0],
+                verifier_id=outcome.verifier_id.value,
+                normalized_score=result[1],
+                cost_usd=match.cost_usd,
+                latency_seconds=trial.latency_seconds,
             )
         )
     return _OutcomeReduction(tuple(receipts), tuple(blockers))
+
+
+def _evaluated_receipt(
+    state: _CandidateState,
+    run: ExperimentRun,
+    controls: ExperimentControls,
+    reduction: _OutcomeReduction,
+) -> EvaluatedRunReceipt:
+    if state.candidate_commit is None or state.candidate_tree is None:
+        raise CandidateFailure(CandidateErrorCode.INVALID_RESULT, run.run_id)
+    return EvaluatedRunReceipt.build(
+        run_id=run.run_id,
+        side=RunSide.CANDIDATE,
+        policy_digest=state.policy_digest,
+        controls_digest=state.controls_digest,
+        evaluated_commit=state.candidate_commit,
+        evaluated_tree=state.candidate_tree,
+        task_ids=controls.task_ids,
+        outcome_receipts=reduction.receipts,
+        blockers=tuple(item.to_evaluated() for item in reduction.blockers),
+    )
 
 
 def _authoritative_result(
@@ -485,10 +514,15 @@ def _running_state(
         deadline_at=started_at + timedelta(seconds=timeout_seconds),
         outcome_receipts=(),
         blockers=(),
+        evaluated_run_receipt=None,
     )
 
 
-def _complete_state(state: _CandidateState, reduction: _OutcomeReduction) -> _CandidateState:
+def _complete_state(
+    state: _CandidateState,
+    reduction: _OutcomeReduction,
+    evaluated: EvaluatedRunReceipt,
+) -> _CandidateState:
     return _CandidateState(
         request_digest=state.request_digest,
         phase=CandidatePhase.COMPLETE,
@@ -506,6 +540,7 @@ def _complete_state(state: _CandidateState, reduction: _OutcomeReduction) -> _Ca
         deadline_at=state.deadline_at,
         outcome_receipts=reduction.receipts,
         blockers=reduction.blockers,
+        evaluated_run_receipt=evaluated,
     )
 
 
@@ -527,6 +562,7 @@ def _failed_state(state: _CandidateState, code: CandidateErrorCode) -> _Candidat
         deadline_at=state.deadline_at,
         outcome_receipts=state.outcome_receipts,
         blockers=state.blockers,
+        evaluated_run_receipt=state.evaluated_run_receipt,
         error_code=code,
     )
 
@@ -622,6 +658,7 @@ def _complete_observation(
         unverified_trials=len(state.blockers),
         outcome_receipts=state.outcome_receipts,
         blockers=state.blockers,
+        evaluated_run_receipt=state.evaluated_run_receipt,
     )
 
 
@@ -665,6 +702,7 @@ def _persisted_failure_observation(
         session_id=state.candidate_id,
         outcome_receipts=state.outcome_receipts,
         blockers=state.blockers,
+        evaluated_run_receipt=state.evaluated_run_receipt,
         error_code=code,
     )
 

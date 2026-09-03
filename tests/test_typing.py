@@ -35,7 +35,11 @@ def test_package_excludes_removed_harness_plane() -> None:
 
 
 def test_namespace_exports_authoritative_outcome_contract() -> None:
+    assert "EvaluatedRunBlocker" in package.__all__
+    assert "EvaluatedRunReceipt" in package.__all__
+    assert "EvaluatedTaskReceipt" in package.__all__
     assert "OutcomeEvaluation" in package.__all__
+    assert "RunSide" in package.__all__
     assert "LangfuseOutcomeStore" in package.__all__
     assert "EvidenceReference" in package.__all__
     assert "TaskId" in package.__all__

@@ -253,6 +253,10 @@ class ExperimentTrial:
         if self.started_at >= self.finished_at or self.finished_at > self.evaluated_at:
             raise ValueError("trial timestamps must be ordered")
 
+    @property
+    def latency_seconds(self) -> float:
+        return (self.finished_at - self.started_at).total_seconds()
+
 
 @dataclass(frozen=True, slots=True)
 class ExperimentSummary:

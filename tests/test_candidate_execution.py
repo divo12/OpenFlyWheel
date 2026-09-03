@@ -195,12 +195,17 @@ class _FakeTraceLocator:
     def __init__(self) -> None:
         self.requests: list[TraceMatchRequest] = []
         self.blocker: CandidateBlockerCode | None = None
+        self.cost_usd: float | None = None
 
     def locate(self, request: TraceMatchRequest) -> TraceMatch:
         self.requests.append(request)
         if self.blocker is not None:
             return TraceMatch(trace_id=None, blocker=self.blocker)
-        return TraceMatch(trace_id=f"trace-{request.task_id}", blocker=None)
+        return TraceMatch(
+            trace_id=f"trace-{request.task_id}",
+            blocker=None,
+            cost_usd=self.cost_usd,
+        )
 
 
 class _FakeOutcomeStore:
@@ -578,6 +583,7 @@ def test_candidate_service_creates_launches_polls_and_replays_authoritative_rece
     request = _candidate_request(tmp_path, root, hypothesis)
     runner = _FakeRunner(_controls(policy))
     locator = _FakeTraceLocator()
+    locator.cost_usd = 0.25
     outcomes = _FakeOutcomeStore()
     service = CandidateExecutionService(
         workspace=CandidateGitGateway(),
@@ -642,6 +648,18 @@ def test_candidate_service_creates_launches_polls_and_replays_authoritative_rece
         "task-1",
         "task-2",
     )
+    assert complete.evaluated_run_receipt is not None
+    assert complete.evaluated_run_receipt.task_ids == policy.task_ids
+    assert complete.evaluated_run_receipt.outcome_receipts[0].cost_usd == 0.25
+    assert complete.evaluated_run_receipt.outcome_receipts[0].latency_seconds == 30.0
+    reloaded = CandidateExecutionService(
+        workspace=CandidateGitGateway(),
+        hypotheses=FileHypothesisRepository(),
+        runner=runner,
+        trace_locator=locator,
+        outcome_store=outcomes,
+    ).execute(request)
+    assert reloaded.evaluated_run_receipt == complete.evaluated_run_receipt
     assert len(runner.runs) == 1
     assert len(locator.requests) == 2
     assert len(outcomes.outcomes) == 2
@@ -692,6 +710,25 @@ def test_trace_locator_requires_exactly_one_complete_structural_match(
     assert query.window.start == request.started_at
     assert query.window.end == request.finished_at
     assert tuple(field.value for field in query.fields) == ("core", "basic", "trace_context")
+
+
+def test_trace_locator_preserves_provider_attributed_cost() -> None:
+    record = replace(_root_observation("trace-1", "cost"), total_cost=0.75)
+    reader = _ObservationReader(ObservationPage((record,), None))
+    request = TraceMatchRequest(
+        task_id="task-1",
+        session_id="candidate-session",
+        environment="itsm-bench",
+        release="d" * 40,
+        started_at=datetime(2026, 9, 2, 10, 1, tzinfo=UTC),
+        finished_at=datetime(2026, 9, 2, 10, 2, tzinfo=UTC),
+    )
+
+    assert LangfuseCandidateTraceLocator(reader).locate(request) == TraceMatch(
+        trace_id="trace-1",
+        blocker=None,
+        cost_usd=0.75,
+    )
 
 
 def test_candidate_service_rejects_controls_drift_before_commit_or_launch(tmp_path: Path) -> None:
@@ -926,6 +963,12 @@ def test_candidate_service_keeps_unsupported_and_ambiguous_trials_unverified(
 
     assert complete.outcome_receipts == ()
     assert complete.status is CandidateStatus.WARNING
+    assert complete.evaluated_run_receipt is not None
+    assert complete.evaluated_run_receipt.task_ids == policy.task_ids
+    assert tuple(item.task_id for item in complete.evaluated_run_receipt.blockers) == (
+        "task-1",
+        "task-2",
+    )
     assert tuple(blocker.code for blocker in complete.blockers) == (
         CandidateBlockerCode.UNSUPPORTED_REWARD,
         CandidateBlockerCode.TRACE_AMBIGUOUS,
