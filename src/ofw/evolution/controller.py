@@ -979,6 +979,14 @@ def _apply_release(
             stop_reason=(
                 EvolutionStopReason.QUALITY_TARGET if target_reached else None
             ),
+            hypothesis_id=None,
+            candidate_workspace_id=None,
+            candidate_id=None,
+            candidate_commit=None,
+            run_id=None,
+            candidate_receipt_id=None,
+            decision_id=None,
+            gate_status=None,
         )
     return replace(
         state,
@@ -987,6 +995,14 @@ def _apply_release(
         accepted_commit=payload.content_commit or state.accepted_commit,
         accepted_content_id=payload.content_id or state.accepted_content_id,
         stop_reason=None,
+        hypothesis_id=None,
+        candidate_workspace_id=None,
+        candidate_id=None,
+        candidate_commit=None,
+        run_id=None,
+        candidate_receipt_id=None,
+        decision_id=None,
+        gate_status=None,
     )
 
 
@@ -998,6 +1014,13 @@ def _apply_candidate_preparation(
             state,
             phase=EvolutionPhase.AWAITING_CANDIDATE,
             hypothesis_id=payload.hypothesis_id,
+            candidate_workspace_id=None,
+            candidate_id=None,
+            candidate_commit=None,
+            run_id=None,
+            candidate_receipt_id=None,
+            decision_id=None,
+            gate_status=None,
         )
     return replace(
         state,

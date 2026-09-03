@@ -216,7 +216,7 @@ class EvolutionEvent(StrictModel):
     causation_id: Identifier | None = None
     correlation_id: Identifier | None = None
     request_digest: Digest | None = None
-    payload_digest: Digest
+    payload_digest: Digest | None = None
     payload: EvolutionEventPayload
 
     @field_validator("occurred_at")
@@ -253,7 +253,9 @@ class EvolutionEvent(StrictModel):
 
     @model_validator(mode="after")
     def validate_payload_digest(self) -> EvolutionEvent:
-        if self.payload_digest != _digest(self.payload.model_dump_json()):
+        if self.payload_digest is not None and self.payload_digest != _digest(
+            self.payload.model_dump_json()
+        ):
             raise ValueError("payload_digest does not match payload")
         return self
 
@@ -556,6 +558,8 @@ def _validate_event_order(
 def _validate_event_identity(
     event: EvolutionEvent, experiment_id: str, last: int
 ) -> None:
+    if event.payload_digest is None:
+        return
     identity = _event_identity(event)
     if event.event_id != _digest(identity):
         raise EvolutionLedgerFailure(
