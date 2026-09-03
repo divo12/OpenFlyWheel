@@ -134,6 +134,10 @@ def _authority(tmp_path: Path) -> tuple[Path, ExperimentPolicySnapshot, HarnessH
         id=HypothesisId("sha256:" + "b" * 64),
         experiment_id=policy.experiment_id,
         source_commit=commit,
+        curation_id="00000000-0000-0000-0000-000000000001",
+        curation_group_id="00000000-0000-0000-0000-000000000002",
+        predicted_task_ids=("task-1",),
+        at_risk_task_ids=("task-2",),
         patterns=(
             FailurePatternReference(
                 "sha256:" + "c" * 64,

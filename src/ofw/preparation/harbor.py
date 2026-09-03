@@ -8,7 +8,7 @@ import re
 import signal
 import subprocess  # nosec B404
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
@@ -178,21 +178,7 @@ class HarborExperimentRunner:
         if root is None:
             return None
         trials = _experiment_trials(run)
-        if len(trials) > root.n_total_trials:
-            raise PreparationFailure(
-                PreparationErrorCode.INVALID_BASELINE_RESULT,
-                "trial count",
-            )
-        if len(trials) != root.n_total_trials:
-            raise PreparationFailure(
-                PreparationErrorCode.INVALID_BASELINE_RESULT,
-                "terminal trial count",
-            )
-        if tuple(trial.task_id for trial in trials) != run.controls.task_ids:
-            raise PreparationFailure(
-                PreparationErrorCode.INVALID_BASELINE_RESULT,
-                "task ids",
-            )
+        _validate_experiment_trials(root.n_total_trials, trials, run.controls.task_ids)
         return ExperimentSummary(trials)
 
     def cancel(self, run: ExperimentRun, process_id: int | None) -> None:
@@ -232,6 +218,29 @@ def _parse_elapsed_seconds(value: str) -> int:
         raise ValueError("invalid process age")
     days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
     return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def _validate_experiment_trials(
+    expected_count: int,
+    trials: tuple[ExperimentTrial, ...],
+    expected_task_ids: tuple[str, ...],
+) -> None:
+    if len(trials) > expected_count:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "trial count",
+        )
+    if len(trials) != expected_count:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "terminal trial count",
+        )
+    if tuple(trial.task_id for trial in trials) != expected_task_ids:
+        raise PreparationFailure(
+            PreparationErrorCode.INVALID_BASELINE_RESULT,
+            "task ids",
+        )
+
 
 class HarborBaselineRunner:
     """Compatibility adapter preserving baseline preparation behavior."""

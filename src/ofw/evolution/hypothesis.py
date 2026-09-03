@@ -228,6 +228,10 @@ class HypothesisArtifact(_HypothesisContent):
             id=HypothesisId(self.hypothesis_id),
             experiment_id=self.experiment_id,
             source_commit=self.source_commit,
+            curation_id=self.curation_id,
+            curation_group_id=self.curation_group_id,
+            predicted_task_ids=self.predicted_task_ids,
+            at_risk_task_ids=self.at_risk_task_ids,
             patterns=tuple(
                 FailurePatternReference(
                     pattern.pattern_id,
@@ -250,6 +254,10 @@ class HypothesisArtifact(_HypothesisContent):
             _HypothesisContent(
                 experiment_id=self.experiment_id,
                 source_commit=self.source_commit,
+                curation_id=self.curation_id,
+                curation_group_id=self.curation_group_id,
+                predicted_task_ids=self.predicted_task_ids,
+                at_risk_task_ids=self.at_risk_task_ids,
                 patterns=self.patterns,
                 statement=self.statement,
                 rationale=self.rationale,
