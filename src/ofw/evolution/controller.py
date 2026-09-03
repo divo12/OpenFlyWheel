@@ -13,7 +13,7 @@ from pydantic import Field, model_validator
 
 from ofw.evaluation.outcome import EvaluatedRunReceipt, RunSide
 from ofw.evolution.candidate import candidate_policy_digest
-from ofw.evolution.gate import PromotionDecision, PromotionStatus
+from ofw.evolution.gate import PromotionDecision, PromotionStatus, decide_promotion
 from ofw.evolution.hypothesis import HarnessHypothesis, HypothesisFailure
 from ofw.evolution.hypothesis_repository import FileHypothesisRepository
 from ofw.evolution.ledger import (
@@ -137,6 +137,7 @@ class AdvanceEvolutionInput(StrictModel):
     run_id: str | None = Field(default=None, max_length=256, pattern=_IDENTIFIER)
     candidate_receipt_id: str | None = Field(default=None, pattern=_DIGEST)
     evaluated_run_receipt: EvaluatedRunReceipt | None = None
+    accepted_run_receipt: EvaluatedRunReceipt | None = None
     promotion_decision: PromotionDecision | None = None
     release_id: str | None = Field(default=None, max_length=256, pattern=_IDENTIFIER)
     stop_reason: EvolutionStopReason | None = None
@@ -721,6 +722,20 @@ class EvolutionController:
                 EvolutionControllerErrorCode.MISSING_INPUT, "promotion_decision"
             )
         self._validate_decision_identity(decision, policy, state)
+        candidate = request.evaluated_run_receipt
+        accepted = request.accepted_run_receipt
+        if candidate is None or accepted is None:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.MISSING_INPUT, "gate_receipts"
+            )
+        if candidate.receipt_id != state.candidate_receipt_id:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.STALE_RECEIPT, candidate.receipt_id
+            )
+        if decide_promotion(policy, accepted, candidate) != decision:
+            raise EvolutionControllerFailure(
+                EvolutionControllerErrorCode.STALE_RECEIPT, decision.decision_id
+            )
         return decision, tuple(reason.value for reason in decision.reasons)
 
     def _validate_decision_identity(

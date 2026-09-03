@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +7,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from ofw.evaluation.outcome import (
+    EvaluatedRunReceipt,
+    EvaluatedTaskReceipt,
+    RunSide,
+    VerifierVerdict,
+)
 from ofw.evolution.candidate import candidate_policy_digest
 from ofw.evolution.controller import (
     AdvanceEvolutionInput,
@@ -19,7 +24,7 @@ from ofw.evolution.controller import (
     EvolutionStatus,
     EvolutionStopReason,
 )
-from ofw.evolution.gate import PromotionDecision, PromotionReason, PromotionStatus
+from ofw.evolution.gate import PromotionDecision, decide_promotion
 from ofw.evolution.ledger import (
     CandidatePrepared,
     EvolutionEvent,
@@ -81,6 +86,8 @@ def _request(
     candidate_commit: str | None = None,
     run_id: str | None = None,
     candidate_receipt_id: str | None = None,
+    evaluated_run_receipt: EvaluatedRunReceipt | None = None,
+    accepted_run_receipt: EvaluatedRunReceipt | None = None,
     promotion_decision: PromotionDecision | None = None,
     release_id: str | None = None,
     stop_reason: EvolutionStopReason | None = None,
@@ -103,12 +110,46 @@ def _request(
         candidate_commit=candidate_commit,
         run_id=run_id,
         candidate_receipt_id=candidate_receipt_id,
+        evaluated_run_receipt=evaluated_run_receipt,
+        accepted_run_receipt=accepted_run_receipt,
         promotion_decision=promotion_decision,
         release_id=release_id,
         stop_reason=stop_reason,
         blocker_reason=blocker_reason,
         baseline_deadline_exceeded=baseline_deadline_exceeded,
         evidence_available=evidence_available,
+    )
+
+
+def _receipt(
+    run_id: str,
+    side: RunSide,
+    commit: str,
+    verdict: VerifierVerdict,
+    experiment_policy: ExperimentPolicySnapshot | None = None,
+) -> EvaluatedRunReceipt:
+    authority = experiment_policy or policy()
+    score = 1.0 if verdict is VerifierVerdict.PASS else 0.0
+    task = EvaluatedTaskReceipt(
+        task_id="task-1",
+        trace_id=f"trace-{run_id}",
+        score_id=f"score-{run_id}",
+        verdict=verdict,
+        verifier_id="verifier",
+        normalized_score=score,
+        cost_usd=0.1,
+        latency_seconds=1.0,
+    )
+    return EvaluatedRunReceipt.build(
+        run_id=run_id,
+        side=side,
+        policy_digest=candidate_policy_digest(authority),
+        controls_digest=authority.controls_digest,
+        evaluated_commit=commit,
+        evaluated_tree=commit,
+        task_ids=("task-1",),
+        outcome_receipts=(task,),
+        blockers=(),
     )
 
 
@@ -138,42 +179,44 @@ def test_accepted_candidate_is_stuck_until_publication_package(tmp_path: Path) -
     controller.advance(_request(root, "r3", candidate_workspace_id="workspace-1"))
     controller.advance(
         _request(
-            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="a" * 40
+            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="c" * 40
         )
     )
+    accepted_receipt = _receipt(
+        "baseline", RunSide.ACCEPTED, "a" * 40, VerifierVerdict.FAIL
+    )
+    candidate_receipt = _receipt(
+        "run-1", RunSide.CANDIDATE, "c" * 40, VerifierVerdict.PASS
+    )
     running = controller.advance(
-        _request(root, "r5", run_id="run-1", candidate_receipt_id="sha256:" + "c" * 64)
+        _request(
+            root,
+            "r5",
+            run_id="run-1",
+            candidate_receipt_id=candidate_receipt.receipt_id,
+        )
     )
     assert running.phase is EvolutionPhase.GATE_READY
-    decision = PromotionDecision(
-        decision_id="sha256:" + hashlib.sha256(b"{}").hexdigest(),
-        policy_digest=candidate_policy_digest(policy()),
-        accepted_run_id="baseline",
-        candidate_run_id="run-1",
-        status=PromotionStatus.ACCEPT,
-        reasons=(PromotionReason.IMPROVEMENT,),
-        task_ids=("task-1",),
-        accepted_passes=(),
-        candidate_passes=("task-1",),
-        accepted_quality=0.0,
-        candidate_quality=1.0,
-        accepted_cost_usd=None,
-        candidate_cost_usd=None,
-        accepted_latency_seconds=None,
-        candidate_latency_seconds=None,
-        canonical_json="{}",
+    decision = decide_promotion(policy(), accepted_receipt, candidate_receipt)
+    with pytest.raises(EvolutionControllerFailure) as raised:
+        controller.advance(
+            _request(root, "r6-missing-receipts", promotion_decision=decision)
+        )
+    assert raised.value.code is EvolutionControllerErrorCode.MISSING_INPUT
+    accepted = controller.advance(
+        _request(
+            root,
+            "r6",
+            promotion_decision=decision,
+            evaluated_run_receipt=candidate_receipt,
+            accepted_run_receipt=accepted_receipt,
+        )
     )
-    accepted = controller.advance(_request(root, "r6", promotion_decision=decision))
     assert accepted.phase is EvolutionPhase.AWAITING_PUBLICATION
     assert (accepted.accepted_commit, accepted.accepted_content_id) == (
-        "a" * 40,
+        "c" * 40,
         "sha256:" + "b" * 64,
     )
-    from ofw.evolution.controller import (
-        EvolutionControllerErrorCode,
-        EvolutionControllerFailure,
-    )
-
     with pytest.raises(EvolutionControllerFailure) as raised:
         controller.advance(_request(root, "r7", release_id="release-1"))
     assert raised.value.code is EvolutionControllerErrorCode.PUBLICATION_REQUIRED
@@ -285,7 +328,7 @@ def test_block_retry_and_conflicting_external_targets(tmp_path: Path) -> None:
     controller.advance(_request(root, "r3", candidate_workspace_id="workspace-1"))
     controller.advance(
         _request(
-            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="a" * 40
+            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="c" * 40
         )
     )
     blocked = controller.advance(
@@ -309,7 +352,7 @@ def test_block_retry_and_conflicting_external_targets(tmp_path: Path) -> None:
     controller.advance(_request(root, "r3", candidate_workspace_id="workspace-1"))
     controller.advance(
         _request(
-            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="a" * 40
+            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="c" * 40
         )
     )
     with pytest.raises(EvolutionControllerFailure) as raised:
@@ -329,33 +372,34 @@ def test_max_iterations_and_no_improvement_stops(tmp_path: Path) -> None:
     controller.advance(_request(root, "r3", candidate_workspace_id="workspace-1"))
     controller.advance(
         _request(
-            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="a" * 40
+            root, "r4", candidate_id="sha256:" + "b" * 64, candidate_commit="c" * 40
         )
     )
+    authority = policy(max_iterations=1, no_improvement_limit=1)
+    accepted_receipt = _receipt(
+        "baseline", RunSide.ACCEPTED, "a" * 40, VerifierVerdict.PASS, authority
+    )
+    candidate_receipt = _receipt(
+        "run-1", RunSide.CANDIDATE, "c" * 40, VerifierVerdict.PASS, authority
+    )
     controller.advance(
-        _request(root, "r5", run_id="run-1", candidate_receipt_id="sha256:" + "c" * 64)
+        _request(
+            root,
+            "r5",
+            run_id="run-1",
+            candidate_receipt_id=candidate_receipt.receipt_id,
+        )
     )
-    decision = PromotionDecision(
-        decision_id="sha256:" + hashlib.sha256(b"{}").hexdigest(),
-        policy_digest=candidate_policy_digest(
-            policy(max_iterations=1, no_improvement_limit=1)
-        ),
-        accepted_run_id="baseline",
-        candidate_run_id="run-1",
-        status=PromotionStatus.REJECT,
-        reasons=(PromotionReason.NO_IMPROVEMENT,),
-        task_ids=("task-1",),
-        accepted_passes=("task-1",),
-        candidate_passes=("task-1",),
-        accepted_quality=1.0,
-        candidate_quality=1.0,
-        accepted_cost_usd=None,
-        candidate_cost_usd=None,
-        accepted_latency_seconds=None,
-        candidate_latency_seconds=None,
-        canonical_json="{}",
+    decision = decide_promotion(authority, accepted_receipt, candidate_receipt)
+    stopped = controller.advance(
+        _request(
+            root,
+            "r6",
+            promotion_decision=decision,
+            evaluated_run_receipt=candidate_receipt,
+            accepted_run_receipt=accepted_receipt,
+        )
     )
-    stopped = controller.advance(_request(root, "r6", promotion_decision=decision))
     assert stopped.stop_reason is EvolutionStopReason.MAX_ITERATIONS
 
 
