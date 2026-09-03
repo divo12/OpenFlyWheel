@@ -645,7 +645,7 @@ def test_decision_is_immutable_deterministic_and_golden() -> None:
     )
     assert (
         first.decision_id
-        == "sha256:e6427af38ba089471ff626f88b6d84a9ba6592ed274a717ea2dbc375fbc0dd41"
+        == "sha256:e069074fc405ed919291bc16626a3c82865d8bb9a43bd5b8468ee1858529792f"
     )
     with pytest.raises(FrozenInstanceError):
         first.status = PromotionStatus.ACCEPT  # type: ignore[misc]
